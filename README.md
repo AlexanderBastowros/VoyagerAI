@@ -34,6 +34,19 @@ automatically if it's missing. This can take a few minutes the first time; subse
 launches are instant. If a check fails, fix the underlying issue (e.g. run `claude` and
 sign in) and press **Retry**.
 
+### Troubleshooting
+
+**`Error: Electron uninstall` when running `npm run dev`** - the `electron` npm package
+is installed but its platform binary was never downloaded (Electron fetches it in a
+postinstall step, which can be skipped or fail silently on a flaky network). Re-run just
+the binary download:
+
+```bash
+node node_modules/electron/install.js
+```
+
+If that also fails, clean-reinstall: `rm -rf node_modules && npm install`.
+
 ## Using it
 
 1. **Describe the part** in the chat panel - dimensions, purpose, any hardware it needs
