@@ -400,6 +400,9 @@ export class AgentSession {
       canUseTool: this.canUseTool,
       systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(dir) },
       includePartialMessages: true,
+      // Enable adaptive thinking with visible summaries so the renderer receives thinking_delta
+      // stream events (off by default on Opus 4.7/4.8; display defaults to "omitted" = empty text).
+      thinking: { type: 'adaptive', display: 'summarized' },
       env: { ...baseEnv, PATH: `${venvBin}${delimiter}${baseEnv.PATH ?? ''}` },
       ...(resume ? { resume } : {}),
       ...(cliPath ? { pathToClaudeCodeExecutable: cliPath } : {})
