@@ -19,6 +19,7 @@ export class ModelViewer {
   private readonly resizeObserver: ResizeObserver
 
   private mesh: THREE.Mesh | null = null
+  private highlight: THREE.Object3D | null = null
   private rafHandle = 0
   private disposed = false
 
@@ -126,8 +127,15 @@ export class ModelViewer {
     this.controls.update()
   }
 
-  /** Removes and disposes the current model, if any. Safe to call repeatedly. */
+  /**
+   * Removes and disposes the current model, if any, and detaches (but does
+   * not dispose - the caller owns its lifecycle) any active selection
+   * highlight, since its triangle indices refer to the mesh being cleared.
+   * Safe to call repeatedly.
+   */
   clear(): void {
+    this.setHighlightObject(null)
+
     if (!this.mesh) return
 
     this.scene.remove(this.mesh)
@@ -141,6 +149,39 @@ export class ModelViewer {
     }
 
     this.mesh = null
+  }
+
+  /** The currently displayed mesh, or null if no model is loaded. */
+  getMesh(): THREE.Mesh | null {
+    return this.mesh
+  }
+
+  /** The viewer's camera - useful for building a view-projection matrix for selection. */
+  getCamera(): THREE.PerspectiveCamera {
+    return this.camera
+  }
+
+  /** The canvas element selection interaction should attach pointer listeners to. */
+  getDomElement(): HTMLCanvasElement {
+    return this.renderer.domElement
+  }
+
+  /** Enables/disables OrbitControls - used while a marquee-select drag is in progress. */
+  setOrbitEnabled(enabled: boolean): void {
+    this.controls.enabled = enabled
+  }
+
+  /**
+   * Attaches `object` to the scene as the active selection highlight,
+   * detaching whatever highlight object (if any) was previously attached.
+   * Pass null to detach without attaching a replacement. Does not dispose
+   * the detached object - the caller (which created it) owns disposal.
+   */
+  setHighlightObject(object: THREE.Object3D | null): void {
+    if (this.highlight === object) return
+    if (this.highlight) this.scene.remove(this.highlight)
+    this.highlight = object
+    if (this.highlight) this.scene.add(this.highlight)
   }
 
   /** Tears down the renderer, controls, and observers. The instance is unusable after this. */

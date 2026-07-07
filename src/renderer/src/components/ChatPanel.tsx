@@ -19,6 +19,7 @@ export function ChatPanel(): React.JSX.Element {
   const messages = useAppStore((state) => state.messages)
   const addMessage = useAppStore((state) => state.addMessage)
   const selection = useAppStore((state) => state.selection)
+  const setSelection = useAppStore((state) => state.setSelection)
   const setupStatus = useAppStore((state) => state.setupStatus)
   const agentBusy = useAppStore((state) => state.agentBusy)
   const setAgentBusy = useAppStore((state) => state.setAgentBusy)
@@ -33,6 +34,7 @@ export function ChatPanel(): React.JSX.Element {
     const text = draft.trim()
     if (!text || isDisabled) return
 
+    const selectionAtSend = selection
     setDraft('')
     addMessage({ role: 'user', text })
     setAgentBusy(true)
@@ -40,7 +42,7 @@ export function ChatPanel(): React.JSX.Element {
     try {
       const response = await window.voyager.agent.sendMessage({
         text,
-        selectionContext: selection
+        selectionContext: selectionAtSend
       })
       if (!response.accepted) {
         setAgentBusy(false)
@@ -48,6 +50,11 @@ export function ChatPanel(): React.JSX.Element {
           role: 'system-status',
           text: response.reason ?? 'The agent could not accept the message.'
         })
+        // Refused send: the selection context wasn't consumed, so keep it around.
+      } else if (selectionAtSend) {
+        // Accepted send that included a selection: it's a one-shot context for
+        // this refinement, so clear it before the user's next message.
+        setSelection(null)
       }
       // On accept, streamed agent:event messages drive the UI from here;
       // agentBusy clears on message-complete / error.
@@ -88,6 +95,12 @@ export function ChatPanel(): React.JSX.Element {
         ))}
         {agentBusy && <div className="chat-working-indicator">Claude is working…</div>}
       </div>
+      {selection && (
+        <div className="chat-selection-banner">
+          Refining selected region — {selection.dims[0].toFixed(1)}×{selection.dims[1].toFixed(1)}×
+          {selection.dims[2].toFixed(1)} mm
+        </div>
+      )}
       <div className="chat-input-row">
         <textarea
           className="chat-input"

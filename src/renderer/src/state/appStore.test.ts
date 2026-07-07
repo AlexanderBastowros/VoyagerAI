@@ -1,17 +1,29 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useAppStore } from './appStore'
+import type { SelectionSummary } from '../../../shared/ipc'
 
 function resetStore(): void {
   useAppStore.setState({
     messages: [],
     model: null,
     selection: null,
+    selectMode: false,
     setupStatus: {
       claudeCli: { state: 'unchecked', detail: 'Not checked yet' },
       claudeAuth: { state: 'unchecked', detail: 'Not checked yet' },
       pythonEnv: { state: 'unchecked', detail: 'Not checked yet' }
     }
   })
+}
+
+function sampleSelection(): SelectionSummary {
+  return {
+    bboxMin: [0, 0, 0],
+    bboxMax: [2, 2, 2],
+    centroid: [1, 1, 1],
+    dims: [2, 2, 2],
+    triCount: 4
+  }
 }
 
 describe('appStore', () => {
@@ -69,5 +81,39 @@ describe('appStore', () => {
 
     useAppStore.getState().setModel(null)
     expect(useAppStore.getState().model).toBeNull()
+  })
+
+  it('toggles selectMode independently of other state', () => {
+    expect(useAppStore.getState().selectMode).toBe(false)
+
+    useAppStore.getState().setSelectMode(true)
+    expect(useAppStore.getState().selectMode).toBe(true)
+
+    useAppStore.getState().setSelectMode(false)
+    expect(useAppStore.getState().selectMode).toBe(false)
+  })
+
+  it('sets and clears the current selection', () => {
+    const selection = sampleSelection()
+    useAppStore.getState().setSelection(selection)
+    expect(useAppStore.getState().selection).toEqual(selection)
+
+    useAppStore.getState().setSelection(null)
+    expect(useAppStore.getState().selection).toBeNull()
+  })
+
+  it('clears a stale selection when a new model iteration arrives via setModel', () => {
+    useAppStore.getState().setSelection(sampleSelection())
+    expect(useAppStore.getState().selection).not.toBeNull()
+
+    useAppStore.getState().setModel({
+      name: 'bracket_v2.stl',
+      iteration: 2,
+      stlPath: '/tmp/bracket_v2.stl',
+      stepPath: null,
+      scriptPath: '/tmp/bracket_v2.py'
+    })
+
+    expect(useAppStore.getState().selection).toBeNull()
   })
 })

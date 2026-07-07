@@ -264,6 +264,22 @@ button {
   font-size: 12px;
 }
 
+.toolbar-button-active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: #f2f6fc;
+}
+
+.toolbar-selection-chip {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: var(--bg-panel-raised);
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  padding: 4px 8px;
+}
+
 .viewport {
   flex: 1 1 auto;
   min-height: 0;
@@ -273,6 +289,32 @@ button {
 
 .viewport canvas {
   display: block;
+}
+
+.viewport-select-mode {
+  cursor: crosshair;
+}
+
+.selection-marquee {
+  display: none;
+  position: absolute;
+  z-index: 5;
+  border: 1px dashed var(--accent);
+  background: rgba(102, 170, 255, 0.15);
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Chat selection banner (M4 region selection)                            */
+/* ---------------------------------------------------------------------- */
+
+.chat-selection-banner {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: 11.5px;
+  color: var(--accent);
+  background: rgba(102, 170, 255, 0.1);
+  border-top: 1px solid var(--border-subtle);
 }
 
 /* ---------------------------------------------------------------------- */

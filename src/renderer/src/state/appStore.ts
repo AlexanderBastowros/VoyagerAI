@@ -43,6 +43,8 @@ export interface AppState {
   model: ModelInfo | null
   setupStatus: SetupStatus
   selection: SelectionSummary | null
+  /** True while the "Select region" toolbar toggle is active. */
+  selectMode: boolean
   /** True from an accepted send until the agent's message-complete/error event. */
   agentBusy: boolean
   /**
@@ -57,9 +59,12 @@ export interface AppState {
   appendToMessage: (id: string, delta: string) => void
   /** Marks a streaming message as finished. */
   completeMessage: (id: string) => void
+  /** Replaces the current model. Also clears any active selection - its triangle indices
+   *  and coordinates refer to the previous iteration's geometry and must not leak forward. */
   setModel: (model: ModelInfo | null) => void
   setSetupStatus: (status: SetupStatus) => void
   setSelection: (selection: SelectionSummary | null) => void
+  setSelectMode: (selectMode: boolean) => void
   setAgentBusy: (busy: boolean) => void
   /** Folds one streamed `agent:event` into the chat state. */
   applyAgentEvent: (event: AgentEvent) => void
@@ -70,6 +75,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   model: null,
   setupStatus: initialSetupStatus(),
   selection: null,
+  selectMode: false,
   agentBusy: false,
   agentStreamIds: {},
 
@@ -93,9 +99,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     }))
   },
 
-  setModel: (model) => set({ model }),
+  setModel: (model) => set({ model, selection: null }),
   setSetupStatus: (setupStatus) => set({ setupStatus }),
   setSelection: (selection) => set({ selection }),
+  setSelectMode: (selectMode) => set({ selectMode }),
   setAgentBusy: (agentBusy) => set({ agentBusy }),
 
   applyAgentEvent: (event) => {
