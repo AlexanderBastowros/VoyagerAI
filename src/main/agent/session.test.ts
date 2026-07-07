@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { CanUseTool, Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import { AgentSession, humanizeToolUse, translateSdkMessage } from './session'
 import type { QueryFn } from './session'
 import { ProjectStore } from '../projects/store'
@@ -153,9 +153,16 @@ interface Harness {
   inputs: SDKUserMessage[]
   events: AgentEvent[]
   models: ModelDisplayedPayload[]
+  /** Returns the `canUseTool` handler the session actually passed to `queryFn`'s options. */
+  getCanUseTool: () => CanUseTool
 }
 
-function makeHarness(): Harness {
+interface HarnessOptions {
+  approvalTimeoutMs?: number
+  requestUserApproval?: (request: { requestId: string; toolName: string; summary: string }) => Promise<boolean>
+}
+
+function makeHarness(opts: HarnessOptions = {}): Harness {
   const store = new ProjectStore({
     baseDir: join(scratch, 'projects'),
     skillSourceDir: join(scratch, 'skill-src')
@@ -164,8 +171,10 @@ function makeHarness(): Harness {
   const inputs: SDKUserMessage[] = []
   const events: AgentEvent[] = []
   const models: ModelDisplayedPayload[] = []
+  let capturedOptions: Options | undefined
 
-  const queryFn: QueryFn = ({ prompt }) => {
+  const queryFn: QueryFn = ({ prompt, options }) => {
+    capturedOptions = options
     void (async () => {
       for await (const m of prompt) inputs.push(m)
     })()
@@ -176,6 +185,15 @@ function makeHarness(): Harness {
     return iterable as unknown as Query
   }
 
+  // Default: the approver must never be invoked unless a test explicitly
+  // wires one up - a call here means a policy-allow test regressed into
+  // asking the user, which should fail loudly rather than hang.
+  const requestUserApproval =
+    opts.requestUserApproval ??
+    (async (): Promise<boolean> => {
+      throw new Error('requestUserApproval was called unexpectedly - this test did not expect an ask-path')
+    })
+
   const session = new AgentSession({
     projectStore: store,
     pythonPath: () => join(scratch, 'venv', 'bin', 'python'),
@@ -183,10 +201,23 @@ function makeHarness(): Harness {
     emitAgentEvent: (e) => events.push(e),
     emitModelDisplayed: (p) => models.push(p),
     queryFn,
-    env: { PATH: '/usr/bin' }
+    env: { PATH: '/usr/bin' },
+    requestUserApproval,
+    ...(opts.approvalTimeoutMs !== undefined ? { approvalTimeoutMs: opts.approvalTimeoutMs } : {})
   })
 
-  return { session, store, outputs, inputs, events, models }
+  return {
+    session,
+    store,
+    outputs,
+    inputs,
+    events,
+    models,
+    getCanUseTool: () => {
+      if (!capturedOptions?.canUseTool) throw new Error('canUseTool was not set on the query() options')
+      return capturedOptions.canUseTool
+    }
+  }
 }
 
 describe('AgentSession', () => {
@@ -258,5 +289,142 @@ describe('AgentSession', () => {
     // is dead, so we only assert acceptance here).
     const next = await h.session.sendMessage('are you there?')
     expect(next.accepted).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// canUseTool wiring (the permission gate that replaced bypassPermissions)
+// ---------------------------------------------------------------------------
+
+/** `CanUseTool`'s return type is `Promise<PermissionResult | null>`; our handler never actually
+ *  resolves null, so tests narrow through this helper instead of repeating the null-check. */
+function expectDenied(result: Awaited<ReturnType<CanUseTool>>): { message: string } {
+  if (!result || result.behavior !== 'deny') throw new Error(`expected a deny result, got ${JSON.stringify(result)}`)
+  return result
+}
+
+describe('canUseTool', () => {
+  it('resolves a policy-allow decision immediately without invoking the approver', async () => {
+    const h = makeHarness()
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    const canUseTool = h.getCanUseTool()
+    const controller = new AbortController()
+    const result = await canUseTool(
+      'Read',
+      { file_path: 'outputs/x.py' },
+      { signal: controller.signal, toolUseID: 'tu-1', requestId: 'sdk-req-1' }
+    )
+
+    // The default harness approver throws if called at all - reaching here
+    // without a thrown error confirms it was never invoked. `updatedInput`
+    // must echo the input: the CLI's control protocol requires it on allow.
+    expect(result).toEqual({ behavior: 'allow', updatedInput: { file_path: 'outputs/x.py' } })
+  })
+
+  it('allows an in-project Write without asking the user', async () => {
+    const h = makeHarness()
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    const projectDir = h.store.getProjectDir()
+
+    const canUseTool = h.getCanUseTool()
+    const controller = new AbortController()
+    const result = await canUseTool(
+      'Write',
+      { file_path: `${projectDir}/outputs/part_v1.py` },
+      { signal: controller.signal, toolUseID: 'tu-2', requestId: 'sdk-req-2' }
+    )
+
+    expect(result).toEqual({
+      behavior: 'allow',
+      updatedInput: { file_path: `${projectDir}/outputs/part_v1.py` }
+    })
+  })
+
+  it('asks the user for an out-of-policy write and allows once approved', async () => {
+    const approvalCalls: Array<{ requestId: string; toolName: string; summary: string }> = []
+    const h = makeHarness({
+      requestUserApproval: async (request) => {
+        approvalCalls.push(request)
+        return true
+      }
+    })
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    const canUseTool = h.getCanUseTool()
+    const controller = new AbortController()
+    const result = await canUseTool(
+      'Write',
+      { file_path: '/Users/x/Desktop/foo.py' },
+      { signal: controller.signal, toolUseID: 'tu-3', requestId: 'sdk-req-3' }
+    )
+
+    expect(result).toEqual({ behavior: 'allow', updatedInput: { file_path: '/Users/x/Desktop/foo.py' } })
+    expect(approvalCalls).toHaveLength(1)
+    expect(approvalCalls[0].toolName).toBe('Write')
+    expect(approvalCalls[0].summary).toContain('/Users/x/Desktop/foo.py')
+
+    // The chat shows why Claude paused while the request was in flight.
+    expect(
+      h.events.some((e) => e.type === 'tool-activity' && e.detail.includes('Waiting for your approval'))
+    ).toBe(true)
+  })
+
+  it('denies with a message steering Claude back to ./outputs/ when the user declines', async () => {
+    const h = makeHarness({ requestUserApproval: async () => false })
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    const canUseTool = h.getCanUseTool()
+    const controller = new AbortController()
+    const result = await canUseTool(
+      'Write',
+      { file_path: '/Users/x/Desktop/foo.py' },
+      { signal: controller.signal, toolUseID: 'tu-4', requestId: 'sdk-req-4' }
+    )
+
+    expect(expectDenied(result).message).toContain('./outputs/')
+  })
+
+  it('denies after the approval timeout elapses without a response', async () => {
+    const h = makeHarness({
+      approvalTimeoutMs: 20,
+      requestUserApproval: () => new Promise(() => {}) // never resolves - only the timeout can end this
+    })
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    const canUseTool = h.getCanUseTool()
+    const controller = new AbortController()
+    const result = await canUseTool(
+      'Write',
+      { file_path: '/Users/x/Desktop/foo.py' },
+      { signal: controller.signal, toolUseID: 'tu-5', requestId: 'sdk-req-5' }
+    )
+
+    expectDenied(result)
+  })
+
+  it('denies when the SDK aborts the request mid-ask', async () => {
+    const h = makeHarness({
+      requestUserApproval: () => new Promise(() => {}) // never resolves - abort must win
+    })
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    const canUseTool = h.getCanUseTool()
+    const controller = new AbortController()
+    const pending = canUseTool(
+      'Write',
+      { file_path: '/Users/x/Desktop/foo.py' },
+      { signal: controller.signal, toolUseID: 'tu-6', requestId: 'sdk-req-6' }
+    )
+    controller.abort()
+
+    const result = await pending
+    expectDenied(result)
   })
 })

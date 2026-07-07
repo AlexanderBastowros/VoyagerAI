@@ -1,5 +1,11 @@
 import { create } from 'zustand'
-import type { AgentEvent, SelectionSummary, SetupCheck, SetupStatus } from '../../../shared/ipc'
+import type {
+  AgentEvent,
+  PermissionRequestPayload,
+  SelectionSummary,
+  SetupCheck,
+  SetupStatus
+} from '../../../shared/ipc'
 
 export type ChatRole = 'user' | 'assistant' | 'system-status'
 
@@ -52,6 +58,8 @@ export interface AppState {
    * its streamed text is accumulating into.
    */
   agentStreamIds: Record<string, string>
+  /** The out-of-policy tool call currently awaiting an Allow/Deny decision, if any. */
+  pendingPermission: PermissionRequestPayload | null
 
   /** Appends a new message and returns its generated id (for later streaming updates). */
   addMessage: (message: Omit<ChatMessage, 'id' | 'createdAt'>) => string
@@ -66,6 +74,8 @@ export interface AppState {
   setSelection: (selection: SelectionSummary | null) => void
   setSelectMode: (selectMode: boolean) => void
   setAgentBusy: (busy: boolean) => void
+  /** Sets or clears (pass `null`) the pending approval card. */
+  setPendingPermission: (request: PermissionRequestPayload | null) => void
   /** Folds one streamed `agent:event` into the chat state. */
   applyAgentEvent: (event: AgentEvent) => void
 }
@@ -78,6 +88,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectMode: false,
   agentBusy: false,
   agentStreamIds: {},
+  pendingPermission: null,
 
   addMessage: (message) => {
     const id = createMessageId()
@@ -104,6 +115,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSelection: (selection) => set({ selection }),
   setSelectMode: (selectMode) => set({ selectMode }),
   setAgentBusy: (agentBusy) => set({ agentBusy }),
+  setPendingPermission: (pendingPermission) => set({ pendingPermission }),
 
   applyAgentEvent: (event) => {
     const state = get()

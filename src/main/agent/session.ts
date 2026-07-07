@@ -1,6 +1,6 @@
 import { delimiter, dirname } from 'node:path'
 import { query } from '@anthropic-ai/claude-agent-sdk'
-import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { CanUseTool, Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AgentEvent,
   ModelDisplayedPayload,
@@ -10,7 +10,56 @@ import type {
 import type { ProjectStore } from '../projects/store'
 import { createVoyagerMcpServer } from './mcpTools'
 import type { VoyagerMcpEmission } from './mcpTools'
+import { decideToolPermission } from './permissions'
 import { buildUserMessage, systemPromptAppend } from './prompts'
+
+/** Denial message returned to Claude on a declined/timed-out/aborted approval request - steers it
+ *  toward the always-allowed path (./outputs/ inside the project dir) instead of retrying blindly. */
+const DECLINED_MESSAGE =
+  'The user declined this action. Save files under ./outputs/ inside the project directory instead.'
+
+/** How long an inline approval card waits for a user response before auto-denying. Overridable via
+ *  `AgentSessionDeps.approvalTimeoutMs` so tests don't need to wait 2 minutes for the timeout path. */
+const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000
+
+/**
+ * Races the injected approval promise against a timeout and the SDK's abort
+ * signal. Resolves `false` (deny) on timeout or abort instead of rejecting,
+ * so `canUseTool` never has to deal with (or propagate) a thrown error here.
+ */
+function raceApproval(approval: Promise<boolean>, timeoutMs: number, signal: AbortSignal): Promise<boolean> {
+  return new Promise((resolveRace) => {
+    let settled = false
+    const timer = setTimeout(() => settle(false), timeoutMs)
+
+    function cleanup(): void {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+    }
+
+    function settle(value: boolean): void {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolveRace(value)
+    }
+
+    function onAbort(): void {
+      settle(false)
+    }
+
+    if (signal.aborted) {
+      settle(false)
+      return
+    }
+    signal.addEventListener('abort', onAbort)
+
+    approval.then(
+      (value) => settle(value === true),
+      () => settle(false)
+    )
+  })
+}
 
 /**
  * Owns the single Claude Agent SDK session behind Voyager's chat.
@@ -38,8 +87,17 @@ export interface AgentSessionDeps {
   claudeCliPath: () => string | null
   emitAgentEvent: (event: AgentEvent) => void
   emitModelDisplayed: (payload: ModelDisplayedPayload) => void
+  /**
+   * Surfaces an out-of-policy tool call to the user (an inline Allow/Deny
+   * card in the chat) and resolves with their decision. Backed by an IPC
+   * round-trip in production (see ipc.ts's `askUser`); never expected to
+   * throw - `canUseTool` treats a rejection the same as an explicit `false`.
+   */
+  requestUserApproval: (request: { requestId: string; toolName: string; summary: string }) => Promise<boolean>
   queryFn?: QueryFn
   env?: Record<string, string | undefined>
+  /** Overrides the 120s default approval timeout - primarily for tests. */
+  approvalTimeoutMs?: number
 }
 
 /** Unbounded push queue exposed as an AsyncIterable - the SDK session's stdin. */
@@ -192,10 +250,60 @@ export class AgentSession {
   private sessionId: string | null = null
   private receivedAnyMessage = false
   private skipResumeOnRestart = false
+  private approvalSeq = 0
+  /** Set once `ensureStarted` resolves the project dir; read by `canUseTool`. */
+  private projectDir = ''
 
   constructor(deps: AgentSessionDeps) {
     this.deps = deps
     this.queryFn = deps.queryFn ?? (query as QueryFn)
+  }
+
+  /**
+   * The SDK's single permission authority (wired into `query()`'s options in
+   * `ensureStarted`). Declared as a bound arrow property (rather than a
+   * prototype method) so it can be handed to the SDK as a plain value
+   * (`options.canUseTool = this.canUseTool`) without losing its `this`.
+   *
+   * Policy allows resolve immediately with no user involvement; anything
+   * `decideToolPermission` flags asks the user (via `deps.requestUserApproval`,
+   * an IPC round-trip in production) and races that against a timeout and the
+   * SDK's own abort signal. Never throws - any unexpected failure denies with
+   * the same steer-toward-outputs message a normal decline gets, so a bug
+   * here degrades to "Claude tries something else" rather than a stalled turn.
+   */
+  private canUseTool: CanUseTool = async (toolName, input, { signal }): Promise<PermissionResult> => {
+    try {
+      const decision = decideToolPermission(toolName, input, this.projectDir)
+      // `updatedInput` is optional in the SDK's PermissionResult type but the
+      // CLI's control-protocol schema REQUIRES it on the allow arm (verified
+      // against a live session: omitting it fails Zod validation with
+      // "expected record at updatedInput" and the tool call errors). Always
+      // echo the input back.
+      if (decision.kind === 'allow') return { behavior: 'allow', updatedInput: input }
+
+      this.approvalSeq += 1
+      const requestId = `perm-${this.turn}-${this.approvalSeq}`
+
+      this.deps.emitAgentEvent({
+        type: 'tool-activity',
+        messageId: this.currentMessageId,
+        toolName,
+        detail: `Waiting for your approval: ${decision.summary}`
+      })
+
+      const timeoutMs = this.deps.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS
+      const approved = await raceApproval(
+        this.deps.requestUserApproval({ requestId, toolName, summary: decision.summary }),
+        timeoutMs,
+        signal
+      )
+
+      if (approved) return { behavior: 'allow', updatedInput: input }
+      return { behavior: 'deny', message: DECLINED_MESSAGE }
+    } catch {
+      return { behavior: 'deny', message: DECLINED_MESSAGE }
+    }
   }
 
   isBusy(): boolean {
@@ -249,6 +357,7 @@ export class AgentSession {
     if (this.activeQuery) return
 
     const { dir } = await this.deps.projectStore.ensureProject()
+    this.projectDir = dir
 
     let resume: string | undefined
     if (!this.skipResumeOnRestart) {
@@ -269,12 +378,13 @@ export class AgentSession {
           emit: (emission) => this.handleEmission(emission)
         })
       },
-      permissionMode: 'bypassPermissions',
+      // No `permissionMode` here: the default mode plus `canUseTool` below is
+      // the single permission authority. `allowedTools` is intentionally
+      // trimmed to the tools that are *always* safe to auto-run - bare
+      // Write/Edit/Bash entries here would short-circuit before
+      // `canUseTool` ever runs and defeat the scoped write policy.
       allowedTools: [
         'Read',
-        'Write',
-        'Edit',
-        'Bash',
         'Glob',
         'Grep',
         'Skill',
@@ -282,6 +392,7 @@ export class AgentSession {
         'mcp__voyager__display_model',
         'mcp__voyager__set_status'
       ],
+      canUseTool: this.canUseTool,
       systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(dir) },
       includePartialMessages: true,
       env: { ...baseEnv, PATH: `${venvBin}${delimiter}${baseEnv.PATH ?? ''}` },

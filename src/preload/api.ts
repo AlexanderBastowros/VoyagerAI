@@ -3,6 +3,9 @@ import type {
   ExportModelRequest,
   ExportModelResponse,
   ModelDisplayedPayload,
+  PermissionRequestPayload,
+  PermissionRespondRequest,
+  PermissionRespondResponse,
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus
@@ -25,6 +28,10 @@ export interface VoyagerApi {
     sendMessage: (request: SendMessageRequest) => Promise<SendMessageResponse>
     /** Subscribe to streaming agent events; returns an unsubscribe function. */
     onEvent: (callback: (event: AgentEvent) => void) => () => void
+    /** Subscribe to out-of-policy tool approval requests; returns an unsubscribe function. */
+    onPermissionRequest: (callback: (payload: PermissionRequestPayload) => void) => () => void
+    /** Sends the user's Allow/Deny decision for a pending permission request. */
+    respondPermission: (request: PermissionRespondRequest) => Promise<PermissionRespondResponse>
   }
   model: {
     loadSample: () => Promise<ArrayBuffer>

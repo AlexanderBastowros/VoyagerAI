@@ -5,6 +5,9 @@ import type {
   ExportModelRequest,
   ExportModelResponse,
   ModelDisplayedPayload,
+  PermissionRequestPayload,
+  PermissionRespondRequest,
+  PermissionRespondResponse,
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus
@@ -26,7 +29,10 @@ const api: VoyagerApi = {
   agent: {
     sendMessage: (request: SendMessageRequest): Promise<SendMessageResponse> =>
       ipcRenderer.invoke(IPC.agentSendMessage, request),
-    onEvent: (callback) => subscribe<AgentEvent>(IPC.agentEvent, callback)
+    onEvent: (callback) => subscribe<AgentEvent>(IPC.agentEvent, callback),
+    onPermissionRequest: (callback) => subscribe<PermissionRequestPayload>(IPC.agentPermissionRequest, callback),
+    respondPermission: (request: PermissionRespondRequest): Promise<PermissionRespondResponse> =>
+      ipcRenderer.invoke(IPC.agentPermissionRespond, request)
   },
   model: {
     loadSample: (): Promise<ArrayBuffer> => ipcRenderer.invoke(IPC.modelLoadSample),

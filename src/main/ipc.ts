@@ -7,6 +7,8 @@ import type {
   ExportModelRequest,
   ExportModelResponse,
   ModelDisplayedPayload,
+  PermissionRespondRequest,
+  PermissionRespondResponse,
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus
@@ -34,6 +36,29 @@ function broadcast(channel: string, payload: unknown): void {
   }
 }
 
+/**
+ * Pending approval requests awaiting a renderer response, keyed by
+ * `requestId`. AgentSession's own 120s timeout (see session.ts's
+ * `raceApproval`) is what actually unblocks a stalled turn - this map isn't
+ * separately time-boxed, so a request the user never answers just lingers
+ * here (harmlessly; the session has already moved on) until it does get a
+ * response or the app quits.
+ */
+const pendingApprovals = new Map<string, (allow: boolean) => void>()
+
+/**
+ * Broadcasts an out-of-policy tool call as an inline approval card to every
+ * window and returns a promise that resolves with the user's decision. This
+ * is `AgentSessionDeps.requestUserApproval` - the `agent:permissionRespond`
+ * handler below is what resolves the promise this returns.
+ */
+function askUser(request: { requestId: string; toolName: string; summary: string }): Promise<boolean> {
+  return new Promise((resolve) => {
+    pendingApprovals.set(request.requestId, resolve)
+    broadcast(IPC.agentPermissionRequest, request)
+  })
+}
+
 /** Registers all main-process IPC handlers. */
 export function registerIpcHandlers(): void {
   const envManager = new EnvManager({
@@ -54,7 +79,8 @@ export function registerIpcHandlers(): void {
     pythonPath: () => envManager.pythonPath(),
     claudeCliPath: () => claudeChecker.cliPath(),
     emitAgentEvent: (event: AgentEvent) => broadcast(IPC.agentEvent, event),
-    emitModelDisplayed: (payload: ModelDisplayedPayload) => broadcast(IPC.modelDisplayed, payload)
+    emitModelDisplayed: (payload: ModelDisplayedPayload) => broadcast(IPC.modelDisplayed, payload),
+    requestUserApproval: askUser
   })
   app.on('will-quit', () => agentSession.dispose())
 
@@ -156,6 +182,17 @@ export function registerIpcHandlers(): void {
       if (notReady) return { accepted: false, reason: notReady }
 
       return agentSession.sendMessage(request.text, request.selectionContext ?? null)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.agentPermissionRespond,
+    async (_event, request: PermissionRespondRequest): Promise<PermissionRespondResponse> => {
+      const resolve = pendingApprovals.get(request.requestId)
+      if (!resolve) return { acknowledged: false }
+      pendingApprovals.delete(request.requestId)
+      resolve(request.allow)
+      return { acknowledged: true }
     }
   )
 }

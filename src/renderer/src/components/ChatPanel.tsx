@@ -23,6 +23,8 @@ export function ChatPanel(): React.JSX.Element {
   const setupStatus = useAppStore((state) => state.setupStatus)
   const agentBusy = useAppStore((state) => state.agentBusy)
   const setAgentBusy = useAppStore((state) => state.setAgentBusy)
+  const pendingPermission = useAppStore((state) => state.pendingPermission)
+  const setPendingPermission = useAppStore((state) => state.setPendingPermission)
   const [draft, setDraft] = useState('')
 
   // Input unlocks once all three setup checks (CLI, sign-in, Python env) are
@@ -74,6 +76,20 @@ export function ChatPanel(): React.JSX.Element {
     }
   }
 
+  async function respondToPermission(allow: boolean): Promise<void> {
+    if (!pendingPermission) return
+    const { requestId } = pendingPermission
+    // Clear immediately so a slow IPC round-trip can't double-submit via a
+    // second click; the request is already resolved from the user's view.
+    setPendingPermission(null)
+    try {
+      await window.voyager.agent.respondPermission({ requestId, allow })
+    } catch {
+      // Best-effort: if the main process is gone the session has already
+      // timed the request out on its own (see session.ts's approval race).
+    }
+  }
+
   return (
     <div className="chat-panel">
       <div className="chat-header">Chat</div>
@@ -95,6 +111,23 @@ export function ChatPanel(): React.JSX.Element {
         ))}
         {agentBusy && <div className="chat-working-indicator">Claude is working…</div>}
       </div>
+      {pendingPermission && (
+        <div className="chat-permission-card">
+          <div className="chat-permission-text">Claude wants to: {pendingPermission.summary}</div>
+          <div className="chat-permission-actions">
+            <button
+              type="button"
+              className="chat-permission-allow"
+              onClick={() => void respondToPermission(true)}
+            >
+              Allow once
+            </button>
+            <button type="button" className="chat-permission-deny" onClick={() => void respondToPermission(false)}>
+              Deny
+            </button>
+          </div>
+        </div>
+      )}
       {selection && (
         <div className="chat-selection-banner">
           Refining selected region — {selection.dims[0].toFixed(1)}×{selection.dims[1].toFixed(1)}×

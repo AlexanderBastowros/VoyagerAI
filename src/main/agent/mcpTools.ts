@@ -1,11 +1,12 @@
 import { readFile, stat } from 'node:fs/promises'
-import { isAbsolute, relative, resolve } from 'node:path'
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js'
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import type { ModelDisplayedPayload } from '../../shared/ipc'
 import type { ProjectIteration } from '../projects/store'
+import { resolveWithinProject } from './paths'
+import type { ResolvedPath } from './paths'
 
 /** The subset of ProjectStore the MCP tools need - kept narrow for testability. */
 export interface VoyagerMcpProjectStore {
@@ -43,32 +44,6 @@ function textResult(text: string, isError = false): CallToolResult {
 
 function toArrayBuffer(buffer: Buffer): ArrayBuffer {
   return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength) as ArrayBuffer
-}
-
-interface ResolvedPath {
-  /** Absolute path on disk. */
-  abs: string
-  /** Path relative to the project directory - what gets persisted/emitted. */
-  rel: string
-}
-
-/**
- * Resolves `candidate` (relative or absolute) against `projectDir` and
- * rejects anything that escapes it - Claude's tool calls are trusted for
- * *content* but not for *paths*, so a hallucinated or malicious `../../`
- * must never let the app read/expose files outside the project.
- */
-function resolveWithinProject(
-  projectDir: string,
-  candidate: string,
-  label: string
-): { ok: true; path: ResolvedPath } | { ok: false; error: string } {
-  const abs = resolve(projectDir, candidate)
-  const rel = relative(projectDir, abs)
-  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
-    return { ok: false, error: `${label} "${candidate}" resolves outside the project directory and was rejected.` }
-  }
-  return { ok: true, path: { abs, rel } }
 }
 
 /**

@@ -64,6 +64,28 @@ export type AgentEvent =
   | { type: 'error'; messageId?: string; message: string }
 
 // ---------------------------------------------------------------------------
+// Permission gate (canUseTool approval card)
+// ---------------------------------------------------------------------------
+
+/** Pushed main -> renderer when a tool call falls outside the auto-allow policy. */
+export interface PermissionRequestPayload {
+  requestId: string
+  toolName: string
+  summary: string
+}
+
+/** Sent renderer -> main with the user's Allow/Deny decision for a pending request. */
+export interface PermissionRespondRequest {
+  requestId: string
+  allow: boolean
+}
+
+export interface PermissionRespondResponse {
+  /** False if `requestId` was unknown or already resolved (e.g. it timed out first). */
+  acknowledged: boolean
+}
+
+// ---------------------------------------------------------------------------
 // Model display (M3 display_model MCP tool)
 // ---------------------------------------------------------------------------
 
@@ -106,6 +128,8 @@ export const IPC = {
   setupProgress: 'setup:progress',
   agentSendMessage: 'agent:sendMessage',
   agentEvent: 'agent:event',
+  agentPermissionRequest: 'agent:permissionRequest',
+  agentPermissionRespond: 'agent:permissionRespond',
   modelDisplayed: 'model:displayed',
   modelLoadSample: 'model:loadSample',
   modelExport: 'model:export'

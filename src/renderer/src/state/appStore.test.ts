@@ -8,6 +8,7 @@ function resetStore(): void {
     model: null,
     selection: null,
     selectMode: false,
+    pendingPermission: null,
     setupStatus: {
       claudeCli: { state: 'unchecked', detail: 'Not checked yet' },
       claudeAuth: { state: 'unchecked', detail: 'Not checked yet' },
@@ -115,5 +116,24 @@ describe('appStore', () => {
     })
 
     expect(useAppStore.getState().selection).toBeNull()
+  })
+
+  it('sets and clears the pending permission request', () => {
+    expect(useAppStore.getState().pendingPermission).toBeNull()
+
+    useAppStore.getState().setPendingPermission({
+      requestId: 'perm-1-1',
+      toolName: 'Write',
+      summary: 'Write to /Users/x/Desktop/foo.py (outside the project folder)'
+    })
+
+    expect(useAppStore.getState().pendingPermission).toEqual({
+      requestId: 'perm-1-1',
+      toolName: 'Write',
+      summary: 'Write to /Users/x/Desktop/foo.py (outside the project folder)'
+    })
+
+    useAppStore.getState().setPendingPermission(null)
+    expect(useAppStore.getState().pendingPermission).toBeNull()
   })
 })

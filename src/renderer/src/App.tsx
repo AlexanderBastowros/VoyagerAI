@@ -15,10 +15,12 @@ export function App(): React.JSX.Element {
   const applyAgentEvent = useAppStore((state) => state.applyAgentEvent)
   const addMessage = useAppStore((state) => state.addMessage)
   const setModel = useAppStore((state) => state.setModel)
+  const setPendingPermission = useAppStore((state) => state.setPendingPermission)
 
   // Top-level subscriptions to main-process pushes: streamed agent events
   // feed the chat, model:displayed feeds the viewer (which lives in a ref
-  // shared with Toolbar/Viewport).
+  // shared with Toolbar/Viewport), and permission requests surface the
+  // Allow/Deny card in ChatPanel.
   useEffect(() => {
     const unsubscribeEvents = window.voyager.agent.onEvent(applyAgentEvent)
     const unsubscribeModel = window.voyager.model.onDisplayed((payload) => {
@@ -32,11 +34,13 @@ export function App(): React.JSX.Element {
       })
       addMessage({ role: 'system-status', text: `Model v${payload.iteration} displayed: ${payload.summary}` })
     })
+    const unsubscribePermission = window.voyager.agent.onPermissionRequest(setPendingPermission)
     return () => {
       unsubscribeEvents()
       unsubscribeModel()
+      unsubscribePermission()
     }
-  }, [applyAgentEvent, addMessage, setModel])
+  }, [applyAgentEvent, addMessage, setModel, setPendingPermission])
 
   return (
     <div className="app-shell">
