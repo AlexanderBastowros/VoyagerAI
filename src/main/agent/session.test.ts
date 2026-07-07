@@ -179,6 +179,8 @@ interface Harness {
   models: ModelDisplayedPayload[]
   /** Returns the `canUseTool` handler the session actually passed to `queryFn`'s options. */
   getCanUseTool: () => CanUseTool
+  /** Returns the full options object the session actually passed to `queryFn`, if any. */
+  getCapturedOptions: () => Options | undefined
 }
 
 interface HarnessOptions {
@@ -240,7 +242,8 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     getCanUseTool: () => {
       if (!capturedOptions?.canUseTool) throw new Error('canUseTool was not set on the query() options')
       return capturedOptions.canUseTool
-    }
+    },
+    getCapturedOptions: () => capturedOptions
   }
 }
 
@@ -292,6 +295,14 @@ describe('AgentSession', () => {
     const second = await h.session.sendMessage('make it 25mm')
     expect(second.accepted).toBe(true)
     await vi.waitFor(() => expect(h.inputs).toHaveLength(2))
+  })
+
+  it('enables adaptive thinking with visible summaries on the query() options', async () => {
+    const h = makeHarness()
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    expect(h.getCapturedOptions()?.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
   })
 
   it('surfaces a session crash as an error event and recovers on the next message', async () => {
