@@ -403,6 +403,10 @@ export class AgentSession {
       // Enable adaptive thinking with visible summaries so the renderer receives thinking_delta
       // stream events (off by default on Opus 4.7/4.8; display defaults to "omitted" = empty text).
       thinking: { type: 'adaptive', display: 'summarized' },
+      // Pin effort to xhigh (adaptive thinking otherwise defaults to "high") so thinking runs
+      // deeper and shows up on essentially every substantive turn, not just when the model
+      // judges it worthwhile - at the cost of somewhat higher latency/token usage.
+      effort: 'xhigh',
       env: { ...baseEnv, PATH: `${venvBin}${delimiter}${baseEnv.PATH ?? ''}` },
       ...(resume ? { resume } : {}),
       ...(cliPath ? { pathToClaudeCodeExecutable: cliPath } : {})

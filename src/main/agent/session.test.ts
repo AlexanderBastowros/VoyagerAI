@@ -303,6 +303,7 @@ describe('AgentSession', () => {
     await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
 
     expect(h.getCapturedOptions()?.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(h.getCapturedOptions()?.effort).toBe('xhigh')
   })
 
   it('surfaces a session crash as an error event and recovers on the next message', async () => {
