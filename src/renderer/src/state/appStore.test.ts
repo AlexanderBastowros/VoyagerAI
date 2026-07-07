@@ -9,6 +9,7 @@ function resetStore(): void {
     selection: null,
     selectMode: false,
     pendingPermission: null,
+    thinkingText: '',
     setupStatus: {
       claudeCli: { state: 'unchecked', detail: 'Not checked yet' },
       claudeAuth: { state: 'unchecked', detail: 'Not checked yet' },
@@ -135,5 +136,20 @@ describe('appStore', () => {
 
     useAppStore.getState().setPendingPermission(null)
     expect(useAppStore.getState().pendingPermission).toBeNull()
+  })
+
+  it('accumulates thinking-delta text as ephemeral state and clears it on message-complete', () => {
+    expect(useAppStore.getState().thinkingText).toBe('')
+
+    useAppStore.getState().applyAgentEvent({ type: 'thinking-delta', messageId: 'turn-1', delta: 'abc' })
+    expect(useAppStore.getState().thinkingText).toBe('abc')
+    expect(useAppStore.getState().messages).toHaveLength(0)
+
+    useAppStore.getState().applyAgentEvent({ type: 'thinking-delta', messageId: 'turn-1', delta: 'def' })
+    expect(useAppStore.getState().thinkingText).toBe('abcdef')
+    expect(useAppStore.getState().messages).toHaveLength(0)
+
+    useAppStore.getState().applyAgentEvent({ type: 'message-complete', messageId: 'turn-1' })
+    expect(useAppStore.getState().thinkingText).toBe('')
   })
 })

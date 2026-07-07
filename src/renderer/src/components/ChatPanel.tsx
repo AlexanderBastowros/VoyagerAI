@@ -25,7 +25,13 @@ export function ChatPanel(): React.JSX.Element {
   const setAgentBusy = useAppStore((state) => state.setAgentBusy)
   const pendingPermission = useAppStore((state) => state.pendingPermission)
   const setPendingPermission = useAppStore((state) => state.setPendingPermission)
+  const thinkingText = useAppStore((state) => state.thinkingText)
   const [draft, setDraft] = useState('')
+
+  // Rolling last-5-lines window of the current turn's thinking text. Trim
+  // trailing whitespace first so a trailing newline doesn't count as a blank
+  // 6th line and push a real line off the top.
+  const thinkingLines = thinkingText.trimEnd().split('\n').slice(-5).join('\n')
 
   // Input unlocks once all three setup checks (CLI, sign-in, Python env) are
   // ready, and re-locks while Claude is working on a turn.
@@ -109,6 +115,11 @@ export function ChatPanel(): React.JSX.Element {
             </div>
           </div>
         ))}
+        {thinkingLines.length > 0 && (
+          <div className="chat-thinking">
+            <div className="chat-thinking-text">{thinkingLines}</div>
+          </div>
+        )}
         {agentBusy && <div className="chat-working-indicator">Claude is working…</div>}
       </div>
       {pendingPermission && (

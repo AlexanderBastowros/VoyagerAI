@@ -38,6 +38,30 @@ describe('translateSdkMessage', () => {
     expect(t.events).toEqual([{ type: 'text-delta', messageId: 'turn-1', delta: 'Hello' }])
   })
 
+  it('turns top-level thinking deltas into thinking-delta events', () => {
+    const t = translateSdkMessage(
+      msg({
+        type: 'stream_event',
+        parent_tool_use_id: null,
+        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'Let me think' } }
+      }),
+      'turn-1'
+    )
+    expect(t.events).toEqual([{ type: 'thinking-delta', messageId: 'turn-1', delta: 'Let me think' }])
+  })
+
+  it('suppresses thinking deltas from nested tool contexts', () => {
+    const t = translateSdkMessage(
+      msg({
+        type: 'stream_event',
+        parent_tool_use_id: 'tool-1',
+        event: { type: 'content_block_delta', delta: { type: 'thinking_delta', thinking: 'nested' } }
+      }),
+      'turn-1'
+    )
+    expect(t.events).toEqual([])
+  })
+
   it('suppresses deltas from nested tool contexts', () => {
     const t = translateSdkMessage(
       msg({

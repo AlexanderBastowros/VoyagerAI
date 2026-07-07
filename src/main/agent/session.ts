@@ -197,11 +197,16 @@ export function translateSdkMessage(message: SDKMessage, messageId: string): Tra
 
     case 'stream_event': {
       const event = message.event
-      if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+      if (event.type === 'content_block_delta') {
         // Deltas from subagent/tool-nested contexts would duplicate top-level
-        // text; only surface top-level assistant prose.
+        // text; only surface top-level assistant prose (and thinking).
         if (message.parent_tool_use_id === null) {
-          return { events: [{ type: 'text-delta', messageId, delta: event.delta.text }] }
+          if (event.delta.type === 'text_delta') {
+            return { events: [{ type: 'text-delta', messageId, delta: event.delta.text }] }
+          }
+          if (event.delta.type === 'thinking_delta') {
+            return { events: [{ type: 'thinking-delta', messageId, delta: event.delta.thinking }] }
+          }
         }
       }
       return { events: [] }

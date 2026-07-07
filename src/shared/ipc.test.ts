@@ -4,6 +4,7 @@ import { IPC, isAgentEvent, isSetupCheckState } from './ipc'
 describe('isAgentEvent', () => {
   it('accepts every known agent event shape', () => {
     expect(isAgentEvent({ type: 'text-delta', messageId: 'a', delta: 'hi' })).toBe(true)
+    expect(isAgentEvent({ type: 'thinking-delta', messageId: 'a', delta: 'hmm' })).toBe(true)
     expect(
       isAgentEvent({ type: 'tool-activity', messageId: 'a', toolName: 'display_model', detail: 'x' })
     ).toBe(true)

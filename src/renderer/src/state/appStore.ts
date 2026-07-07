@@ -60,6 +60,12 @@ export interface AppState {
   agentStreamIds: Record<string, string>
   /** The out-of-policy tool call currently awaiting an Allow/Deny decision, if any. */
   pendingPermission: PermissionRequestPayload | null
+  /**
+   * The current turn's rolling extended-thinking text. Ephemeral UI-only
+   * state (never added to `messages`) - the UI shows only the last few lines
+   * and it clears back to `''` when the turn ends (message-complete/error).
+   */
+  thinkingText: string
 
   /** Appends a new message and returns its generated id (for later streaming updates). */
   addMessage: (message: Omit<ChatMessage, 'id' | 'createdAt'>) => string
@@ -89,6 +95,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   agentBusy: false,
   agentStreamIds: {},
   pendingPermission: null,
+  thinkingText: '',
 
   addMessage: (message) => {
     const id = createMessageId()
@@ -130,6 +137,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         set((s) => ({ agentStreamIds: { ...s.agentStreamIds, [event.messageId]: id } }))
         return
       }
+      case 'thinking-delta': {
+        set((s) => ({ thinkingText: s.thinkingText + event.delta }))
+        return
+      }
       case 'tool-activity': {
         // Collapse consecutive duplicates (e.g. repeated Bash "Running the
         // parametric script" activity) into a single status line.
@@ -141,14 +152,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       case 'message-complete': {
         const streaming = state.agentStreamIds[event.messageId]
         if (streaming) state.completeMessage(streaming)
-        set({ agentBusy: false })
+        set({ agentBusy: false, thinkingText: '' })
         return
       }
       case 'error': {
         const streaming = event.messageId ? state.agentStreamIds[event.messageId] : undefined
         if (streaming) state.completeMessage(streaming)
         state.addMessage({ role: 'system-status', text: `⚠ ${event.message}` })
-        set({ agentBusy: false })
+        set({ agentBusy: false, thinkingText: '' })
         return
       }
     }
