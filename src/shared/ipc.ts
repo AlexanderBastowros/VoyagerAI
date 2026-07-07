@@ -78,6 +78,24 @@ export interface ModelDisplayedPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Model export (M5 Export STL/STEP)
+// ---------------------------------------------------------------------------
+
+export type ExportFormat = 'stl' | 'step'
+
+export interface ExportModelRequest {
+  format: ExportFormat
+}
+
+export interface ExportModelResponse {
+  saved: boolean
+  /** Destination path the file was written to. Only set when `saved` is true. */
+  path?: string
+  /** Human-readable reason the export could not be saved. Omitted on user-cancel. */
+  reason?: string
+}
+
+// ---------------------------------------------------------------------------
 // Channel names
 // ---------------------------------------------------------------------------
 
@@ -89,7 +107,8 @@ export const IPC = {
   agentSendMessage: 'agent:sendMessage',
   agentEvent: 'agent:event',
   modelDisplayed: 'model:displayed',
-  modelLoadSample: 'model:loadSample'
+  modelLoadSample: 'model:loadSample',
+  modelExport: 'model:export'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

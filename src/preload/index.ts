@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
+  ExportModelRequest,
+  ExportModelResponse,
   ModelDisplayedPayload,
   SendMessageRequest,
   SendMessageResponse,
@@ -28,7 +30,9 @@ const api: VoyagerApi = {
   },
   model: {
     loadSample: (): Promise<ArrayBuffer> => ipcRenderer.invoke(IPC.modelLoadSample),
-    onDisplayed: (callback) => subscribe<ModelDisplayedPayload>(IPC.modelDisplayed, callback)
+    onDisplayed: (callback) => subscribe<ModelDisplayedPayload>(IPC.modelDisplayed, callback),
+    export: (request: ExportModelRequest): Promise<ExportModelResponse> =>
+      ipcRenderer.invoke(IPC.modelExport, request)
   }
 }
 

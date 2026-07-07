@@ -19,6 +19,7 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   const selectMode = useAppStore((state) => state.selectMode)
   const selection = useAppStore((state) => state.selection)
   const setSelection = useAppStore((state) => state.setSelection)
+  const model = useAppStore((state) => state.model)
 
   useEffect(() => {
     const container = containerRef.current
@@ -66,6 +67,9 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   return (
     <div className={selectMode ? 'viewport viewport-select-mode' : 'viewport'} ref={containerRef}>
       <div className="selection-marquee" ref={marqueeRef} />
+      {!model && (
+        <div className="viewport-empty-hint">Ask Claude for a part and it will appear here</div>
+      )}
     </div>
   )
 }

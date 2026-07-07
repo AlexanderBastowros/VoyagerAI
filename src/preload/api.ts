@@ -1,5 +1,7 @@
 import type {
   AgentEvent,
+  ExportModelRequest,
+  ExportModelResponse,
   ModelDisplayedPayload,
   SendMessageRequest,
   SendMessageResponse,
@@ -28,5 +30,7 @@ export interface VoyagerApi {
     loadSample: () => Promise<ArrayBuffer>
     /** Subscribe to model-displayed events; returns an unsubscribe function. */
     onDisplayed: (callback: (payload: ModelDisplayedPayload) => void) => () => void
+    /** Prompts a native save dialog and copies the latest iteration's STL/STEP there. */
+    export: (request: ExportModelRequest) => Promise<ExportModelResponse>
   }
 }

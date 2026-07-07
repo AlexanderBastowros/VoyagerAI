@@ -1,15 +1,18 @@
-import { app, BrowserWindow, ipcMain } from 'electron'
-import { readFile } from 'node:fs/promises'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { copyFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
+  ExportModelRequest,
+  ExportModelResponse,
   ModelDisplayedPayload,
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus
 } from '../shared/ipc'
 import { AgentSession } from './agent/session'
+import { resolveExportSource } from './projects/exportResolver'
 import { ProjectStore } from './projects/store'
 import { EnvManager } from './python/envManager'
 import { ClaudeChecker } from './setup/claudeChecks'
@@ -97,6 +100,40 @@ export function registerIpcHandlers(): void {
     // Node's shared buffer pool.
     return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
   })
+
+  ipcMain.handle(
+    IPC.modelExport,
+    async (event, request: ExportModelRequest): Promise<ExportModelResponse> => {
+      // latestIteration() awaits ensureProject() internally, so getProjectDir()
+      // below is guaranteed to have a resolved project by the time we reach it.
+      const latest = await projectStore.latestIteration()
+      const resolved = resolveExportSource(latest, projectStore.getProjectDir(), request.format)
+      if (!resolved.ok) return { saved: false, reason: resolved.reason }
+
+      const filters =
+        request.format === 'step'
+          ? [{ name: 'STEP', extensions: ['step', 'stp'] }]
+          : [{ name: 'STL', extensions: ['stl'] }]
+
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+      const dialogOptions = { defaultPath: resolved.fileName, filters }
+      const { canceled, filePath } = win
+        ? await dialog.showSaveDialog(win, dialogOptions)
+        : await dialog.showSaveDialog(dialogOptions)
+      if (canceled || !filePath) return { saved: false }
+
+      try {
+        await copyFile(resolved.absPath, filePath)
+      } catch (err) {
+        return {
+          saved: false,
+          reason: err instanceof Error ? `Could not save the file: ${err.message}` : 'Could not save the file.'
+        }
+      }
+
+      return { saved: true, path: filePath }
+    }
+  )
 
   ipcMain.handle(IPC.setupGetStatus, async (): Promise<SetupStatus> => {
     // Return the current status immediately; preflight (re)runs in the

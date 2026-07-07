@@ -1,6 +1,11 @@
-# electron-builder configuration - config only for Milestone 1, packaging
-# lands in Milestone 5. Not invoked by any npm script yet.
-appId: com.voyagerai.desktop
+# electron-builder configuration. Config-only in Milestone 1; Milestone 5 wires
+# it up to real npm scripts (`npm run package:mac` / `npm run package:dir`,
+# see package.json) and fills in the mac-specific packaging details below.
+#
+# macOS-only for v1: unsigned dev builds (`identity: null`), no notarization.
+# Signing + notarization, and Windows/Linux builds, are v2 backlog - see
+# README.md "Known limitations".
+appId: com.voyagerai.app
 productName: Voyager AI
 directories:
   buildResources: build
@@ -11,9 +16,42 @@ files:
 extraResources:
   - from: resources
     to: .
+
+# CRITICAL: the Claude Agent SDK (@anthropic-ai/claude-agent-sdk) spawns a
+# native `claude` CLI binary as a child process at runtime - either the path
+# AgentSession resolves via ClaudeChecker (a real binary outside the app
+# bundle, e.g. from a global `npm install -g @anthropic-ai/claude-code`), or,
+# if that's ever unavailable, the SDK's own fallback: it `require.resolve`s a
+# per-platform companion package (`@anthropic-ai/claude-agent-sdk-<platform>-
+# <arch>`, e.g. claude-agent-sdk-darwin-arm64 / claude-agent-sdk-darwin-x64 -
+# see that package's optionalDependencies) and spawns the `claude` executable
+# it ships. Electron's asar packs node_modules into a single archive file, and
+# the OS cannot exec() a binary that lives inside an archive - only real files
+# on disk can be spawned. Everything under these package directories (and the
+# main SDK package itself, so its own `require.resolve` of the companion
+# package still finds a real path) must be extracted out of app.asar into
+# app.asar.unpacked at build time, or Claude Agent SDK sessions will fail to
+# start in the packaged app even though `npm run dev` works fine unpacked.
+asarUnpack:
+  - node_modules/@anthropic-ai/claude-agent-sdk/**
+  - node_modules/@anthropic-ai/claude-agent-sdk-*/**
+
 mac:
   category: public.app-category.developer-tools
-  target: dmg
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
+  # Unsigned dev packaging for v1 - electron-builder will not look for (or
+  # require) a Developer ID certificate. Code signing + notarization are
+  # tracked as v2 backlog (see README.md); until then, first launch of the
+  # unsigned .app requires right-click > Open (Gatekeeper) on macOS.
+  identity: null
 win:
   target: nsis
 linux:
