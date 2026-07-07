@@ -20,15 +20,14 @@ export function ChatPanel(): React.JSX.Element {
   const addMessage = useAppStore((state) => state.addMessage)
   const selection = useAppStore((state) => state.selection)
   const setupStatus = useAppStore((state) => state.setupStatus)
+  const agentBusy = useAppStore((state) => state.agentBusy)
+  const setAgentBusy = useAppStore((state) => state.setAgentBusy)
   const [draft, setDraft] = useState('')
-  const [sending, setSending] = useState(false)
 
-  // M2: input is disabled with an explanatory reason until the Python
-  // environment is ready (see setupSelectors.deriveChatDisabledReason). M3
-  // will extend that derivation to also require the agent session/auth
-  // checks to be ready.
+  // Input unlocks once all three setup checks (CLI, sign-in, Python env) are
+  // ready, and re-locks while Claude is working on a turn.
   const disabledReason = deriveChatDisabledReason(setupStatus)
-  const isDisabled = disabledReason !== null || sending
+  const isDisabled = disabledReason !== null || agentBusy
 
   async function sendDraft(): Promise<void> {
     const text = draft.trim()
@@ -36,24 +35,28 @@ export function ChatPanel(): React.JSX.Element {
 
     setDraft('')
     addMessage({ role: 'user', text })
+    setAgentBusy(true)
 
-    setSending(true)
     try {
       const response = await window.voyager.agent.sendMessage({
         text,
         selectionContext: selection
       })
-      addMessage({
-        role: 'system-status',
-        text: response.reason ?? 'Agent not connected yet (Milestone 3)'
-      })
+      if (!response.accepted) {
+        setAgentBusy(false)
+        addMessage({
+          role: 'system-status',
+          text: response.reason ?? 'The agent could not accept the message.'
+        })
+      }
+      // On accept, streamed agent:event messages drive the UI from here;
+      // agentBusy clears on message-complete / error.
     } catch (err) {
+      setAgentBusy(false)
       addMessage({
         role: 'system-status',
         text: err instanceof Error ? `Failed to reach agent: ${err.message}` : 'Failed to reach agent'
       })
-    } finally {
-      setSending(false)
     }
   }
 
@@ -70,8 +73,8 @@ export function ChatPanel(): React.JSX.Element {
       <div className="chat-messages">
         {messages.length === 0 && (
           <div className="chat-empty-state">
-            Describe the part you want to model. Chat is not yet wired to the Claude Agent SDK
-            (Milestone 3).
+            Describe the part you want to 3D print — for example “a wall bracket for a 32mm
+            curtain rod”. Claude will ask about your printer and dimensions, then model it.
           </div>
         )}
         {messages.map((message) => (
@@ -83,6 +86,7 @@ export function ChatPanel(): React.JSX.Element {
             </div>
           </div>
         ))}
+        {agentBusy && <div className="chat-working-indicator">Claude is working…</div>}
       </div>
       <div className="chat-input-row">
         <textarea

@@ -2,8 +2,17 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../shared/ipc'
-import type { SendMessageRequest, SendMessageResponse, SetupCheck, SetupStatus } from '../shared/ipc'
+import type {
+  AgentEvent,
+  ModelDisplayedPayload,
+  SendMessageRequest,
+  SendMessageResponse,
+  SetupStatus
+} from '../shared/ipc'
+import { AgentSession } from './agent/session'
+import { ProjectStore } from './projects/store'
 import { EnvManager } from './python/envManager'
+import { ClaudeChecker } from './setup/claudeChecks'
 import { runPreflight } from './setup/preflight'
 
 /**
@@ -16,17 +25,13 @@ function resourcePath(...segments: string[]): string {
   return join(base, ...segments)
 }
 
-const UNIMPLEMENTED_CHECK: SetupCheck = {
-  state: 'unchecked',
-  detail: 'Not implemented yet'
+function broadcast(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(channel, payload)
+  }
 }
 
-/**
- * Registers all main-process IPC handlers. `model:loadSample` and the
- * `setup:*` channels (pythonEnv check) are fully implemented; `claudeCli` /
- * `claudeAuth` checks and `agent:sendMessage` return clearly-marked
- * placeholder data until Milestone 3.
- */
+/** Registers all main-process IPC handlers. */
 export function registerIpcHandlers(): void {
   const envManager = new EnvManager({
     baseDir: join(app.getPath('userData'), 'pyenv'),
@@ -34,18 +39,32 @@ export function registerIpcHandlers(): void {
     smokeTestScriptPath: resourcePath('python', 'smoke_test.py')
   })
 
+  const claudeChecker = new ClaudeChecker()
+
+  const projectStore = new ProjectStore({
+    baseDir: join(app.getPath('userData'), 'projects'),
+    skillSourceDir: resourcePath('skills', 'printable-cad')
+  })
+
+  const agentSession = new AgentSession({
+    projectStore,
+    pythonPath: () => envManager.pythonPath(),
+    claudeCliPath: () => claudeChecker.cliPath(),
+    emitAgentEvent: (event: AgentEvent) => broadcast(IPC.agentEvent, event),
+    emitModelDisplayed: (payload: ModelDisplayedPayload) => broadcast(IPC.modelDisplayed, payload)
+  })
+  app.on('will-quit', () => agentSession.dispose())
+
   let cachedStatus: SetupStatus = {
-    claudeCli: { ...UNIMPLEMENTED_CHECK, detail: 'Claude CLI check arrives in Milestone 3' },
-    claudeAuth: { ...UNIMPLEMENTED_CHECK, detail: 'Claude auth check arrives in Milestone 3' },
+    claudeCli: { state: 'unchecked', detail: 'Not checked yet' },
+    claudeAuth: { state: 'unchecked', detail: 'Not checked yet' },
     pythonEnv: { state: 'unchecked', detail: 'Not checked yet' }
   }
   let preflightPromise: Promise<SetupStatus> | null = null
 
   function broadcastProgress(status: SetupStatus): void {
     cachedStatus = status
-    for (const win of BrowserWindow.getAllWindows()) {
-      win.webContents.send(IPC.setupProgress, status)
-    }
+    broadcast(IPC.setupProgress, status)
   }
 
   // Kicks off (or reuses) the single in-flight preflight run. Never runs two
@@ -54,12 +73,21 @@ export function registerIpcHandlers(): void {
   // same run.
   function startPreflight(): Promise<SetupStatus> {
     if (!preflightPromise) {
-      preflightPromise = runPreflight({ envManager }, broadcastProgress).then((status) => {
-        cachedStatus = status
-        return status
-      })
+      preflightPromise = runPreflight({ envManager, claude: claudeChecker }, broadcastProgress).then(
+        (status) => {
+          cachedStatus = status
+          return status
+        }
+      )
     }
     return preflightPromise
+  }
+
+  function setupIncompleteReason(): string | null {
+    if (cachedStatus.claudeCli.state !== 'ready') return 'Claude Code CLI is not ready yet.'
+    if (cachedStatus.claudeAuth.state !== 'ready') return 'Claude sign-in is not ready yet.'
+    if (cachedStatus.pythonEnv.state !== 'ready') return 'The Python environment is not ready yet.'
+    return null
   }
 
   ipcMain.handle(IPC.modelLoadSample, async (): Promise<ArrayBuffer> => {
@@ -82,12 +110,15 @@ export function registerIpcHandlers(): void {
     return startPreflight()
   })
 
-  // implemented in M3 (Claude Agent SDK session)
   ipcMain.handle(
     IPC.agentSendMessage,
-    async (_event, _request: SendMessageRequest): Promise<SendMessageResponse> => ({
-      accepted: false,
-      reason: 'Agent not connected yet (Milestone 3)'
-    })
+    async (_event, request: SendMessageRequest): Promise<SendMessageResponse> => {
+      // The renderer gates the input on setup state too; this is the
+      // authoritative backstop (e.g. a message raced against a failing retry).
+      const notReady = setupIncompleteReason()
+      if (notReady) return { accepted: false, reason: notReady }
+
+      return agentSession.sendMessage(request.text, request.selectionContext ?? null)
+    }
   )
 }

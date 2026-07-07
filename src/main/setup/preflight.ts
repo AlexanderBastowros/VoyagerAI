@@ -1,16 +1,15 @@
 import type { SetupCheck, SetupStatus } from '../../shared/ipc'
 import type { EnvManager } from '../python/envManager'
+import type { ClaudeChecker } from './claudeChecks'
 
 /**
  * One entry per first-run check. `id` picks which field of `SetupStatus`
  * the check's result is written into; `run` performs the check, optionally
  * reporting intermediate progress before settling.
  *
- * M2 implements `pythonEnv` for real (delegated to EnvManager). `claudeCli`
- * and `claudeAuth` are clearly-marked M3 stubs. M3 drops in real
- * implementations by replacing those two `run` functions in
- * `createPreflightChecks` below - `runPreflight` and every caller (IPC
- * wiring, tests) stay untouched.
+ * All three checks are real: claudeCli / claudeAuth delegate to
+ * `ClaudeChecker` (CLI discovery + `claude auth status`), pythonEnv to
+ * `EnvManager`.
  */
 export interface PreflightCheck {
   id: keyof SetupStatus
@@ -19,6 +18,7 @@ export interface PreflightCheck {
 
 export interface PreflightDeps {
   envManager: Pick<EnvManager, 'ensureReady'>
+  claude: Pick<ClaudeChecker, 'checkCli' | 'checkAuth'>
 }
 
 const UNCHECKED: SetupCheck = { state: 'unchecked', detail: 'Not checked yet' }
@@ -26,21 +26,24 @@ const UNCHECKED: SetupCheck = { state: 'unchecked', detail: 'Not checked yet' }
 /**
  * Builds the ordered list of first-run checks. This order is also the order
  * `runPreflight` executes them in and the order SetupScreen renders its
- * checklist rows in.
+ * checklist rows in. claudeCli must run before claudeAuth (the auth probe
+ * uses the CLI path the first check resolved).
  */
 export function createPreflightChecks(deps: PreflightDeps): PreflightCheck[] {
   return [
     {
-      // M3 TODO: replace with a real check for the Claude CLI binary
-      // (existence + version). Non-blocking stub until then, see
-      // src/renderer/src/state/setupSelectors.ts.
       id: 'claudeCli',
-      run: async () => ({ ...UNCHECKED, detail: 'Claude CLI check arrives in Milestone 3' })
+      run: async (onProgress) => {
+        onProgress({ state: 'in_progress', detail: 'Locating the Claude Code CLI…' })
+        return deps.claude.checkCli()
+      }
     },
     {
-      // M3 TODO: replace with a real Claude sign-in/auth check.
       id: 'claudeAuth',
-      run: async () => ({ ...UNCHECKED, detail: 'Claude auth check arrives in Milestone 3' })
+      run: async (onProgress) => {
+        onProgress({ state: 'in_progress', detail: 'Checking Claude sign-in…' })
+        return deps.claude.checkAuth()
+      }
     },
     {
       id: 'pythonEnv',

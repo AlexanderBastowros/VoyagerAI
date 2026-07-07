@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { SelectionSummary, SetupCheck, SetupStatus } from '../../../shared/ipc'
+import type { AgentEvent, SelectionSummary, SetupCheck, SetupStatus } from '../../../shared/ipc'
 
 export type ChatRole = 'user' | 'assistant' | 'system-status'
 
@@ -43,6 +43,13 @@ export interface AppState {
   model: ModelInfo | null
   setupStatus: SetupStatus
   selection: SelectionSummary | null
+  /** True from an accepted send until the agent's message-complete/error event. */
+  agentBusy: boolean
+  /**
+   * Maps the agent's stream messageId (e.g. `turn-3`) to the chat message id
+   * its streamed text is accumulating into.
+   */
+  agentStreamIds: Record<string, string>
 
   /** Appends a new message and returns its generated id (for later streaming updates). */
   addMessage: (message: Omit<ChatMessage, 'id' | 'createdAt'>) => string
@@ -53,13 +60,18 @@ export interface AppState {
   setModel: (model: ModelInfo | null) => void
   setSetupStatus: (status: SetupStatus) => void
   setSelection: (selection: SelectionSummary | null) => void
+  setAgentBusy: (busy: boolean) => void
+  /** Folds one streamed `agent:event` into the chat state. */
+  applyAgentEvent: (event: AgentEvent) => void
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   messages: [],
   model: null,
   setupStatus: initialSetupStatus(),
   selection: null,
+  agentBusy: false,
+  agentStreamIds: {},
 
   addMessage: (message) => {
     const id = createMessageId()
@@ -83,5 +95,43 @@ export const useAppStore = create<AppState>((set) => ({
 
   setModel: (model) => set({ model }),
   setSetupStatus: (setupStatus) => set({ setupStatus }),
-  setSelection: (selection) => set({ selection })
+  setSelection: (selection) => set({ selection }),
+  setAgentBusy: (agentBusy) => set({ agentBusy }),
+
+  applyAgentEvent: (event) => {
+    const state = get()
+    switch (event.type) {
+      case 'text-delta': {
+        const existing = state.agentStreamIds[event.messageId]
+        if (existing) {
+          state.appendToMessage(existing, event.delta)
+          return
+        }
+        const id = state.addMessage({ role: 'assistant', text: event.delta, streaming: true })
+        set((s) => ({ agentStreamIds: { ...s.agentStreamIds, [event.messageId]: id } }))
+        return
+      }
+      case 'tool-activity': {
+        // Collapse consecutive duplicates (e.g. repeated Bash "Running the
+        // parametric script" activity) into a single status line.
+        const last = state.messages.at(-1)
+        if (last?.role === 'system-status' && last.text === event.detail) return
+        state.addMessage({ role: 'system-status', text: event.detail })
+        return
+      }
+      case 'message-complete': {
+        const streaming = state.agentStreamIds[event.messageId]
+        if (streaming) state.completeMessage(streaming)
+        set({ agentBusy: false })
+        return
+      }
+      case 'error': {
+        const streaming = event.messageId ? state.agentStreamIds[event.messageId] : undefined
+        if (streaming) state.completeMessage(streaming)
+        state.addMessage({ role: 'system-status', text: `⚠ ${event.message}` })
+        set({ agentBusy: false })
+        return
+      }
+    }
+  }
 }))
