@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { useAppStore } from '../state/appStore'
 import type { ChatMessage } from '../state/appStore'
+import { deriveChatDisabledReason } from '../state/setupSelectors'
 
 function messageClassName(role: ChatMessage['role']): string {
   switch (role) {
@@ -14,23 +15,20 @@ function messageClassName(role: ChatMessage['role']): string {
   }
 }
 
-/**
- * M1 note: the input stays enabled so the send -> IPC -> stub -> echo round
- * trip can be exercised end to end. M2/M3 will set this from real setup /
- * session readiness (see appStore.setupStatus) instead of a hardcoded null,
- * disabling the input with an explanatory placeholder until the agent
- * session is actually available.
- */
-const INPUT_DISABLED_REASON: string | null = null
-
 export function ChatPanel(): React.JSX.Element {
   const messages = useAppStore((state) => state.messages)
   const addMessage = useAppStore((state) => state.addMessage)
   const selection = useAppStore((state) => state.selection)
+  const setupStatus = useAppStore((state) => state.setupStatus)
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
 
-  const isDisabled = INPUT_DISABLED_REASON !== null || sending
+  // M2: input is disabled with an explanatory reason until the Python
+  // environment is ready (see setupSelectors.deriveChatDisabledReason). M3
+  // will extend that derivation to also require the agent session/auth
+  // checks to be ready.
+  const disabledReason = deriveChatDisabledReason(setupStatus)
+  const isDisabled = disabledReason !== null || sending
 
   async function sendDraft(): Promise<void> {
     const text = draft.trim()
@@ -93,7 +91,7 @@ export function ChatPanel(): React.JSX.Element {
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           disabled={isDisabled}
-          placeholder={INPUT_DISABLED_REASON ?? 'Message Voyager AI... (Enter to send)'}
+          placeholder={disabledReason ?? 'Message Voyager AI... (Enter to send)'}
           rows={3}
         />
         <button

@@ -1,5 +1,6 @@
 import { useRef } from 'react'
 import { ChatPanel } from './components/ChatPanel'
+import { SetupScreen } from './components/SetupScreen'
 import { Toolbar } from './components/Toolbar'
 import { Viewport } from './components/Viewport'
 import type { ModelViewer } from './three/viewer'
@@ -17,6 +18,8 @@ export function App(): React.JSX.Element {
           <Viewport viewerRef={viewerRef} />
         </div>
       </div>
+      {/* Full-viewport overlay; renders null once setup is complete (see SetupScreen). */}
+      <SetupScreen />
     </div>
   )
 }

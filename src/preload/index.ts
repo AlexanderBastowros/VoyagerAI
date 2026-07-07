@@ -18,6 +18,7 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): () => vo
 const api: VoyagerApi = {
   setup: {
     getStatus: (): Promise<SetupStatus> => ipcRenderer.invoke(IPC.setupGetStatus),
+    retry: (): Promise<SetupStatus> => ipcRenderer.invoke(IPC.setupRetry),
     onProgress: (callback) => subscribe<SetupStatus>(IPC.setupProgress, callback)
   },
   agent: {

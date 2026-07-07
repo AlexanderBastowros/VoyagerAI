@@ -1,8 +1,10 @@
-import { app, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../shared/ipc'
 import type { SendMessageRequest, SendMessageResponse, SetupCheck, SetupStatus } from '../shared/ipc'
+import { EnvManager } from './python/envManager'
+import { runPreflight } from './setup/preflight'
 
 /**
  * Resolves a path under the app's `resources/` directory, in both dev (where
@@ -20,12 +22,46 @@ const UNIMPLEMENTED_CHECK: SetupCheck = {
 }
 
 /**
- * Registers all main-process IPC handlers. Only `model:loadSample` is fully
- * implemented in Milestone 1; the rest return clearly-marked placeholder
- * data so the renderer's typed IPC surface (src/preload/api.ts) can be built
- * against the real contract ahead of M2/M3.
+ * Registers all main-process IPC handlers. `model:loadSample` and the
+ * `setup:*` channels (pythonEnv check) are fully implemented; `claudeCli` /
+ * `claudeAuth` checks and `agent:sendMessage` return clearly-marked
+ * placeholder data until Milestone 3.
  */
 export function registerIpcHandlers(): void {
+  const envManager = new EnvManager({
+    baseDir: join(app.getPath('userData'), 'pyenv'),
+    binDir: join(app.getPath('userData'), 'bin'),
+    smokeTestScriptPath: resourcePath('python', 'smoke_test.py')
+  })
+
+  let cachedStatus: SetupStatus = {
+    claudeCli: { ...UNIMPLEMENTED_CHECK, detail: 'Claude CLI check arrives in Milestone 3' },
+    claudeAuth: { ...UNIMPLEMENTED_CHECK, detail: 'Claude auth check arrives in Milestone 3' },
+    pythonEnv: { state: 'unchecked', detail: 'Not checked yet' }
+  }
+  let preflightPromise: Promise<SetupStatus> | null = null
+
+  function broadcastProgress(status: SetupStatus): void {
+    cachedStatus = status
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.setupProgress, status)
+    }
+  }
+
+  // Kicks off (or reuses) the single in-flight preflight run. Never runs two
+  // preflight passes concurrently - repeated `setup:getStatus` invokes (e.g.
+  // from multiple windows, or React effect re-runs) just await/observe the
+  // same run.
+  function startPreflight(): Promise<SetupStatus> {
+    if (!preflightPromise) {
+      preflightPromise = runPreflight({ envManager }, broadcastProgress).then((status) => {
+        cachedStatus = status
+        return status
+      })
+    }
+    return preflightPromise
+  }
+
   ipcMain.handle(IPC.modelLoadSample, async (): Promise<ArrayBuffer> => {
     const filePath = resourcePath('sample', 'cube.stl')
     const buffer = await readFile(filePath)
@@ -34,12 +70,17 @@ export function registerIpcHandlers(): void {
     return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
   })
 
-  // implemented in M2 (pythonEnv) / M3 (claudeCli, claudeAuth)
-  ipcMain.handle(IPC.setupGetStatus, async (): Promise<SetupStatus> => ({
-    claudeCli: { ...UNIMPLEMENTED_CHECK, detail: 'Claude CLI check arrives in Milestone 3' },
-    claudeAuth: { ...UNIMPLEMENTED_CHECK, detail: 'Claude auth check arrives in Milestone 3' },
-    pythonEnv: { ...UNIMPLEMENTED_CHECK, detail: 'Python env setup arrives in Milestone 2' }
-  }))
+  ipcMain.handle(IPC.setupGetStatus, async (): Promise<SetupStatus> => {
+    // Return the current status immediately; preflight (re)runs in the
+    // background and streams updates via `setup:progress`.
+    void startPreflight()
+    return cachedStatus
+  })
+
+  ipcMain.handle(IPC.setupRetry, async (): Promise<SetupStatus> => {
+    preflightPromise = null
+    return startPreflight()
+  })
 
   // implemented in M3 (Claude Agent SDK session)
   ipcMain.handle(

@@ -14,6 +14,8 @@ import type {
 export interface VoyagerApi {
   setup: {
     getStatus: () => Promise<SetupStatus>
+    /** Forces a fresh setup attempt (e.g. after an error); resolves with the new status. */
+    retry: () => Promise<SetupStatus>
     /** Subscribe to setup progress events; returns an unsubscribe function. */
     onProgress: (callback: (status: SetupStatus) => void) => () => void
   }

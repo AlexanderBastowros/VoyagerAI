@@ -274,3 +274,131 @@ button {
 .viewport canvas {
   display: block;
 }
+
+/* ---------------------------------------------------------------------- */
+/* Setup screen overlay                                                    */
+/* ---------------------------------------------------------------------- */
+
+.setup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 16, 19, 0.82);
+  backdrop-filter: blur(2px);
+}
+
+.setup-card {
+  width: 420px;
+  max-width: calc(100vw - 48px);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+}
+
+.setup-title {
+  margin: 0 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.setup-subtitle {
+  margin: 0 0 18px;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.setup-checklist {
+  list-style: none;
+  margin: 0 0 18px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.setup-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--bg-panel-raised);
+  border: 1px solid var(--border-subtle);
+}
+
+.setup-row-label {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.setup-row-detail {
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+.setup-row-error .setup-row-detail {
+  color: var(--danger);
+}
+
+.setup-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  margin-top: 1px;
+}
+
+.setup-icon-ready {
+  color: #57c785;
+}
+
+.setup-icon-error {
+  color: var(--danger);
+}
+
+.setup-icon-pending {
+  color: var(--text-muted);
+}
+
+.setup-icon-spinner {
+  border: 2px solid var(--border-strong);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  width: 12px;
+  height: 12px;
+  animation: setup-spin 0.8s linear infinite;
+}
+
+@keyframes setup-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.setup-retry-button {
+  background: var(--accent);
+  color: #0f1115;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.setup-retry-button:disabled {
+  background: var(--border-strong);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}

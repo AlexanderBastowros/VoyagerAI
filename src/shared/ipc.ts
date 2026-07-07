@@ -84,6 +84,7 @@ export interface ModelDisplayedPayload {
 /** Keep in sync with src/main/ipc.ts and src/preload/index.ts. */
 export const IPC = {
   setupGetStatus: 'setup:getStatus',
+  setupRetry: 'setup:retry',
   setupProgress: 'setup:progress',
   agentSendMessage: 'agent:sendMessage',
   agentEvent: 'agent:event',
