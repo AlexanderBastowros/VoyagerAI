@@ -1,0 +1,36 @@
+{
+  "name": "voyager-ai",
+  "version": "0.1.0",
+  "description": "Voyager AI - an AI-first 3D modeling app for 3D-printing hobbyists",
+  "main": "./out/main/index.js",
+  "private": true,
+  "author": "Voyager AI",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
+    "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
+    "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "test": "vitest run",
+    "generate:sample-stl": "node scripts/generate-sample-stl.mjs"
+  },
+  "dependencies": {
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "three": "0.185.1",
+    "zustand": "5.0.14"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@types/three": "0.185.0",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "43.0.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "typescript": "6.0.3",
+    "vite": "7.3.6",
+    "vitest": "4.1.10"
+  }
+}

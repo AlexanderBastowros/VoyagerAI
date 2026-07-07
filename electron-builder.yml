@@ -1,0 +1,21 @@
+# electron-builder configuration - config only for Milestone 1, packaging
+# lands in Milestone 5. Not invoked by any npm script yet.
+appId: com.voyagerai.desktop
+productName: Voyager AI
+directories:
+  buildResources: build
+  output: dist
+files:
+  - out/**/*
+  - package.json
+extraResources:
+  - from: resources
+    to: .
+mac:
+  category: public.app-category.developer-tools
+  target: dmg
+win:
+  target: nsis
+linux:
+  target: AppImage
+  category: Graphics
