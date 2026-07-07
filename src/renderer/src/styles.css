@@ -527,6 +527,23 @@ button {
   cursor: not-allowed;
 }
 
+.chat-thinking {
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+  padding: 4px 8px;
+  border-left: 2px solid var(--border-subtle);
+  white-space: pre-wrap;
+  max-height: calc(1.4em * 5);
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, transparent, #000 1.4em);
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 1.4em);
+}
+
+.chat-thinking-text {
+  font-style: italic;
+}
+
 .chat-working-indicator {
   color: var(--text-muted);
   font-size: 12px;

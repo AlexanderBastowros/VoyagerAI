@@ -59,6 +59,7 @@ export interface SendMessageResponse {
 
 export type AgentEvent =
   | { type: 'text-delta'; messageId: string; delta: string }
+  | { type: 'thinking-delta'; messageId: string; delta: string }
   | { type: 'tool-activity'; messageId: string; toolName: string; detail: string }
   | { type: 'message-complete'; messageId: string }
   | { type: 'error'; messageId?: string; message: string }
@@ -147,7 +148,7 @@ export function isSetupCheckState(value: unknown): value is SetupCheckState {
   return typeof value === 'string' && (SETUP_CHECK_STATES as readonly string[]).includes(value)
 }
 
-const AGENT_EVENT_TYPES = ['text-delta', 'tool-activity', 'message-complete', 'error'] as const
+const AGENT_EVENT_TYPES = ['text-delta', 'thinking-delta', 'tool-activity', 'message-complete', 'error'] as const
 
 export function isAgentEvent(value: unknown): value is AgentEvent {
   if (typeof value !== 'object' || value === null) return false
