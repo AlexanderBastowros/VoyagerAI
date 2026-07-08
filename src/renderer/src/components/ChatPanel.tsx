@@ -1,9 +1,27 @@
 import { memo, useEffect, useRef, useState } from 'react'
 import type { ChangeEvent, ClipboardEvent, DragEvent, KeyboardEvent } from 'react'
+import Alert from '@mui/material/Alert'
+import Box from '@mui/material/Box'
+import Button from '@mui/material/Button'
+import Chip from '@mui/material/Chip'
+import CircularProgress from '@mui/material/CircularProgress'
+import IconButton from '@mui/material/IconButton'
+import MenuItem from '@mui/material/MenuItem'
+import Paper from '@mui/material/Paper'
+import Select from '@mui/material/Select'
+import Stack from '@mui/material/Stack'
+import TextField from '@mui/material/TextField'
+import Tooltip from '@mui/material/Tooltip'
+import Typography from '@mui/material/Typography'
+import AttachFileIcon from '@mui/icons-material/AttachFile'
+import HighlightAltIcon from '@mui/icons-material/HighlightAlt'
+import SendIcon from '@mui/icons-material/Send'
+import StopIcon from '@mui/icons-material/Stop'
 import { useAppStore } from '../state/appStore'
 import type { ChatMessage } from '../state/appStore'
 import type { AgentEffort, AgentModel, AgentSettings, ChatAttachment } from '../../../shared/ipc'
 import { deriveChatDisabledReason } from '../state/setupSelectors'
+import { colors } from '../colors'
 import { Markdown } from './Markdown'
 
 const SUPPORTED_IMAGE_TYPES = new Set<string>(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
@@ -27,6 +45,8 @@ const EFFORT_OPTIONS: Array<{ value: AgentEffort; label: string }> = [
  *  a value the agent would have to silently drop. */
 const EFFORT_UNSUPPORTED_MODELS = new Set<AgentModel>(['claude-haiku-4-5'])
 
+const compactSelectSx = { fontSize: 11, maxWidth: 140, '& .MuiSelect-select': { py: 0.5 } }
+
 /** Reads an image `File` into a `ChatAttachment` (base64, no `data:` prefix). Resolves `null`
  *  for a file type the Anthropic API doesn't accept as an image block, so callers can filter it out. */
 function readImageFile(file: File): Promise<ChatAttachment | null> {
@@ -46,14 +66,14 @@ function readImageFile(file: File): Promise<ChatAttachment | null> {
   })
 }
 
-function messageClassName(role: ChatMessage['role']): string {
+function messageRowSx(role: ChatMessage['role']): object {
   switch (role) {
     case 'user':
-      return 'chat-message chat-message-user'
+      return { bgcolor: colors.accentDim, borderColor: colors.accentDim, alignSelf: 'flex-end', color: '#f2f6fc' }
     case 'assistant':
-      return 'chat-message chat-message-assistant'
+      return { bgcolor: colors.bgPanelRaised }
     case 'system-status':
-      return 'chat-message chat-message-system'
+      return { bgcolor: 'transparent', borderStyle: 'dashed', color: 'text.secondary', fontStyle: 'italic' }
   }
 }
 
@@ -67,24 +87,37 @@ const ChatMessageRow = memo(function ChatMessageRow({
 }): React.JSX.Element {
   const textClassName = message.streaming ? 'chat-message-text streaming' : 'chat-message-text'
   return (
-    <div className={messageClassName(message.role)}>
-      <div className="chat-message-role">{message.role}</div>
+    <Paper
+      variant="outlined"
+      sx={{ px: 1.25, py: 1, maxWidth: '90%', ...messageRowSx(message.role) }}
+    >
+      <Typography
+        variant="caption"
+        component="div"
+        sx={{ textTransform: 'uppercase', color: 'text.disabled', mb: 0.25 }}
+      >
+        {message.role}
+      </Typography>
       {message.attachments && message.attachments.length > 0 && (
-        <div className="chat-message-attachments">
+        <Stack direction="row" flexWrap="wrap" gap={0.75} sx={{ mb: 0.75 }}>
           {message.attachments.map((attachment, index) => (
-            <span className="chat-attachment-chip" key={index}>
-              📎 {attachment.name}
-            </span>
+            <Chip key={index} size="small" icon={<AttachFileIcon />} label={attachment.name} />
           ))}
-        </div>
+        </Stack>
       )}
       {(message.text.length > 0 || message.streaming) && (
-        <div className={textClassName}>
+        <Box
+          className={textClassName}
+          sx={{
+            lineHeight: 1.45,
+            whiteSpace: message.role === 'assistant' ? undefined : 'pre-wrap'
+          }}
+        >
           {message.role === 'assistant' ? <Markdown text={message.text} /> : message.text}
           {message.streaming && <span className="chat-message-cursor">|</span>}
-        </div>
+        </Box>
       )}
-    </div>
+    </Paper>
   )
 })
 
@@ -131,6 +164,7 @@ export function ChatPanel(): React.JSX.Element {
   // ready, and re-locks while Claude is working on a turn.
   const disabledReason = deriveChatDisabledReason(setupStatus)
   const isDisabled = disabledReason !== null || agentBusy
+  const effortDisabled = EFFORT_UNSUPPORTED_MODELS.has(agentSettings.model)
 
   async function addFiles(files: Iterable<File>): Promise<void> {
     const read = await Promise.all(Array.from(files).map((file) => readImageFile(file)))
@@ -143,7 +177,7 @@ export function ChatPanel(): React.JSX.Element {
     event.target.value = ''
   }
 
-  function handlePaste(event: ClipboardEvent<HTMLTextAreaElement>): void {
+  function handlePaste(event: ClipboardEvent<HTMLDivElement>): void {
     const imageFiles = Array.from(event.clipboardData.items)
       .filter((item) => item.type.startsWith('image/'))
       .map((item) => item.getAsFile())
@@ -200,7 +234,7 @@ export function ChatPanel(): React.JSX.Element {
     }
   }
 
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
+  function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       void sendDraft()
@@ -245,151 +279,196 @@ export function ChatPanel(): React.JSX.Element {
   }
 
   return (
-    <div className="chat-panel">
-      <div className="chat-header">
-        <div className="chat-header-title-group">
-          <span className="chat-header-title">Chat</span>
-          {activeProjectName && <span className="chat-header-project">{activeProjectName}</span>}
-        </div>
-        <div className="chat-header-settings">
-          <select
-            className="chat-settings-select"
-            aria-label="Model"
+    <Stack sx={{ flex: 1, minHeight: 0, bgcolor: 'background.paper' }}>
+      <Stack
+        direction="row"
+        alignItems="center"
+        justifyContent="space-between"
+        gap={1.25}
+        sx={{ px: 1.75, py: 1.25, borderBottom: 1, borderColor: 'divider' }}
+      >
+        <Stack direction="row" alignItems="baseline" gap={1} sx={{ minWidth: 0 }}>
+          <Typography variant="overline" color="text.secondary">
+            Chat
+          </Typography>
+          {activeProjectName && (
+            <Typography variant="body2" fontWeight={600} noWrap>
+              {activeProjectName}
+            </Typography>
+          )}
+        </Stack>
+        <Stack direction="row" alignItems="center" gap={0.75} sx={{ minWidth: 0 }}>
+          <Select
+            size="small"
             value={agentSettings.model}
             onChange={(e) => void updateAgentSettings({ model: e.target.value as AgentModel })}
+            inputProps={{ 'aria-label': 'Model' }}
+            sx={compactSelectSx}
           >
             {MODEL_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
+              <MenuItem key={option.value} value={option.value}>
                 {option.label}
-              </option>
+              </MenuItem>
             ))}
-          </select>
-          <select
-            className="chat-settings-select"
-            aria-label="Effort"
-            value={agentSettings.effort}
-            disabled={EFFORT_UNSUPPORTED_MODELS.has(agentSettings.model)}
-            title={
-              EFFORT_UNSUPPORTED_MODELS.has(agentSettings.model)
-                ? 'Haiku does not support an effort setting'
-                : undefined
-            }
-            onChange={(e) => void updateAgentSettings({ effort: e.target.value as AgentEffort })}
-          >
-            {EFFORT_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-      <div className="chat-messages">
+          </Select>
+          <Tooltip title={effortDisabled ? 'Haiku does not support an effort setting' : ''}>
+            <span>
+              <Select
+                size="small"
+                value={agentSettings.effort}
+                disabled={effortDisabled}
+                onChange={(e) => void updateAgentSettings({ effort: e.target.value as AgentEffort })}
+                inputProps={{ 'aria-label': 'Effort' }}
+                sx={compactSelectSx}
+              >
+                {EFFORT_OPTIONS.map((option) => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </span>
+          </Tooltip>
+        </Stack>
+      </Stack>
+      <Stack spacing={1.25} sx={{ flex: 1, overflowY: 'auto', p: 1.5 }}>
         {messages.length === 0 && (
-          <div className="chat-empty-state">
+          <Typography variant="body2" color="text.disabled">
             Describe the part you want to 3D print — for example “a wall bracket for a 32mm
             curtain rod”. Voyager will ask about your printer and dimensions, then model it.
-          </div>
+          </Typography>
         )}
         {messages.map((message) => (
           <ChatMessageRow key={message.id} message={message} />
         ))}
         {thinkingLines.length > 0 && (
-          <div className="chat-thinking">
-            <div className="chat-thinking-text">{thinkingLines}</div>
-          </div>
+          <Box
+            sx={{
+              color: 'text.disabled',
+              fontSize: 11.5,
+              borderLeft: 2,
+              borderColor: 'divider',
+              px: 1,
+              whiteSpace: 'pre-wrap',
+              fontStyle: 'italic',
+              maxHeight: 'calc(1.4em * 5)',
+              overflow: 'hidden',
+              maskImage: 'linear-gradient(to bottom, transparent, #000 1.4em)',
+              WebkitMaskImage: 'linear-gradient(to bottom, transparent, #000 1.4em)'
+            }}
+          >
+            {thinkingLines}
+          </Box>
         )}
-        {agentBusy && <div className="chat-working-indicator">Voyager is working…</div>}
-      </div>
+        {agentBusy && (
+          <Stack direction="row" spacing={1} alignItems="center">
+            <CircularProgress size={12} />
+            <Typography variant="body2" color="text.disabled">
+              Voyager is working…
+            </Typography>
+          </Stack>
+        )}
+      </Stack>
       {pendingPermission && (
-        <div className="chat-permission-card">
-          <div className="chat-permission-text">Voyager wants to: {pendingPermission.summary}</div>
-          <div className="chat-permission-actions">
-            <button
-              type="button"
-              className="chat-permission-allow"
-              onClick={() => void respondToPermission(true)}
-            >
+        <Alert severity="warning" variant="outlined" sx={{ mx: 1.25, bgcolor: colors.warningDim }}>
+          <Typography variant="body2" sx={{ mb: 1 }}>
+            Voyager wants to: {pendingPermission.summary}
+          </Typography>
+          <Stack direction="row" spacing={1} justifyContent="flex-end">
+            <Button variant="contained" color="warning" onClick={() => void respondToPermission(true)}>
               Allow once
-            </button>
-            <button type="button" className="chat-permission-deny" onClick={() => void respondToPermission(false)}>
+            </Button>
+            <Button variant="outlined" color="inherit" onClick={() => void respondToPermission(false)}>
               Deny
-            </button>
-          </div>
-        </div>
+            </Button>
+          </Stack>
+        </Alert>
       )}
       {selection && (
-        <div className="chat-selection-banner">
+        <Alert
+          severity="info"
+          icon={<HighlightAltIcon fontSize="inherit" />}
+          sx={{ borderRadius: 0, py: 0, fontSize: 11.5 }}
+        >
           Refining selected region — {selection.dims[0].toFixed(1)}×{selection.dims[1].toFixed(1)}×
           {selection.dims[2].toFixed(1)} mm
-        </div>
+        </Alert>
       )}
       {attachments.length > 0 && (
-        <div className="chat-attachments-preview">
+        <Stack direction="row" flexWrap="wrap" gap={1} sx={{ px: 1.25, pt: 1.25 }}>
           {attachments.map((attachment, index) => (
-            <span className="chat-attachment-chip chat-attachment-chip-pending" key={index}>
-              📎 {attachment.name}
-              <button
-                type="button"
-                className="chat-attachment-remove"
-                onClick={() => removeAttachment(index)}
-                aria-label="Remove attachment"
-              >
-                ×
-              </button>
-            </span>
+            <Chip
+              key={index}
+              size="small"
+              icon={<AttachFileIcon />}
+              label={attachment.name}
+              onDelete={() => removeAttachment(index)}
+            />
           ))}
-        </div>
+        </Stack>
       )}
-      <div className="chat-input-row" onDragOver={(e) => e.preventDefault()} onDrop={handleDrop}>
+      <Stack
+        direction="row"
+        spacing={1}
+        sx={{ p: 1.25, borderTop: 1, borderColor: 'divider' }}
+        onDragOver={(e) => e.preventDefault()}
+        onDrop={handleDrop}
+      >
         <input
           ref={fileInputRef}
           type="file"
           accept="image/png,image/jpeg,image/gif,image/webp"
           multiple
-          className="chat-file-input"
+          style={{ display: 'none' }}
           onChange={handleFileInputChange}
         />
-        <button
-          type="button"
-          className="chat-attach-button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isDisabled}
-          aria-label="Attach image"
-          title="Attach image"
-        >
-          📎
-        </button>
-        <textarea
-          className="chat-input"
+        <Tooltip title="Attach image">
+          <span>
+            <IconButton
+              disabled={isDisabled}
+              aria-label="Attach image"
+              sx={{ alignSelf: 'flex-end' }}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <AttachFileIcon />
+            </IconButton>
+          </span>
+        </Tooltip>
+        <TextField
+          multiline
+          minRows={3}
+          maxRows={8}
+          fullWidth
+          size="small"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           disabled={isDisabled}
           placeholder={disabledReason ?? 'Message Voyager AI... (Enter to send)'}
-          rows={3}
         />
         {agentBusy ? (
-          <button
-            type="button"
-            className="chat-stop-button"
+          <Button
+            variant="outlined"
+            startIcon={<StopIcon />}
             onClick={() => void stopTurn()}
             disabled={stopping}
+            sx={{ alignSelf: 'flex-end' }}
           >
             {stopping ? 'Stopping…' : 'Stop'}
-          </button>
+          </Button>
         ) : (
-          <button
-            type="button"
-            className="chat-send-button"
+          <Button
+            variant="contained"
+            endIcon={<SendIcon />}
             onClick={() => void sendDraft()}
             disabled={isDisabled || (draft.trim().length === 0 && attachments.length === 0)}
+            sx={{ alignSelf: 'flex-end' }}
           >
             Send
-          </button>
+          </Button>
         )}
-      </div>
-    </div>
+      </Stack>
+    </Stack>
   )
 }

@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { MutableRefObject } from 'react'
+import Box from '@mui/material/Box'
+import Typography from '@mui/material/Typography'
 import { ModelViewer } from '../three/viewer'
 import { SelectionHighlight } from '../three/selection'
 import { SelectionController } from '../three/selectionController'
@@ -65,11 +67,47 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   }, [selection])
 
   return (
-    <div className={selectMode ? 'viewport viewport-select-mode' : 'viewport'} ref={containerRef}>
-      <div className="selection-marquee" ref={marqueeRef} />
+    <Box
+      ref={containerRef}
+      sx={{
+        position: 'absolute',
+        inset: 0,
+        overflow: 'hidden',
+        bgcolor: 'background.default',
+        cursor: selectMode ? 'crosshair' : 'default',
+        '& canvas': { display: 'block' }
+      }}
+    >
+      <Box
+        ref={marqueeRef}
+        sx={{
+          display: 'none',
+          position: 'absolute',
+          zIndex: 5,
+          border: '1px dashed',
+          borderColor: 'primary.main',
+          bgcolor: 'rgba(102, 170, 255, 0.15)',
+          pointerEvents: 'none'
+        }}
+      />
       {!model && (
-        <div className="viewport-empty-hint">Ask Voyager for a part and it will appear here</div>
+        <Box
+          sx={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 2,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            px: 6,
+            pointerEvents: 'none'
+          }}
+        >
+          <Typography color="text.disabled" align="center">
+            Ask Voyager for a part and it will appear here
+          </Typography>
+        </Box>
       )}
-    </div>
+    </Box>
   )
 }
