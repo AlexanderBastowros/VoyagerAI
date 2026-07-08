@@ -1,9 +1,10 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
+import { colors } from '../colors'
 
-const BACKGROUND_COLOR = 0x1e1f22
-const MODEL_COLOR = 0x66aaff
+const BACKGROUND_COLOR = colors.bgApp
+const MODEL_COLOR = colors.accent
 
 /**
  * Thin wrapper around a three.js scene/camera/renderer set up for viewing a
@@ -108,6 +109,14 @@ export class ModelViewer {
     this.scene.add(mesh)
 
     this.frameCameraOn(geometry.boundingSphere)
+  }
+
+  /** Loads `stlBuffer` if given, otherwise clears the viewport entirely - the shared sync
+   *  point for both the live `model:displayed` event and project-switch/create hydration,
+   *  where a freshly-switched-to project may have no model yet. */
+  syncModel(stlBuffer: ArrayBuffer | null): void {
+    if (stlBuffer) this.loadSTL(stlBuffer)
+    else this.clear()
   }
 
   private frameCameraOn(sphere: THREE.Sphere | null): void {

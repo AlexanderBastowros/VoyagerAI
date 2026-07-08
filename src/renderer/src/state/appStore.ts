@@ -1,7 +1,12 @@
 import { create } from 'zustand'
 import type {
   AgentEvent,
+  AgentSettings,
+  ChatAttachment,
+  ModelDisplayedPayload,
   PermissionRequestPayload,
+  ProjectStateSnapshot,
+  ProjectSummary,
   SelectionSummary,
   SetupCheck,
   SetupStatus
@@ -16,6 +21,8 @@ export interface ChatMessage {
   createdAt: number
   /** True while an assistant message is still being streamed via agent:event. */
   streaming?: boolean
+  /** Images the user attached when sending this message, if any. */
+  attachments?: ChatAttachment[]
 }
 
 export interface ModelInfo {
@@ -30,6 +37,22 @@ function unchecked(detail: string): SetupCheck {
   return { state: 'unchecked', detail }
 }
 
+function fileName(path: string): string {
+  return path.split('/').pop() ?? path
+}
+
+/** Shared by the live `model:displayed` handler (`App.tsx`) and project hydration below, so
+ *  the mapping only lives in one place. */
+export function toModelInfo(payload: ModelDisplayedPayload): ModelInfo {
+  return {
+    name: fileName(payload.stlPath),
+    iteration: payload.iteration,
+    stlPath: payload.stlPath,
+    stepPath: payload.stepPath ?? null,
+    scriptPath: payload.scriptPath
+  }
+}
+
 function initialSetupStatus(): SetupStatus {
   return {
     claudeCli: unchecked('Not checked yet'),
@@ -37,6 +60,10 @@ function initialSetupStatus(): SetupStatus {
     pythonEnv: unchecked('Not checked yet')
   }
 }
+
+/** Placeholder shown before `window.voyager.agent.getSettings()` resolves on mount - matches
+ *  the main process's own default (see `DEFAULT_AGENT_SETTINGS` in `projects/store.ts`). */
+const DEFAULT_AGENT_SETTINGS: AgentSettings = { model: 'claude-opus-4-8', effort: 'xhigh' }
 
 let messageSequence = 0
 function createMessageId(): string {
@@ -47,6 +74,12 @@ function createMessageId(): string {
 export interface AppState {
   messages: ChatMessage[]
   model: ModelInfo | null
+  /** The active project's model/effort choice, hydrated from the main process on mount. */
+  agentSettings: AgentSettings
+  /** Every known project, in stable creation/discovery order - shown in the right-hand sidebar. */
+  projects: ProjectSummary[]
+  /** The currently-active project's id, or null before the initial `project:getState` hydration. */
+  activeProjectId: string | null
   setupStatus: SetupStatus
   selection: SelectionSummary | null
   /** True while the "Select region" toolbar toggle is active. */
@@ -76,6 +109,15 @@ export interface AppState {
   /** Replaces the current model. Also clears any active selection - its triangle indices
    *  and coordinates refer to the previous iteration's geometry and must not leak forward. */
   setModel: (model: ModelInfo | null) => void
+  /** Replaces the current model/effort choice - called on mount and after the user changes it. */
+  setAgentSettings: (settings: AgentSettings) => void
+  /** Replaces `messages`/`model`/`agentSettings`/`projects`/`activeProjectId` from a full
+   *  project snapshot (mount, create, or switch) and resets ephemeral turn state - see
+   *  `project:getState`/`project:create`/`project:switch`. */
+  hydrateProject: (snapshot: ProjectStateSnapshot) => void
+  /** Updates (or inserts) one project's sidebar entry - used after a rename, which returns
+   *  just the renamed summary rather than a full snapshot. */
+  updateProject: (summary: ProjectSummary) => void
   setSetupStatus: (status: SetupStatus) => void
   setSelection: (selection: SelectionSummary | null) => void
   setSelectMode: (selectMode: boolean) => void
@@ -89,6 +131,9 @@ export interface AppState {
 export const useAppStore = create<AppState>((set, get) => ({
   messages: [],
   model: null,
+  agentSettings: DEFAULT_AGENT_SETTINGS,
+  projects: [],
+  activeProjectId: null,
   setupStatus: initialSetupStatus(),
   selection: null,
   selectMode: false,
@@ -118,6 +163,39 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setModel: (model) => set({ model, selection: null }),
+  setAgentSettings: (agentSettings) => set({ agentSettings }),
+
+  hydrateProject: (snapshot) => {
+    set({
+      projects: snapshot.projects,
+      activeProjectId: snapshot.activeProjectId,
+      agentSettings: snapshot.agentSettings,
+      model: snapshot.model ? toModelInfo(snapshot.model) : null,
+      messages: snapshot.messages.map((m) => ({
+        id: m.id,
+        role: m.role,
+        text: m.text,
+        createdAt: Date.parse(m.createdAt),
+        attachments: m.attachments?.map((a) => ({ ...a, data: '' }))
+      })),
+      // Ephemeral turn state can't legitimately still apply to a different project's chat -
+      // reset it defensively even though the main process blocks switching mid-turn.
+      selection: null,
+      agentBusy: false,
+      agentStreamIds: {},
+      pendingPermission: null,
+      thinkingText: ''
+    })
+  },
+
+  updateProject: (summary) => {
+    set((state) => ({
+      projects: state.projects.some((p) => p.id === summary.id)
+        ? state.projects.map((p) => (p.id === summary.id ? summary : p))
+        : [...state.projects, summary]
+    }))
+  },
+
   setSetupStatus: (setupStatus) => set({ setupStatus }),
   setSelection: (selection) => set({ selection }),
   setSelectMode: (selectMode) => set({ selectMode }),
@@ -160,6 +238,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (streaming) state.completeMessage(streaming)
         state.addMessage({ role: 'system-status', text: `⚠ ${event.message}` })
         set({ agentBusy: false, thinkingText: '' })
+        return
+      }
+      case 'stopped': {
+        const streaming = state.agentStreamIds[event.messageId]
+        if (streaming) state.completeMessage(streaming)
+        state.addMessage({ role: 'system-status', text: 'Stopped.' })
+        // The interrupt aborts the SDK's permission-approval wait, so any
+        // lingering Allow/Deny card would be answering a question the agent
+        // is no longer listening for - clear it along with the turn state.
+        set({ agentBusy: false, thinkingText: '', pendingPermission: null })
         return
       }
     }

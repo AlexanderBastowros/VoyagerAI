@@ -84,13 +84,61 @@ button {
 
 .chat-header {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.chat-header-title-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-header-title {
+  flex: 0 0 auto;
   font-weight: 600;
   color: var(--text-secondary);
   text-transform: uppercase;
   font-size: 11px;
   letter-spacing: 0.06em;
-  border-bottom: 1px solid var(--border-subtle);
+}
+
+.chat-header-project {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-header-settings {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chat-settings-select {
+  background: var(--bg-panel-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  padding: 3px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  max-width: 130px;
+}
+
+.chat-settings-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .chat-messages {
@@ -143,8 +191,12 @@ button {
 }
 
 .chat-message-text {
-  white-space: pre-wrap;
   line-height: 1.45;
+}
+
+.chat-message-user .chat-message-text,
+.chat-message-system .chat-message-text {
+  white-space: pre-wrap;
 }
 
 .chat-message-cursor {
@@ -156,6 +208,123 @@ button {
   50% {
     opacity: 0;
   }
+}
+
+/* Keeps the blinking cursor glued to the end of the last streamed paragraph
+   rather than dropping to its own line below it. */
+.chat-message-text.streaming .chat-markdown > p:last-child {
+  display: inline;
+}
+
+.chat-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Rendered markdown (assistant messages)                                 */
+/* ---------------------------------------------------------------------- */
+
+.chat-markdown p,
+.chat-markdown ul,
+.chat-markdown ol,
+.chat-markdown pre,
+.chat-markdown table,
+.chat-markdown blockquote {
+  margin: 0 0 8px;
+}
+
+.chat-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.chat-markdown h1,
+.chat-markdown h2,
+.chat-markdown h3,
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  font-weight: 600;
+  margin: 10px 0 6px;
+  line-height: 1.3;
+}
+
+.chat-markdown h1 {
+  font-size: 1.2em;
+}
+
+.chat-markdown h2 {
+  font-size: 1.1em;
+}
+
+.chat-markdown h3,
+.chat-markdown h4,
+.chat-markdown h5,
+.chat-markdown h6 {
+  font-size: 1em;
+}
+
+.chat-markdown code {
+  font-family: var(--font-mono);
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.chat-markdown pre {
+  background: var(--bg-input);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 8px 10px;
+  overflow-x: auto;
+}
+
+.chat-markdown pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  white-space: pre;
+}
+
+.chat-markdown table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.chat-markdown th,
+.chat-markdown td {
+  border: 1px solid var(--border-subtle);
+  padding: 3px 8px;
+}
+
+.chat-markdown th {
+  background: var(--bg-panel-raised);
+}
+
+.chat-markdown ul,
+.chat-markdown ol {
+  padding-left: 20px;
+}
+
+.chat-markdown blockquote {
+  border-left: 2px solid var(--border-strong);
+  padding-left: 8px;
+  color: var(--text-secondary);
+}
+
+.chat-markdown a {
+  color: var(--accent);
+}
+
+.chat-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .chat-input-row {
@@ -205,6 +374,92 @@ button {
   background: var(--border-strong);
   color: var(--text-muted);
   cursor: not-allowed;
+}
+
+.chat-stop-button {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  background: var(--bg-panel-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.chat-stop-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-file-input {
+  display: none;
+}
+
+.chat-attach-button {
+  flex: 0 0 auto;
+  align-self: flex-end;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  width: 36px;
+  height: 36px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-attach-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.chat-attachments-preview {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 10px 0;
+}
+
+.chat-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-panel-raised);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+  max-width: 220px;
+}
+
+.chat-attachment-chip-pending {
+  padding-right: 6px;
+}
+
+.chat-attachment-remove {
+  width: 16px;
+  height: 16px;
+  line-height: 14px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-attachment-remove:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -330,6 +585,149 @@ button {
   color: var(--text-muted);
   font-size: 13px;
   pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Project sidebar (R3 project switcher)                                  */
+/* ---------------------------------------------------------------------- */
+
+.project-sidebar {
+  flex: 0 0 220px;
+  width: 220px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-subtle);
+}
+
+.project-sidebar-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.project-sidebar-title {
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.project-new-button {
+  background: var(--bg-panel-raised);
+  color: var(--text-primary);
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.project-new-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.project-new-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.project-sidebar-error {
+  flex: 0 0 auto;
+  margin: 8px 10px 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--warning-dim);
+  color: var(--warning);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.project-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 6px;
+}
+
+.project-row-active {
+  background: var(--accent-dim);
+}
+
+.project-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  padding: 7px 8px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.project-row-name:hover:not(:disabled) {
+  background: var(--bg-panel-raised);
+}
+
+.project-row-active .project-row-name:hover:not(:disabled) {
+  background: none;
+}
+
+.project-row-name:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.project-row-rename {
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  padding: 4px 6px;
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.project-row-rename:hover {
+  color: var(--text-primary);
+  background: var(--bg-panel-raised);
+}
+
+.project-row-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12.5px;
+}
+
+.project-row-input:focus {
+  outline: none;
 }
 
 /* ---------------------------------------------------------------------- */

@@ -47,9 +47,18 @@ export interface SelectionSummary {
 // Agent chat (M3 Claude Agent SDK)
 // ---------------------------------------------------------------------------
 
+/** An image attached to a chat message, read client-side as base64 (no `data:` URL prefix).
+ *  `name` is display-only (the chat UI's paperclip chip) - it is not sent to the model. */
+export interface ChatAttachment {
+  data: string
+  mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'
+  name: string
+}
+
 export interface SendMessageRequest {
   text: string
   selectionContext?: SelectionSummary | null
+  attachments?: ChatAttachment[]
 }
 
 export interface SendMessageResponse {
@@ -57,12 +66,84 @@ export interface SendMessageResponse {
   reason?: string
 }
 
+// ---------------------------------------------------------------------------
+// Agent settings (R8 model + effort selector)
+// ---------------------------------------------------------------------------
+
+/** Mirrors the Claude Agent SDK's `Options['effort']`. Some models reject this option outright
+ *  (see `EFFORT_UNSUPPORTED_MODELS` in `src/main/agent/session.ts`), in which case it's omitted
+ *  from the request regardless of the user's choice here. */
+export type AgentEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/** The models surfaced in the UI's model picker - a curated subset of what the SDK accepts,
+ *  spanning the speed/depth tradeoff from deepest to fastest. */
+export type AgentModel = 'claude-opus-4-8' | 'claude-sonnet-5' | 'claude-haiku-4-5'
+
+export interface AgentSettings {
+  model: AgentModel
+  effort: AgentEffort
+}
+
 export type AgentEvent =
   | { type: 'text-delta'; messageId: string; delta: string }
   | { type: 'thinking-delta'; messageId: string; delta: string }
   | { type: 'tool-activity'; messageId: string; toolName: string; detail: string }
   | { type: 'message-complete'; messageId: string }
+  /** Emitted when the user interrupts an in-flight turn. Exactly one terminal
+   *  event fires per turn: `message-complete` | `error` | `stopped`. */
+  | { type: 'stopped'; messageId: string }
   | { type: 'error'; messageId?: string; message: string }
+
+// ---------------------------------------------------------------------------
+// Projects (R3 multi-project switcher)
+// ---------------------------------------------------------------------------
+
+export interface ProjectSummary {
+  id: string
+  name: string
+  createdAt: string
+}
+
+/** Metadata only, never the base64 `data` - restored history only ever renders the
+ *  "📎 filename" chip (`ChatMessageRow` never reads `.data`), so persisting image bytes into
+ *  project.json would bloat it for zero visible benefit. */
+export interface PersistedAttachment {
+  name: string
+  mediaType: ChatAttachment['mediaType']
+}
+
+/** A durable, restorable chat entry - the subset of `ChatMessage` (renderer-only state) worth
+ *  writing to `project.json`. Routine tool-activity narration is intentionally not persisted
+ *  (see `AgentSession`'s `flushAssistantBuffer`) - only user/assistant conversation content is. */
+export interface PersistedMessage {
+  id: string
+  role: 'user' | 'assistant' | 'system-status'
+  text: string
+  createdAt: string
+  attachments?: PersistedAttachment[]
+}
+
+/** Hydrates the renderer on mount and on every project switch/create. */
+export interface ProjectStateSnapshot {
+  activeProjectId: string
+  projects: ProjectSummary[]
+  messages: PersistedMessage[]
+  agentSettings: AgentSettings
+  model: ModelDisplayedPayload | null
+}
+
+export interface CreateProjectRequest {
+  name?: string
+}
+
+export interface SwitchProjectRequest {
+  id: string
+}
+
+export interface RenameProjectRequest {
+  id: string
+  name: string
+}
 
 // ---------------------------------------------------------------------------
 // Permission gate (canUseTool approval card)
@@ -128,12 +209,20 @@ export const IPC = {
   setupRetry: 'setup:retry',
   setupProgress: 'setup:progress',
   agentSendMessage: 'agent:sendMessage',
+  agentGetSettings: 'agent:getSettings',
+  agentSetSettings: 'agent:setSettings',
   agentEvent: 'agent:event',
+  agentInterrupt: 'agent:interrupt',
   agentPermissionRequest: 'agent:permissionRequest',
   agentPermissionRespond: 'agent:permissionRespond',
   modelDisplayed: 'model:displayed',
   modelLoadSample: 'model:loadSample',
-  modelExport: 'model:export'
+  modelExport: 'model:export',
+  projectList: 'project:list',
+  projectCreate: 'project:create',
+  projectSwitch: 'project:switch',
+  projectRename: 'project:rename',
+  projectGetState: 'project:getState'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]
@@ -148,7 +237,14 @@ export function isSetupCheckState(value: unknown): value is SetupCheckState {
   return typeof value === 'string' && (SETUP_CHECK_STATES as readonly string[]).includes(value)
 }
 
-const AGENT_EVENT_TYPES = ['text-delta', 'thinking-delta', 'tool-activity', 'message-complete', 'error'] as const
+const AGENT_EVENT_TYPES = [
+  'text-delta',
+  'thinking-delta',
+  'tool-activity',
+  'message-complete',
+  'stopped',
+  'error'
+] as const
 
 export function isAgentEvent(value: unknown): value is AgentEvent {
   if (typeof value !== 'object' || value === null) return false

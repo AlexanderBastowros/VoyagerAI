@@ -1,8 +1,12 @@
+import { randomUUID } from 'node:crypto'
 import { delimiter, dirname } from 'node:path'
 import { query } from '@anthropic-ai/claude-agent-sdk'
 import type { CanUseTool, Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AgentEvent,
+  AgentModel,
+  AgentSettings,
+  ChatAttachment,
   ModelDisplayedPayload,
   SelectionSummary,
   SendMessageResponse
@@ -21,6 +25,10 @@ const DECLINED_MESSAGE =
 /** How long an inline approval card waits for a user response before auto-denying. Overridable via
  *  `AgentSessionDeps.approvalTimeoutMs` so tests don't need to wait 2 minutes for the timeout path. */
 const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000
+
+/** Models whose API rejects the `effort` option outright (400) - omitted from `query()`'s
+ *  options for these regardless of the user's effort choice. */
+const EFFORT_UNSUPPORTED_MODELS = new Set<AgentModel>(['claude-haiku-4-5'])
 
 /**
  * Races the injected approval promise against a timeout and the SDK's abort
@@ -186,7 +194,11 @@ export function humanizeToolUse(name: string, input: Record<string, unknown>): s
  * Kept side-effect-free so tests can feed synthetic SDK messages through it
  * and assert on the emitted sequence.
  */
-export function translateSdkMessage(message: SDKMessage, messageId: string): Translation {
+export function translateSdkMessage(
+  message: SDKMessage,
+  messageId: string,
+  interruptRequested = false
+): Translation {
   switch (message.type) {
     case 'system': {
       if (message.subtype === 'init') {
@@ -226,12 +238,21 @@ export function translateSdkMessage(message: SDKMessage, messageId: string): Tra
     }
 
     case 'result': {
+      // The SDK's typed result-subtype union (SDKResultSuccess | SDKResultError)
+      // doesn't include 'interrupt', but a real CLI reports it at runtime when
+      // Query.interrupt() cuts a turn short - detect it defensively via a
+      // string compare rather than trusting the type. `interruptRequested` is
+      // the belt-and-suspenders fallback for CLI builds/versions that instead
+      // report an ordinary error subtype after an interrupt.
+      if ((message.subtype as string) === 'interrupt' || interruptRequested) {
+        return { events: [{ type: 'stopped', messageId }], turnComplete: true }
+      }
       const events: AgentEvent[] = []
       if (message.subtype !== 'success') {
         events.push({
           type: 'error',
           messageId,
-          message: `Claude stopped unexpectedly (${message.subtype.replaceAll('_', ' ')}). Send your message again to continue.`
+          message: `Voyager stopped unexpectedly (${message.subtype.replaceAll('_', ' ')}). Send your message again to continue.`
         })
       }
       events.push({ type: 'message-complete', messageId })
@@ -250,14 +271,26 @@ export class AgentSession {
   private queue: AsyncPushQueue<SDKUserMessage> | null = null
   private activeQuery: Query | null = null
   private busy = false
+  /** Set by `interrupt()` for the duration of the turn it cut short; passed into
+   *  `translateSdkMessage` so a result that arrives as an ordinary error subtype
+   *  (rather than the SDK's runtime-only `'interrupt'` subtype) still resolves to
+   *  a `stopped` event, not an `error`. Cleared wherever a turn ends. */
+  private interruptRequested = false
   private turn = 0
   private currentMessageId = 'turn-0'
   private sessionId: string | null = null
   private receivedAnyMessage = false
   private skipResumeOnRestart = false
   private approvalSeq = 0
-  /** Set once `ensureStarted` resolves the project dir; read by `canUseTool`. */
+  /** Set once `ensureStarted` resolves the project dir; read by `canUseTool`, and compared
+   *  against the project's live dir on each `ensureStarted` call to detect a project switch. */
   private projectDir = ''
+  /** The model/effort combination baked into the currently-running query, if any - compared
+   *  against the project's live settings on each `ensureStarted` call to detect a change. */
+  private appliedSettings: AgentSettings | null = null
+  /** Accumulates the current turn's assistant text so it can be persisted as one durable
+   *  message on the turn's terminal event - see `flushAssistantBuffer`. */
+  private assistantBuffer = ''
 
   constructor(deps: AgentSessionDeps) {
     this.deps = deps
@@ -319,30 +352,49 @@ export class AgentSession {
    * Accepts one user turn. Returns `accepted: false` (with a reason the
    * renderer displays) instead of throwing for all expected refusals.
    */
-  async sendMessage(text: string, selectionContext?: SelectionSummary | null): Promise<SendMessageResponse> {
+  async sendMessage(
+    text: string,
+    selectionContext?: SelectionSummary | null,
+    attachments?: ChatAttachment[]
+  ): Promise<SendMessageResponse> {
     if (this.busy) {
       return {
         accepted: false,
-        reason: 'Claude is still working on your previous request — wait for it to finish.'
+        reason: 'Voyager is still working on your previous request — wait for it to finish.'
       }
     }
+    // Set eagerly, before the `await` below yields control - otherwise a concurrent call
+    // (another sendMessage, or a project switch/create) landing while ensureStarted() is
+    // in flight would see the stale pre-await `busy === false`. Reset in the catch arm below
+    // if starting the session actually fails.
+    this.busy = true
 
     try {
       await this.ensureStarted()
     } catch (err) {
+      this.busy = false
       return {
         accepted: false,
-        reason: `Could not start the Claude session: ${err instanceof Error ? err.message : String(err)}`
+        reason: `Could not start the Voyager session: ${err instanceof Error ? err.message : String(err)}`
       }
     }
 
     this.turn += 1
     this.currentMessageId = `turn-${this.turn}`
-    this.busy = true
+
+    void this.deps.projectStore
+      .appendMessage({
+        id: randomUUID(),
+        role: 'user',
+        text,
+        attachments: attachments?.map(({ name, mediaType }) => ({ name, mediaType })),
+        createdAt: new Date().toISOString()
+      })
+      .catch(() => {})
 
     this.queue?.push({
       type: 'user',
-      message: { role: 'user', content: buildUserMessage(text, selectionContext) },
+      message: { role: 'user', content: buildUserMessage(text, selectionContext, attachments) },
       parent_tool_use_id: null
     })
 
@@ -356,13 +408,72 @@ export class AgentSession {
     this.activeQuery = null
   }
 
+  /**
+   * Cuts the in-flight turn short (the renderer's "stop" affordance). Exactly
+   * one terminal event fires per turn - `message-complete` | `error` |
+   * `stopped` - and interrupting must land on `stopped` without tearing the
+   * session down: unlike `dispose()`, the queue and subprocess stay alive so
+   * the next `sendMessage` continues the same conversation.
+   *
+   * A no-op when there's no turn to interrupt. Never throws: if the
+   * subprocess has already died, `activeQuery.interrupt()` rejects and we
+   * fall back to resetting the session ourselves and emitting `stopped`
+   * directly, so the renderer can never be left stuck showing "busy" with no
+   * way out.
+   *
+   * Does not clear `busy` on the success path - that happens exactly once,
+   * in `consume()`'s normal turn-complete handling, when the interrupted
+   * turn's result message comes through.
+   */
+  async interrupt(): Promise<void> {
+    if (!this.busy || !this.activeQuery) return
+
+    this.interruptRequested = true
+    try {
+      await this.activeQuery.interrupt()
+    } catch {
+      // The subprocess is already gone, so consume()'s loop (and its turnComplete flush)
+      // will never run for this turn - flush here instead or any partial reply is lost.
+      this.flushAssistantBuffer()
+      this.resetAfterExit()
+      this.deps.emitAgentEvent({ type: 'stopped', messageId: this.currentMessageId })
+    }
+  }
+
   // -- internal -------------------------------------------------------------
 
   private async ensureStarted(): Promise<void> {
-    if (this.activeQuery) return
-
     const { dir } = await this.deps.projectStore.ensureProject()
+    const projectChanged = dir !== this.projectDir
     this.projectDir = dir
+    const settings = await this.deps.projectStore.getAgentSettings()
+
+    if (projectChanged) {
+      // Both are scoped to whatever project was previously active - carrying either into a
+      // different project would try to resume the wrong session, or (skipResumeOnRestart)
+      // wrongly suppress a perfectly valid resume for the newly-active one. This must run
+      // whenever the project changed, NOT only when there's a live `activeQuery` to tear down
+      // below - a project switch immediately after the previous project's query already died
+      // on its own (e.g. a failed resume) reaches here with `activeQuery` already null, and
+      // `skipResumeOnRestart` would otherwise leak from that failure into the new project.
+      this.sessionId = null
+      this.skipResumeOnRestart = false
+    }
+
+    if (this.activeQuery) {
+      const unchanged =
+        !projectChanged &&
+        this.appliedSettings?.model === settings.model &&
+        this.appliedSettings?.effort === settings.effort
+      if (unchanged) return
+      // The active project switched, or the user picked a different model/effort, since this
+      // query started - end the input stream so the subprocess exits cleanly, then fall
+      // through to start a fresh one below. `sendMessage` only reaches `ensureStarted` while
+      // idle, so this never cuts an in-flight turn short.
+      this.queue?.end()
+      this.queue = null
+      this.activeQuery = null
+    }
 
     let resume: string | undefined
     if (!this.skipResumeOnRestart) {
@@ -403,10 +514,12 @@ export class AgentSession {
       // Enable adaptive thinking with visible summaries so the renderer receives thinking_delta
       // stream events (off by default on Opus 4.7/4.8; display defaults to "omitted" = empty text).
       thinking: { type: 'adaptive', display: 'summarized' },
-      // Pin effort to xhigh (adaptive thinking otherwise defaults to "high") so thinking runs
-      // deeper and shows up on essentially every substantive turn, not just when the model
-      // judges it worthwhile - at the cost of somewhat higher latency/token usage.
-      effort: 'xhigh',
+      model: settings.model,
+      // Effort defaults to xhigh (adaptive thinking otherwise defaults to "high") so thinking
+      // runs deeper on essentially every substantive turn - the user can trade that away for
+      // speed via the model/effort selectors. Haiku's API 400s on `effort` entirely, so it's
+      // omitted rather than sent for a model that rejects it.
+      ...(EFFORT_UNSUPPORTED_MODELS.has(settings.model) ? {} : { effort: settings.effort }),
       env: { ...baseEnv, PATH: `${venvBin}${delimiter}${baseEnv.PATH ?? ''}` },
       ...(resume ? { resume } : {}),
       ...(cliPath ? { pathToClaudeCodeExecutable: cliPath } : {})
@@ -414,6 +527,7 @@ export class AgentSession {
 
     this.queue = new AsyncPushQueue<SDKUserMessage>()
     this.receivedAnyMessage = false
+    this.appliedSettings = settings
     this.activeQuery = this.queryFn({ prompt: this.queue, options })
     void this.consume(this.activeQuery, resume !== undefined)
   }
@@ -422,7 +536,7 @@ export class AgentSession {
     try {
       for await (const message of activeQuery) {
         this.receivedAnyMessage = true
-        const translation = translateSdkMessage(message, this.currentMessageId)
+        const translation = translateSdkMessage(message, this.currentMessageId, this.interruptRequested)
 
         if (translation.sessionId && translation.sessionId !== this.sessionId) {
           this.sessionId = translation.sessionId
@@ -430,11 +544,14 @@ export class AgentSession {
         }
 
         for (const event of translation.events) {
+          if (event.type === 'text-delta') this.assistantBuffer += event.delta
           this.deps.emitAgentEvent(event)
         }
 
         if (translation.turnComplete) {
+          this.flushAssistantBuffer()
           this.busy = false
+          this.interruptRequested = false
         }
       }
       // Input stream ended (dispose) or the subprocess exited cleanly.
@@ -457,7 +574,7 @@ export class AgentSession {
       this.deps.emitAgentEvent({
         type: 'error',
         messageId: this.currentMessageId,
-        message: `Claude session error: ${err instanceof Error ? err.message : String(err)}. Send your message again to restart.`
+        message: `Voyager session error: ${err instanceof Error ? err.message : String(err)}. Send your message again to restart.`
       })
     }
   }
@@ -467,6 +584,20 @@ export class AgentSession {
     this.queue = null
     this.activeQuery = null
     this.busy = false
+    this.interruptRequested = false
+  }
+
+  /** Persists the turn's accumulated assistant text as one durable message, if any was
+   *  produced. Self-clearing, so it's safe to call from both the normal turn-complete path
+   *  (inside `consume()`'s loop) and `interrupt()`'s dead-subprocess fallback - whichever
+   *  happens first wins and the other becomes a no-op. */
+  private flushAssistantBuffer(): void {
+    if (!this.assistantBuffer) return
+    const text = this.assistantBuffer
+    this.assistantBuffer = ''
+    void this.deps.projectStore
+      .appendMessage({ id: randomUUID(), role: 'assistant', text, createdAt: new Date().toISOString() })
+      .catch(() => {})
   }
 
   private handleEmission(emission: VoyagerMcpEmission): void {

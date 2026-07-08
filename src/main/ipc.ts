@@ -4,14 +4,20 @@ import { join } from 'node:path'
 import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
+  AgentSettings,
+  CreateProjectRequest,
   ExportModelRequest,
   ExportModelResponse,
   ModelDisplayedPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  ProjectStateSnapshot,
+  ProjectSummary,
+  RenameProjectRequest,
   SendMessageRequest,
   SendMessageResponse,
-  SetupStatus
+  SetupStatus,
+  SwitchProjectRequest
 } from '../shared/ipc'
 import { AgentSession } from './agent/session'
 import { resolveExportSource } from './projects/exportResolver'
@@ -57,6 +63,37 @@ function askUser(request: { requestId: string; toolName: string; summary: string
     pendingApprovals.set(request.requestId, resolve)
     broadcast(IPC.agentPermissionRequest, request)
   })
+}
+
+/**
+ * Reads everything the renderer needs to hydrate a project on mount, create, or switch: its
+ * summary list, full chat history, model/effort settings, and (if any iteration exists) the
+ * latest STL's bytes ready for the same `viewerRef.current?.loadSTL(...)` call the live
+ * `model:displayed` path already uses - the ArrayBuffer-slice here mirrors `modelLoadSample`
+ * below and `mcpTools.ts`'s `toArrayBuffer`.
+ */
+async function buildProjectSnapshot(projectStore: ProjectStore): Promise<ProjectStateSnapshot> {
+  const [projects, messages, agentSettings, latest] = await Promise.all([
+    projectStore.listProjects(),
+    projectStore.getChatHistory(),
+    projectStore.getAgentSettings(),
+    projectStore.latestIteration()
+  ])
+
+  let model: ModelDisplayedPayload | null = null
+  if (latest) {
+    const buffer = await readFile(join(projectStore.getProjectDir(), latest.stlPath))
+    model = {
+      stlPath: latest.stlPath,
+      stepPath: latest.stepPath,
+      scriptPath: latest.scriptPath,
+      summary: latest.summary,
+      iteration: latest.n,
+      stlBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+    }
+  }
+
+  return { activeProjectId: projectStore.getActiveProjectId(), projects, messages, agentSettings, model }
 }
 
 /** Registers all main-process IPC handlers. */
@@ -181,9 +218,18 @@ export function registerIpcHandlers(): void {
       const notReady = setupIncompleteReason()
       if (notReady) return { accepted: false, reason: notReady }
 
-      return agentSession.sendMessage(request.text, request.selectionContext ?? null)
+      return agentSession.sendMessage(request.text, request.selectionContext ?? null, request.attachments)
     }
   )
+
+  ipcMain.handle(IPC.agentGetSettings, async (): Promise<AgentSettings> => projectStore.getAgentSettings())
+
+  ipcMain.handle(IPC.agentSetSettings, async (_event, request: AgentSettings): Promise<AgentSettings> => {
+    await projectStore.setAgentSettings(request)
+    return request
+  })
+
+  ipcMain.handle(IPC.agentInterrupt, async (): Promise<void> => agentSession.interrupt())
 
   ipcMain.handle(
     IPC.agentPermissionRespond,
@@ -194,5 +240,37 @@ export function registerIpcHandlers(): void {
       resolve(request.allow)
       return { acknowledged: true }
     }
+  )
+
+  ipcMain.handle(IPC.projectList, async (): Promise<ProjectSummary[]> => projectStore.listProjects())
+
+  ipcMain.handle(IPC.projectGetState, async (): Promise<ProjectStateSnapshot> => buildProjectSnapshot(projectStore))
+
+  ipcMain.handle(
+    IPC.projectCreate,
+    async (_event, request: CreateProjectRequest): Promise<ProjectStateSnapshot> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before creating a new project.')
+      }
+      await projectStore.createProject(request.name)
+      return buildProjectSnapshot(projectStore)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.projectSwitch,
+    async (_event, request: SwitchProjectRequest): Promise<ProjectStateSnapshot> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before switching projects.')
+      }
+      await projectStore.switchProject(request.id)
+      return buildProjectSnapshot(projectStore)
+    }
+  )
+
+  ipcMain.handle(
+    IPC.projectRename,
+    async (_event, request: RenameProjectRequest): Promise<ProjectSummary> =>
+      projectStore.renameProject(request.id, request.name)
   )
 }

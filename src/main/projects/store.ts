@@ -1,5 +1,7 @@
-import { cp, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import type { AgentSettings, PersistedMessage, ProjectSummary } from '../../shared/ipc'
 
 /**
  * One versioned export produced by the `display_model` MCP tool. Paths are
@@ -20,8 +22,17 @@ export interface ProjectRecord {
   name: string
   createdAt: string
   sessionId?: string
+  agentModel?: AgentSettings['model']
+  agentEffort?: AgentSettings['effort']
   iterations: ProjectIteration[]
+  /** Durable chat transcript (R3.1) - user/assistant turns only; see `AgentSession`'s
+   *  `flushAssistantBuffer` for why routine tool-activity narration isn't included. */
+  messages: PersistedMessage[]
 }
+
+/** Applied whenever a project has no explicit model/effort recorded yet - matches the MVP's
+ *  original hardcoded Opus + xhigh behavior. */
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = { model: 'claude-opus-4-8', effort: 'xhigh' }
 
 export interface ProjectStoreOptions {
   /** Root directory all projects live under, e.g. `<userData>/projects`. */
@@ -31,6 +42,14 @@ export interface ProjectStoreOptions {
 }
 
 const SKILL_DIR_SEGMENTS = ['.claude', 'skills', 'printable-cad'] as const
+const MANIFEST_FILENAME = 'manifest.json'
+
+/** Tracks only ids/order - never display data (name, createdAt), which would duplicate what
+ *  each project's own `project.json` already holds and could drift out of sync. */
+interface Manifest {
+  activeProjectId: string
+  projectOrder: string[]
+}
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -42,36 +61,37 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 /**
- * Owns the (for M3's MVP) single active Voyager AI project: its on-disk
- * layout under `<baseDir>/<id>/`, the copy of the printable-cad skill it
- * carries, and the `project.json` bookkeeping (session id + iteration
- * history) that survives app restarts.
+ * Owns every Voyager AI project: each one's on-disk layout under
+ * `<baseDir>/<id>/`, the copy of the printable-cad skill it carries, and its
+ * `project.json` bookkeeping (name, session id, model/effort, iteration
+ * history, chat transcript) that survives app restarts. A small
+ * `manifest.json` sibling to the per-project directories tracks which ids
+ * exist and which one is active - see `bootstrapManifest()` for the
+ * self-healing logic that also doubles as the migration path from the old
+ * single-`'default'`-project layout (a `default/project.json` found on disk
+ * with no manifest is simply "discovered" the same way any project would be).
  *
  * Contains no top-level `electron` import and takes all filesystem roots as
  * constructor options (mirrors `EnvManager`), so it is fully unit-testable
  * under plain Node/vitest. `src/main/ipc.ts` constructs this with
  * `app.getPath('userData')`-derived paths.
- *
- * MVP note: there is exactly one project, with a fixed id ('default'). A
- * later milestone that adds multi-project support would replace the fixed
- * id with a real generator plus a "which project is active" pointer file.
  */
 export class ProjectStore {
   private readonly baseDir: string
   private readonly skillSourceDir: string
-  private readonly activeProjectId = 'default'
 
+  /** The currently-active project's loaded record, once `ensureProject()` (or `createProject()`/
+   *  `switchProject()`) has resolved at least once. Cleared only by being replaced - there is
+   *  always exactly one "active" record once the store has been used. */
   private record: ProjectRecord | null = null
-  private ensured: Promise<{ id: string; dir: string }> | null = null
 
   constructor(options: ProjectStoreOptions) {
     this.baseDir = options.baseDir
     this.skillSourceDir = options.skillSourceDir
   }
 
-  /** Directory of the active project, e.g. `<baseDir>/default`. No I/O. */
-  private dir(): string {
-    return join(this.baseDir, this.activeProjectId)
+  private dirFor(id: string): string {
+    return join(this.baseDir, id)
   }
 
   /**
@@ -84,44 +104,78 @@ export class ProjectStore {
     if (!this.record) {
       throw new Error('ProjectStore.getProjectDir() called before ensureProject() resolved')
     }
-    return this.dir()
+    return this.dirFor(this.record.id)
+  }
+
+  /** The active project's id. Same throws-before-ensure contract as `getProjectDir()`. */
+  getActiveProjectId(): string {
+    if (!this.record) {
+      throw new Error('ProjectStore.getActiveProjectId() called before ensureProject() resolved')
+    }
+    return this.record.id
   }
 
   /**
    * Ensures the active project's directory, `outputs/` subdirectory, and
    * bundled skill copy exist, and that `project.json` is present - creating
-   * everything on first call, and cheaply no-op'ing (beyond a stat + a JSON
-   * read) on every call after. Safe to call repeatedly/concurrently.
+   * everything (including a first-ever project, on a totally fresh install)
+   * on first call. Cheap on every call after: once `this.record` is loaded,
+   * later calls just return it - `switchProject()`/`createProject()` are what
+   * update `this.record` when the active project actually changes, so this
+   * never needs to re-check the manifest itself. Safe to call repeatedly.
    */
   async ensureProject(): Promise<{ id: string; dir: string }> {
-    if (!this.ensured) {
-      this.ensured = this.runEnsureProject()
+    if (this.record) {
+      return { id: this.record.id, dir: this.dirFor(this.record.id) }
     }
-    return this.ensured
+    const manifest = await this.bootstrapManifest()
+    this.record = await this.materializeProject(manifest.activeProjectId, 'Untitled project')
+    return { id: this.record.id, dir: this.dirFor(this.record.id) }
   }
 
-  private async runEnsureProject(): Promise<{ id: string; dir: string }> {
-    const dir = this.dir()
-    await mkdir(join(dir, 'outputs'), { recursive: true })
+  /** Every known project, in stable (creation/discovery) order. */
+  async listProjects(): Promise<ProjectSummary[]> {
+    const manifest = await this.bootstrapManifest()
+    const records = await Promise.all(manifest.projectOrder.map((id) => this.readRecord(this.dirFor(id))))
+    return records.filter((r): r is ProjectRecord => r !== null).map(toSummary)
+  }
 
-    const skillDestDir = join(dir, ...SKILL_DIR_SEGMENTS)
-    if (!(await pathExists(skillDestDir))) {
-      await mkdir(join(dir, '.claude', 'skills'), { recursive: true })
-      await cp(this.skillSourceDir, skillDestDir, { recursive: true })
+  /** Creates a brand-new project, materializes its on-disk layout, and makes it active. */
+  async createProject(name?: string): Promise<ProjectSummary> {
+    const manifest = await this.bootstrapManifest()
+    const id = randomUUID()
+    const record = await this.materializeProject(id, name?.trim() || 'Untitled project')
+    manifest.projectOrder.push(id)
+    manifest.activeProjectId = id
+    await this.writeManifest(manifest)
+    this.record = record
+    return toSummary(record)
+  }
+
+  /** Switches the active project. Throws if `id` isn't a known project. */
+  async switchProject(id: string): Promise<ProjectSummary> {
+    const manifest = await this.bootstrapManifest()
+    if (!manifest.projectOrder.includes(id)) {
+      throw new Error(`Unknown project: ${id}`)
     }
+    manifest.activeProjectId = id
+    await this.writeManifest(manifest)
+    this.record = await this.materializeProject(id, 'Untitled project')
+    return toSummary(this.record)
+  }
 
-    this.record = await this.readRecord(dir)
-    if (!this.record) {
-      this.record = {
-        id: this.activeProjectId,
-        name: 'Untitled project',
-        createdAt: new Date().toISOString(),
-        iterations: []
-      }
-      await this.writeRecord(dir, this.record)
+  /** Renames any project by id (not just the active one). Throws if `id` isn't known. */
+  async renameProject(id: string, name: string): Promise<ProjectSummary> {
+    const dir = this.dirFor(id)
+    const record = await this.readRecord(dir)
+    if (!record) {
+      throw new Error(`Unknown project: ${id}`)
     }
-
-    return { id: this.activeProjectId, dir }
+    const trimmed = name.trim()
+    if (trimmed) record.name = trimmed
+    await this.writeRecord(dir, record)
+    if (this.record?.id === id) this.record = record
+    return toSummary(record)
   }
 
   /**
@@ -139,7 +193,7 @@ export class ProjectStore {
     const n = (record.iterations.at(-1)?.n ?? 0) + 1
     const iteration: ProjectIteration = { ...entry, n, at: new Date().toISOString() }
     record.iterations.push(iteration)
-    await this.writeRecord(this.dir(), record)
+    await this.writeRecord(this.dirFor(record.id), record)
     return iteration
   }
 
@@ -147,7 +201,7 @@ export class ProjectStore {
   async setSessionId(sessionId: string): Promise<void> {
     const record = await this.requireRecord()
     record.sessionId = sessionId
-    await this.writeRecord(this.dir(), record)
+    await this.writeRecord(this.dirFor(record.id), record)
   }
 
   /** The persisted session id, if any - used to `resume` on restart. */
@@ -156,13 +210,138 @@ export class ProjectStore {
     return record.sessionId
   }
 
+  /** Persists the user's model/effort choice; applied by `AgentSession` on the next turn. */
+  async setAgentSettings(settings: AgentSettings): Promise<void> {
+    const record = await this.requireRecord()
+    record.agentModel = settings.model
+    record.agentEffort = settings.effort
+    await this.writeRecord(this.dirFor(record.id), record)
+  }
+
+  /** The project's model/effort choice, defaulting to `DEFAULT_AGENT_SETTINGS` when unset. */
+  async getAgentSettings(): Promise<AgentSettings> {
+    const record = await this.requireRecord()
+    return {
+      model: record.agentModel ?? DEFAULT_AGENT_SETTINGS.model,
+      effort: record.agentEffort ?? DEFAULT_AGENT_SETTINGS.effort
+    }
+  }
+
   /** Most recent iteration, or null if the project has none yet. */
   async latestIteration(): Promise<ProjectIteration | null> {
     const record = await this.requireRecord()
     return record.iterations.at(-1) ?? null
   }
 
+  /** Appends one durable chat entry (user or assistant text) - see `AgentSession`. */
+  async appendMessage(message: PersistedMessage): Promise<void> {
+    const record = await this.requireRecord()
+    record.messages.push(message)
+    await this.writeRecord(this.dirFor(record.id), record)
+  }
+
+  /**
+   * The active project's full restorable history: persisted user/assistant
+   * messages merged with system-status lines synthesized from `iterations`
+   * (`Model vN displayed: ...`), sorted chronologically. Synthesizing from
+   * `iterations` (already durable) rather than persisting a separate
+   * model-displayed message keeps there from being two sources of truth for
+   * the same fact.
+   */
+  async getChatHistory(): Promise<PersistedMessage[]> {
+    const record = await this.requireRecord()
+    const fromIterations: PersistedMessage[] = record.iterations.map((it) => ({
+      id: `iteration-${it.n}`,
+      role: 'system-status',
+      text: `Model v${it.n} displayed: ${it.summary}`,
+      createdAt: it.at
+    }))
+    return [...record.messages, ...fromIterations].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  }
+
   // -- internal -----------------------------------------------------------
+
+  /**
+   * Reads `manifest.json` (defaulting to empty), reconciles `projectOrder`
+   * against what's actually on disk (drops ids no longer present, appends
+   * ids found on disk but unlisted), creates a first project if none exist
+   * anywhere, and fixes up `activeProjectId` if it no longer names a listed
+   * project. Writes the reconciled manifest back before returning it. This
+   * single function is both the manifest bootstrap AND the migration path:
+   * a pre-R3 install's `default/project.json` with no manifest yet is just
+   * "discovered" here, the same code path a fresh install's empty `baseDir`
+   * takes when it finds nothing and creates `'default'` itself.
+   */
+  private async bootstrapManifest(): Promise<Manifest> {
+    let manifest: Manifest
+    try {
+      const raw = await readFile(join(this.baseDir, MANIFEST_FILENAME), 'utf-8')
+      manifest = JSON.parse(raw) as Manifest
+    } catch {
+      manifest = { activeProjectId: '', projectOrder: [] }
+    }
+
+    const onDisk = await this.discoverProjectIds()
+    const stillPresent = manifest.projectOrder.filter((id) => onDisk.includes(id))
+    const discovered = onDisk.filter((id) => !stillPresent.includes(id))
+    manifest.projectOrder = [...stillPresent, ...discovered]
+
+    if (manifest.projectOrder.length === 0) {
+      // Keep id 'default' for the very first project (fresh install or not) rather than a
+      // random id - it's never user-visible, and it keeps this the same code path a pre-R3
+      // install's existing 'default' dir would take (discovered above, not created here).
+      await this.materializeProject('default', 'Untitled project')
+      manifest.projectOrder = ['default']
+    }
+    if (!manifest.projectOrder.includes(manifest.activeProjectId)) {
+      manifest.activeProjectId = manifest.projectOrder[0]
+    }
+
+    await this.writeManifest(manifest)
+    return manifest
+  }
+
+  /** Project ids on disk: subdirectories of `baseDir` that contain a `project.json`. */
+  private async discoverProjectIds(): Promise<string[]> {
+    let entries
+    try {
+      entries = await readdir(this.baseDir, { withFileTypes: true })
+    } catch {
+      return []
+    }
+    const ids: string[] = []
+    for (const entry of entries) {
+      if (entry.isDirectory() && (await pathExists(join(this.baseDir, entry.name, 'project.json')))) {
+        ids.push(entry.name)
+      }
+    }
+    return ids
+  }
+
+  /**
+   * Ensures one project's directory, `outputs/` subdirectory, and bundled
+   * skill copy exist on disk, creating `project.json` (with `name` as given)
+   * if it isn't already there. Idempotent - safe to call for a project that
+   * already fully exists, which is exactly how `switchProject()` uses it to
+   * (cheaply) guarantee the target is ready without a separate code path.
+   */
+  private async materializeProject(id: string, name: string): Promise<ProjectRecord> {
+    const dir = this.dirFor(id)
+    await mkdir(join(dir, 'outputs'), { recursive: true })
+
+    const skillDestDir = join(dir, ...SKILL_DIR_SEGMENTS)
+    if (!(await pathExists(skillDestDir))) {
+      await mkdir(join(dir, '.claude', 'skills'), { recursive: true })
+      await cp(this.skillSourceDir, skillDestDir, { recursive: true })
+    }
+
+    let record = await this.readRecord(dir)
+    if (!record) {
+      record = { id, name, createdAt: new Date().toISOString(), iterations: [], messages: [] }
+      await this.writeRecord(dir, record)
+    }
+    return record
+  }
 
   private async requireRecord(): Promise<ProjectRecord> {
     await this.ensureProject()
@@ -175,13 +354,23 @@ export class ProjectStore {
   private async readRecord(dir: string): Promise<ProjectRecord | null> {
     try {
       const raw = await readFile(join(dir, 'project.json'), 'utf-8')
-      return JSON.parse(raw) as ProjectRecord
+      const record = JSON.parse(raw) as ProjectRecord
+      // Defends against a pre-R3 project.json with no `messages` field yet.
+      return { ...record, messages: record.messages ?? [] }
     } catch {
       return null
     }
   }
 
+  private async writeManifest(manifest: Manifest): Promise<void> {
+    await writeFile(join(this.baseDir, MANIFEST_FILENAME), JSON.stringify(manifest, null, 2), 'utf-8')
+  }
+
   private async writeRecord(dir: string, record: ProjectRecord): Promise<void> {
     await writeFile(join(dir, 'project.json'), JSON.stringify(record, null, 2), 'utf-8')
   }
+}
+
+function toSummary(record: ProjectRecord): ProjectSummary {
+  return { id: record.id, name: record.name, createdAt: record.createdAt }
 }

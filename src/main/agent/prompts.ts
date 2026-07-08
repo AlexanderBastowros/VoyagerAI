@@ -1,4 +1,5 @@
-import type { SelectionSummary } from '../../shared/ipc'
+import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources'
+import type { ChatAttachment, SelectionSummary } from '../../shared/ipc'
 
 /**
  * Extra context appended to the `claude_code` preset system prompt (see
@@ -64,9 +65,23 @@ export function formatSelectionContext(selection: SelectionSummary): string {
 
 /**
  * Combines the user's typed text with a formatted selection context block
- * (if a region is highlighted) into the single string sent as the user turn.
+ * (if a region is highlighted) into the user turn's message content. Stays a
+ * plain string when there are no attachments (matching every message before
+ * this feature existed); only becomes a content-block array - images first,
+ * so the following text block can refer to "the image above" - when the user
+ * attached at least one image.
  */
-export function buildUserMessage(text: string, selectionContext?: SelectionSummary | null): string {
-  if (!selectionContext) return text
-  return `${text}\n\n${formatSelectionContext(selectionContext)}`
+export function buildUserMessage(
+  text: string,
+  selectionContext?: SelectionSummary | null,
+  attachments?: ChatAttachment[]
+): string | ContentBlockParam[] {
+  const combined = selectionContext ? `${text}\n\n${formatSelectionContext(selectionContext)}` : text
+  if (!attachments || attachments.length === 0) return combined
+
+  const imageBlocks: ImageBlockParam[] = attachments.map((attachment) => ({
+    type: 'image',
+    source: { type: 'base64', media_type: attachment.mediaType, data: attachment.data }
+  }))
+  return [...imageBlocks, { type: 'text', text: combined }]
 }

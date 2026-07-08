@@ -9,6 +9,7 @@ describe('isAgentEvent', () => {
       isAgentEvent({ type: 'tool-activity', messageId: 'a', toolName: 'display_model', detail: 'x' })
     ).toBe(true)
     expect(isAgentEvent({ type: 'message-complete', messageId: 'a' })).toBe(true)
+    expect(isAgentEvent({ type: 'stopped', messageId: 'turn-1' })).toBe(true)
     expect(isAgentEvent({ type: 'error', message: 'boom' })).toBe(true)
   })
 
@@ -40,5 +41,7 @@ describe('IPC channel names', () => {
     const names = Object.values(IPC)
     expect(new Set(names).size).toBe(names.length)
     expect(IPC.modelLoadSample).toBe('model:loadSample')
+    expect(IPC.agentGetSettings).toBe('agent:getSettings')
+    expect(IPC.agentSetSettings).toBe('agent:setSettings')
   })
 })

@@ -84,3 +84,146 @@ describe('ProjectStore.getProjectDir', () => {
     expect(() => makeStore().getProjectDir()).toThrow(/ensureProject/)
   })
 })
+
+describe('ProjectStore.getAgentSettings / setAgentSettings', () => {
+  it('defaults to Opus 4.8 + xhigh when nothing has been saved', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+
+    expect(await store.getAgentSettings()).toEqual({ model: 'claude-opus-4-8', effort: 'xhigh' })
+  })
+
+  it('persists a choice across reloads', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await store.setAgentSettings({ model: 'claude-sonnet-5', effort: 'low' })
+
+    const reloaded = makeStore()
+    await reloaded.ensureProject()
+    expect(await reloaded.getAgentSettings()).toEqual({ model: 'claude-sonnet-5', effort: 'low' })
+  })
+})
+
+describe('ProjectStore multi-project support', () => {
+  it('creates additional projects and switches the active one', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    const initial = await store.listProjects()
+    expect(initial).toHaveLength(1)
+
+    const created = await store.createProject('Bracket')
+    expect(created.name).toBe('Bracket')
+    expect(store.getActiveProjectId()).toBe(created.id)
+
+    const listed = await store.listProjects()
+    expect(listed.map((p) => p.id).sort()).toEqual([initial[0].id, created.id].sort())
+
+    await store.switchProject(initial[0].id)
+    expect(store.getActiveProjectId()).toBe(initial[0].id)
+  })
+
+  it('throws when switching to an unknown project id', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await expect(store.switchProject('does-not-exist')).rejects.toThrow(/Unknown project/)
+  })
+
+  it('defaults a new project to "Untitled project" when no name is given', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    const created = await store.createProject()
+    expect(created.name).toBe('Untitled project')
+  })
+
+  it('renames a project by id, active or not', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    const created = await store.createProject('Original')
+    const other = (await store.listProjects()).find((p) => p.id !== created.id)
+
+    const renamedActive = await store.renameProject(created.id, 'Renamed active')
+    expect(renamedActive.name).toBe('Renamed active')
+
+    const renamedOther = await store.renameProject(other!.id, 'Renamed other')
+    expect(renamedOther.name).toBe('Renamed other')
+
+    const listed = await store.listProjects()
+    expect(listed.find((p) => p.id === created.id)?.name).toBe('Renamed active')
+    expect(listed.find((p) => p.id === other!.id)?.name).toBe('Renamed other')
+  })
+
+  it('throws when renaming an unknown project id', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await expect(store.renameProject('does-not-exist', 'x')).rejects.toThrow(/Unknown project/)
+  })
+
+  it('isolates iterations, session id, and settings per project', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    const firstId = store.getActiveProjectId()
+    await store.setSessionId('session-a')
+    await store.setAgentSettings({ model: 'claude-sonnet-5', effort: 'low' })
+
+    await store.createProject('Second')
+    expect(await store.getSessionId()).toBeUndefined()
+    expect(await store.getAgentSettings()).toEqual({ model: 'claude-opus-4-8', effort: 'xhigh' })
+
+    await store.switchProject(firstId)
+    expect(await store.getSessionId()).toBe('session-a')
+    expect(await store.getAgentSettings()).toEqual({ model: 'claude-sonnet-5', effort: 'low' })
+  })
+})
+
+describe('ProjectStore.getChatHistory', () => {
+  it('merges persisted messages with synthesized model-displayed lines, sorted chronologically', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+
+    await store.appendMessage({ id: 'm1', role: 'user', text: 'hello', createdAt: '2024-01-01T00:00:00.000Z' })
+    await store.recordIteration({ stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'first' })
+    // recordIteration timestamps with the real current time internally - placing this second
+    // message far in the future keeps the expected sort order deterministic either way.
+    await store.appendMessage({ id: 'm2', role: 'assistant', text: 'done', createdAt: '2999-01-01T00:00:00.000Z' })
+
+    const history = await store.getChatHistory()
+    expect(history.map((m) => m.id)).toEqual(['m1', 'iteration-1', 'm2'])
+    expect(history[1]).toMatchObject({ role: 'system-status', text: 'Model v1 displayed: first' })
+  })
+
+  it('is empty for a project with no messages or iterations', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    expect(await store.getChatHistory()).toEqual([])
+  })
+})
+
+describe('ProjectStore migration', () => {
+  it('discovers a pre-R3 default project with no manifest and makes it active', async () => {
+    const legacyDir = join(scratch, 'projects', 'default')
+    await mkdir(join(legacyDir, 'outputs'), { recursive: true })
+    await writeFile(
+      join(legacyDir, 'project.json'),
+      JSON.stringify({
+        id: 'default',
+        name: 'My old project',
+        createdAt: '2023-01-01T00:00:00.000Z',
+        sessionId: 'legacy-session',
+        iterations: []
+        // no `messages` field - this is the pre-R3 schema.
+      }),
+      'utf-8'
+    )
+
+    const store = makeStore()
+    const { id } = await store.ensureProject()
+    expect(id).toBe('default')
+    expect(store.getActiveProjectId()).toBe('default')
+
+    expect(await store.listProjects()).toEqual([
+      { id: 'default', name: 'My old project', createdAt: '2023-01-01T00:00:00.000Z' }
+    ])
+    expect(await store.getSessionId()).toBe('legacy-session')
+    expect(await store.getChatHistory()).toEqual([])
+  })
+})

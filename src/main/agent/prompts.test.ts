@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildUserMessage, formatSelectionContext, systemPromptAppend } from './prompts'
-import type { SelectionSummary } from '../../shared/ipc'
+import type { ChatAttachment, SelectionSummary } from '../../shared/ipc'
 
 const selection: SelectionSummary = {
   bboxMin: [1.234567, -2, 0],
@@ -32,9 +32,39 @@ describe('buildUserMessage', () => {
   })
 
   it('appends the selection block after the text when a region is highlighted', () => {
-    const message = buildUserMessage('make this hole 5mm', selection)
+    const message = buildUserMessage('make this hole 5mm', selection) as string
     expect(message.startsWith('make this hole 5mm\n\n')).toBe(true)
     expect(message).toContain('Selected region')
+  })
+
+  it('returns the text unchanged when attachments is an empty array', () => {
+    expect(buildUserMessage('make it taller', null, [])).toBe('make it taller')
+  })
+
+  it('turns into an image-blocks-then-text content array when images are attached', () => {
+    const attachments: ChatAttachment[] = [
+      { data: 'aGVsbG8=', mediaType: 'image/png', name: 'reference.png' },
+      { data: 'd29ybGQ=', mediaType: 'image/jpeg', name: 'photo.jpg' }
+    ]
+    const message = buildUserMessage('match this reference', null, attachments)
+
+    expect(Array.isArray(message)).toBe(true)
+    const blocks = message as Array<{ type: string }>
+    expect(blocks.map((b) => b.type)).toEqual(['image', 'image', 'text'])
+    expect(blocks[0]).toEqual({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' }
+    })
+    expect(blocks[2]).toEqual({ type: 'text', text: 'match this reference' })
+  })
+
+  it('still includes the selection block in the trailing text block when both are present', () => {
+    const message = buildUserMessage('make this hole 5mm', selection, [
+      { data: 'x', mediaType: 'image/png', name: 'ref.png' }
+    ])
+    const blocks = message as Array<{ type: string; text?: string }>
+    expect(blocks.at(-1)?.type).toBe('text')
+    expect(blocks.at(-1)?.text).toContain('Selected region')
   })
 })
 

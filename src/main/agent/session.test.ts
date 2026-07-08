@@ -109,6 +109,22 @@ describe('translateSdkMessage', () => {
     expect(t.turnComplete).toBe(true)
     expect(t.events.map((e) => e.type)).toEqual(['error', 'message-complete'])
   })
+
+  it('emits stopped (not error) on a result whose subtype is the runtime-only "interrupt"', () => {
+    const t = translateSdkMessage(msg({ type: 'result', subtype: 'interrupt', is_error: false }), 'turn-3')
+    expect(t.turnComplete).toBe(true)
+    expect(t.events).toEqual([{ type: 'stopped', messageId: 'turn-3' }])
+  })
+
+  it('emits stopped (not error) for an ordinary error subtype when interruptRequested is true', () => {
+    const t = translateSdkMessage(
+      msg({ type: 'result', subtype: 'error_during_execution', is_error: true }),
+      'turn-3',
+      true
+    )
+    expect(t.turnComplete).toBe(true)
+    expect(t.events).toEqual([{ type: 'stopped', messageId: 'turn-3' }])
+  })
 })
 
 describe('humanizeToolUse', () => {
@@ -173,34 +189,61 @@ afterEach(async () => {
 interface Harness {
   session: AgentSession
   store: ProjectStore
+  /** The most recent `queryFn` call's fake output stream - see `outputsHistory` for tests
+   *  spanning more than one call (e.g. a settings-change restart). */
   outputs: PushStream<SDKMessage>
+  /** One entry per `queryFn` call, in call order - grows when `ensureStarted` restarts the
+   *  query (e.g. after a model/effort change). */
+  outputsHistory: PushStream<SDKMessage>[]
   inputs: SDKUserMessage[]
   events: AgentEvent[]
   models: ModelDisplayedPayload[]
-  /** Returns the `canUseTool` handler the session actually passed to `queryFn`'s options. */
+  /** Returns the `canUseTool` handler from the most recent `queryFn` call's options. */
   getCanUseTool: () => CanUseTool
-  /** Returns the full options object the session actually passed to `queryFn`, if any. */
+  /** Returns the options object from the most recent `queryFn` call, if any. */
   getCapturedOptions: () => Options | undefined
+  /** One entry per `queryFn` call, in call order - see `outputsHistory`. */
+  optionsHistory: Options[]
+  /** Spy standing in for the fake Query's `interrupt()` method. */
+  interruptSpy: ReturnType<typeof vi.fn>
 }
 
 interface HarnessOptions {
   approvalTimeoutMs?: number
   requestUserApproval?: (request: { requestId: string; toolName: string; summary: string }) => Promise<boolean>
+  /** Lets a test script what happens when `activeQuery.interrupt()` is called - e.g. push a
+   *  result message onto `outputs`, or throw/reject to simulate a dead subprocess. */
+  onInterrupt?: (outputs: PushStream<SDKMessage>) => void | Promise<void>
+  /** Overrides the default real, scratch-backed ProjectStore - e.g. to point at a broken
+   *  skillSourceDir and force ensureProject()/ensureStarted() to reject. */
+  store?: ProjectStore
 }
 
 function makeHarness(opts: HarnessOptions = {}): Harness {
-  const store = new ProjectStore({
-    baseDir: join(scratch, 'projects'),
-    skillSourceDir: join(scratch, 'skill-src')
-  })
-  const outputs = new PushStream<SDKMessage>()
+  const store =
+    opts.store ??
+    new ProjectStore({
+      baseDir: join(scratch, 'projects'),
+      skillSourceDir: join(scratch, 'skill-src')
+    })
+  const outputsHistory: PushStream<SDKMessage>[] = []
+  const optionsHistory: Options[] = []
   const inputs: SDKUserMessage[] = []
   const events: AgentEvent[] = []
   const models: ModelDisplayedPayload[] = []
-  let capturedOptions: Options | undefined
+
+  const interruptSpy = vi.fn(async () => {
+    const current = outputsHistory.at(-1)
+    if (opts.onInterrupt && current) await opts.onInterrupt(current)
+  })
 
   const queryFn: QueryFn = ({ prompt, options }) => {
-    capturedOptions = options
+    if (!options) throw new Error('queryFn was called without options')
+    optionsHistory.push(options)
+    // A real query() call gets its own dedicated output stream (a fresh subprocess) - mirror
+    // that here so a settings-change restart doesn't have two queries racing over one stream.
+    const outputs = new PushStream<SDKMessage>()
+    outputsHistory.push(outputs)
     void (async () => {
       for await (const m of prompt) inputs.push(m)
     })()
@@ -208,7 +251,9 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     const iterable: AsyncIterable<SDKMessage> = {
       [Symbol.asyncIterator]: () => outputs[Symbol.asyncIterator]()
     }
-    return iterable as unknown as Query
+    // Real Query objects have control-request methods (interrupt, etc.) beyond
+    // the async-iterable surface; only `interrupt` is exercised here.
+    return { ...iterable, interrupt: interruptSpy } as unknown as Query
   }
 
   // Default: the approver must never be invoked unless a test explicitly
@@ -235,15 +280,23 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
   return {
     session,
     store,
-    outputs,
+    get outputs(): PushStream<SDKMessage> {
+      const current = outputsHistory.at(-1)
+      if (!current) throw new Error('queryFn has not been called yet - no active output stream')
+      return current
+    },
+    outputsHistory,
     inputs,
     events,
     models,
     getCanUseTool: () => {
-      if (!capturedOptions?.canUseTool) throw new Error('canUseTool was not set on the query() options')
-      return capturedOptions.canUseTool
+      const options = optionsHistory.at(-1)
+      if (!options?.canUseTool) throw new Error('canUseTool was not set on the query() options')
+      return options.canUseTool
     },
-    getCapturedOptions: () => capturedOptions
+    getCapturedOptions: () => optionsHistory.at(-1),
+    optionsHistory,
+    interruptSpy
   }
 }
 
@@ -297,12 +350,28 @@ describe('AgentSession', () => {
     await vi.waitFor(() => expect(h.inputs).toHaveLength(2))
   })
 
+  it('forwards attached images as image content blocks ahead of the text block', async () => {
+    const h = makeHarness()
+
+    const response = await h.session.sendMessage('match this reference', null, [
+      { data: 'aGVsbG8=', mediaType: 'image/png', name: 'reference.png' }
+    ])
+    expect(response.accepted).toBe(true)
+
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    const content = h.inputs[0].message.content as Array<{ type: string; text?: string }>
+    expect(Array.isArray(content)).toBe(true)
+    expect(content.map((b) => b.type)).toEqual(['image', 'text'])
+    expect(content.at(-1)?.text).toBe('match this reference')
+  })
+
   it('enables adaptive thinking with visible summaries on the query() options', async () => {
     const h = makeHarness()
     await h.session.sendMessage('hello')
     await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
 
     expect(h.getCapturedOptions()?.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
+    expect(h.getCapturedOptions()?.model).toBe('claude-opus-4-8')
     expect(h.getCapturedOptions()?.effort).toBe('xhigh')
   })
 
@@ -325,6 +394,378 @@ describe('AgentSession', () => {
     // is dead, so we only assert acceptance here).
     const next = await h.session.sendMessage('are you there?')
     expect(next.accepted).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// AgentSession model/effort settings (R8)
+// ---------------------------------------------------------------------------
+
+describe('AgentSession model/effort settings', () => {
+  it('applies a saved model/effort choice from the first turn', async () => {
+    const h = makeHarness()
+    await h.store.setAgentSettings({ model: 'claude-sonnet-5', effort: 'low' })
+
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    expect(h.getCapturedOptions()?.model).toBe('claude-sonnet-5')
+    expect(h.getCapturedOptions()?.effort).toBe('low')
+  })
+
+  it('omits effort for a model whose API rejects it (Haiku)', async () => {
+    const h = makeHarness()
+    await h.store.setAgentSettings({ model: 'claude-haiku-4-5', effort: 'max' })
+
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    expect(h.getCapturedOptions()?.model).toBe('claude-haiku-4-5')
+    expect(h.getCapturedOptions()?.effort).toBeUndefined()
+  })
+
+  it('does not restart the query between turns when settings are unchanged', async () => {
+    const h = makeHarness()
+
+    await h.session.sendMessage('first')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+
+    await h.session.sendMessage('second')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(2))
+
+    expect(h.optionsHistory).toHaveLength(1)
+  })
+
+  it('restarts the query on the next turn after a mid-session settings change, resuming the conversation', async () => {
+    const h = makeHarness()
+
+    await h.session.sendMessage('first')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    h.outputs.push(msg({ type: 'system', subtype: 'init', session_id: 'sess-1' }))
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+    await vi.waitFor(async () => expect(await h.store.getSessionId()).toBe('sess-1'))
+
+    await h.store.setAgentSettings({ model: 'claude-sonnet-5', effort: 'medium' })
+    await h.session.sendMessage('second')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(2))
+
+    // A fresh query started (not the first one reused) with the new settings, resuming the
+    // prior conversation via `resume` rather than losing it.
+    expect(h.optionsHistory).toHaveLength(2)
+    expect(h.optionsHistory[0]?.model).toBe('claude-opus-4-8')
+    expect(h.optionsHistory[1]?.model).toBe('claude-sonnet-5')
+    expect(h.optionsHistory[1]?.effort).toBe('medium')
+    expect(h.optionsHistory[1]?.resume).toBe('sess-1')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// AgentSession.interrupt
+// ---------------------------------------------------------------------------
+
+describe('AgentSession.interrupt', () => {
+  it('is a no-op when there is no turn in flight', async () => {
+    const h = makeHarness()
+    await h.session.interrupt()
+    expect(h.interruptSpy).not.toHaveBeenCalled()
+  })
+
+  it('stops an in-flight turn without tearing the session down, and the conversation continues', async () => {
+    const h = makeHarness({
+      onInterrupt: (outputs) => {
+        outputs.push(msg({ type: 'result', subtype: 'interrupt', is_error: false }))
+      }
+    })
+
+    const response = await h.session.sendMessage('design a bracket')
+    expect(response.accepted).toBe(true)
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    await h.session.interrupt()
+    expect(h.interruptSpy).toHaveBeenCalledTimes(1)
+
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+    expect(h.events.at(-1)).toEqual({ type: 'stopped', messageId: 'turn-1' })
+    expect(h.events.some((e) => e.type === 'error')).toBe(false)
+
+    // The session survives: a follow-up message is accepted and continues
+    // the same underlying query/queue rather than starting a new one.
+    const followUp = await h.session.sendMessage('now make it thicker')
+    expect(followUp.accepted).toBe(true)
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(2))
+  })
+
+  it('falls back to resetting the session when interrupt() rejects (dead subprocess)', async () => {
+    const h = makeHarness({
+      onInterrupt: () => {
+        throw new Error('subprocess already exited')
+      }
+    })
+
+    await h.session.sendMessage('design a bracket')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    await h.session.interrupt()
+
+    expect(h.session.isBusy()).toBe(false)
+    expect(h.events.some((e) => e.type === 'stopped')).toBe(true)
+  })
+
+  it('clears the interrupt flag once the turn ends, so the next normal turn completes normally', async () => {
+    const h = makeHarness({
+      onInterrupt: (outputs) => {
+        outputs.push(msg({ type: 'result', subtype: 'interrupt', is_error: false }))
+      }
+    })
+
+    await h.session.sendMessage('design a bracket')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    await h.session.interrupt()
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+
+    await h.session.sendMessage('now finish it')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(2))
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+    expect(h.events.at(-1)).toEqual({ type: 'message-complete', messageId: 'turn-2' })
+    expect(h.events.some((e) => e.type === 'stopped' && e.messageId === 'turn-2')).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// AgentSession message persistence (R3.1)
+// ---------------------------------------------------------------------------
+
+describe('AgentSession message persistence', () => {
+  it('persists the user message immediately on send', async () => {
+    const h = makeHarness()
+    await h.session.sendMessage('design a bracket')
+
+    await vi.waitFor(async () => expect(await h.store.getChatHistory()).toHaveLength(1))
+    const [message] = await h.store.getChatHistory()
+    expect(message).toMatchObject({ role: 'user', text: 'design a bracket' })
+  })
+
+  it('strips attachment data down to name/mediaType before persisting', async () => {
+    const h = makeHarness()
+    await h.session.sendMessage('match this reference', null, [
+      { data: 'aGVsbG8=', mediaType: 'image/png', name: 'reference.png' }
+    ])
+
+    await vi.waitFor(async () => expect(await h.store.getChatHistory()).toHaveLength(1))
+    const [message] = await h.store.getChatHistory()
+    expect(message.attachments).toEqual([{ name: 'reference.png', mediaType: 'image/png' }])
+  })
+
+  it('persists the accumulated assistant text as one message once the turn completes', async () => {
+    const h = makeHarness()
+    await h.session.sendMessage('design a bracket')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    h.outputs.push(
+      msg({
+        type: 'stream_event',
+        parent_tool_use_id: null,
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Sure — ' } }
+      })
+    )
+    h.outputs.push(
+      msg({
+        type: 'stream_event',
+        parent_tool_use_id: null,
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'one bracket coming up.' } }
+      })
+    )
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+
+    await vi.waitFor(async () => expect(await h.store.getChatHistory()).toHaveLength(2))
+    const history = await h.store.getChatHistory()
+    expect(history[1]).toMatchObject({ role: 'assistant', text: 'Sure — one bracket coming up.' })
+  })
+
+  it('does not persist an empty assistant message when a turn produces no text', async () => {
+    const h = makeHarness()
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+    expect(await h.store.getChatHistory()).toHaveLength(1) // just the user message
+  })
+
+  it('persists partial assistant text via the interrupt() dead-subprocess fallback path', async () => {
+    const h = makeHarness({
+      onInterrupt: () => {
+        throw new Error('subprocess already exited')
+      }
+    })
+    await h.session.sendMessage('design a bracket')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    h.outputs.push(
+      msg({
+        type: 'stream_event',
+        parent_tool_use_id: null,
+        event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Partial reply' } }
+      })
+    )
+    // Wait for the delta to actually reach the consume() loop (and thus assistantBuffer)
+    // before interrupting, not just for the user message that was persisted synchronously.
+    await vi.waitFor(() => expect(h.events.some((e) => e.type === 'text-delta')).toBe(true))
+
+    await h.session.interrupt() // rejects (onInterrupt throws), taking the dead-subprocess fallback
+
+    await vi.waitFor(async () => expect(await h.store.getChatHistory()).toHaveLength(2))
+    const history = await h.store.getChatHistory()
+    expect(history[1]).toMatchObject({ role: 'assistant', text: 'Partial reply' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// AgentSession project switching (R3)
+// ---------------------------------------------------------------------------
+
+describe('AgentSession project switching', () => {
+  it('restarts the query with the new project cwd/resume id, and switching back resumes correctly', async () => {
+    const h = makeHarness()
+
+    await h.session.sendMessage('first')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    h.outputs.push(msg({ type: 'system', subtype: 'init', session_id: 'sess-a' }))
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+    await vi.waitFor(async () => expect(await h.store.getSessionId()).toBe('sess-a'))
+
+    const firstProjectId = h.store.getActiveProjectId()
+    const firstProjectDir = h.store.getProjectDir()
+    await h.store.createProject('Second')
+    const secondProjectDir = h.store.getProjectDir()
+    expect(secondProjectDir).not.toBe(firstProjectDir)
+
+    await h.session.sendMessage('second project, first message')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(2))
+    expect(h.optionsHistory).toHaveLength(2)
+    expect(h.optionsHistory[1]?.cwd).toBe(secondProjectDir)
+    expect(h.optionsHistory[1]?.resume).toBeUndefined() // the new project has no session of its own yet
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+
+    await h.store.switchProject(firstProjectId)
+    await h.session.sendMessage('back to the first project')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(3))
+    expect(h.optionsHistory).toHaveLength(3)
+    expect(h.optionsHistory[2]?.cwd).toBe(firstProjectDir)
+    expect(h.optionsHistory[2]?.resume).toBe('sess-a')
+  })
+
+  it('does not let a failed resume on one project suppress a valid resume on another after switching back', async () => {
+    const store = new ProjectStore({
+      baseDir: join(scratch, 'projects'),
+      skillSourceDir: join(scratch, 'skill-src')
+    })
+    const events: AgentEvent[] = []
+    const optionsHistory: Options[] = []
+    const succeedingOutputs: PushStream<SDKMessage>[] = []
+    let calls = 0
+
+    const queryFn: QueryFn = ({ prompt, options }) => {
+      if (!options) throw new Error('queryFn was called without options')
+      calls += 1
+      optionsHistory.push(options)
+      void (async () => {
+        for await (const _m of prompt) {
+          /* drain - not asserted in this test */
+        }
+      })()
+      if (calls === 2) {
+        // The second project's resume attempt: reject before any message arrives - exactly
+        // the stale/foreign-resume-id failure `skipResumeOnRestart` exists to recover from.
+        const iterable: AsyncIterable<SDKMessage> = {
+          [Symbol.asyncIterator]: () => ({ next: () => Promise.reject(new Error('resume failed')) })
+        }
+        return { ...iterable, interrupt: vi.fn() } as unknown as Query
+      }
+      const outputs = new PushStream<SDKMessage>()
+      succeedingOutputs.push(outputs)
+      const iterable: AsyncIterable<SDKMessage> = { [Symbol.asyncIterator]: () => outputs[Symbol.asyncIterator]() }
+      return { ...iterable, interrupt: vi.fn() } as unknown as Query
+    }
+
+    const session = new AgentSession({
+      projectStore: store,
+      pythonPath: () => join(scratch, 'venv', 'bin', 'python'),
+      claudeCliPath: () => null,
+      emitAgentEvent: (e) => events.push(e),
+      emitModelDisplayed: () => {},
+      queryFn,
+      env: { PATH: '/usr/bin' },
+      requestUserApproval: async () => {
+        throw new Error('requestUserApproval was called unexpectedly')
+      }
+    })
+
+    // Project A: complete one turn normally so it has its own valid, persisted session id.
+    await session.sendMessage('hello from A')
+    await vi.waitFor(() => expect(succeedingOutputs).toHaveLength(1))
+    succeedingOutputs[0].push(msg({ type: 'system', subtype: 'init', session_id: 'sess-a' }))
+    succeedingOutputs[0].push(msg({ type: 'result', subtype: 'success', is_error: false }))
+    await vi.waitFor(() => expect(session.isBusy()).toBe(false))
+    await vi.waitFor(async () => expect(await store.getSessionId()).toBe('sess-a'))
+    const projectAId = store.getActiveProjectId()
+
+    // Switch to a new project B carrying a (stale/foreign) session id, so B's first message
+    // attempts - and fails - a resume.
+    await store.createProject('B')
+    await store.setSessionId('sess-b-stale')
+    await session.sendMessage('hello from B')
+    await vi.waitFor(() => expect(session.isBusy()).toBe(false))
+    expect(events.some((e) => e.type === 'error' && e.message.toLowerCase().includes('resume'))).toBe(true)
+
+    // Switch back to A - its own resume must still be attempted, not suppressed by B's
+    // unrelated, just-failed resume (this is the bug the projectChanged reset guards against).
+    await store.switchProject(projectAId)
+    await session.sendMessage('back to A')
+    await vi.waitFor(() => expect(optionsHistory).toHaveLength(3))
+    expect(optionsHistory[2]?.resume).toBe('sess-a')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// AgentSession busy-flag race (sendMessage vs. a concurrent isBusy() check)
+// ---------------------------------------------------------------------------
+
+describe('AgentSession busy-flag race', () => {
+  it('marks the session busy synchronously, before ensureStarted() resolves', async () => {
+    const h = makeHarness()
+    const pending = h.session.sendMessage('hello')
+    // Deliberately not awaited yet: sendMessage has only run synchronously up to its first
+    // `await` (real filesystem I/O inside ensureStarted), so this checks the fix directly -
+    // busy must already be true here, not just after the whole call settles.
+    expect(h.session.isBusy()).toBe(true)
+    await pending
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+  })
+
+  it('resets busy if ensureStarted() fails, so the session is not permanently stuck', async () => {
+    const brokenStore = new ProjectStore({
+      baseDir: join(scratch, 'projects'),
+      skillSourceDir: join(scratch, 'does-not-exist')
+    })
+    const h = makeHarness({ store: brokenStore })
+
+    const response = await h.session.sendMessage('hello')
+    expect(response.accepted).toBe(false)
+    expect(h.session.isBusy()).toBe(false)
+
+    // Fixing the underlying problem lets a later attempt succeed - proof busy didn't latch.
+    await mkdir(join(scratch, 'does-not-exist'), { recursive: true })
+    await writeFile(join(scratch, 'does-not-exist', 'SKILL.md'), '# fake skill')
+    const retry = await h.session.sendMessage('hello again')
+    expect(retry.accepted).toBe(true)
   })
 })
 

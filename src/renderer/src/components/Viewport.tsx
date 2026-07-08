@@ -68,7 +68,7 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
     <div className={selectMode ? 'viewport viewport-select-mode' : 'viewport'} ref={containerRef}>
       <div className="selection-marquee" ref={marqueeRef} />
       {!model && (
-        <div className="viewport-empty-hint">Ask Claude for a part and it will appear here</div>
+        <div className="viewport-empty-hint">Ask Voyager for a part and it will appear here</div>
       )}
     </div>
   )

@@ -35,7 +35,7 @@ export function resolveExportSource(
       ok: false,
       reason:
         format === 'step'
-          ? 'This model has no STEP export - ask Claude to export STEP, or use "Export STL" instead.'
+          ? 'This model has no STEP export - ask Voyager to export STEP, or use "Export STL" instead.'
           : 'This model has no STL export.'
     }
   }

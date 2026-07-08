@@ -100,9 +100,10 @@ hand with this flow - the box-with-holes example from the project plan:
 4. Claude restates the design contract (dimensions, hole sizes/positions, DFM rules it
    will apply) - reply **"yes, generate it"**.
 5. Confirm model **v1** renders in the viewport, and that the project's `outputs/`
-   directory (under the app's userData/projects/default, printed in chat or found via
-   your OS's Electron userData path) now has `..._v1.py`, `..._v1.stl`, `..._v1.step`,
-   and that the chat shows the validator result as **PASS** (watertight, fits the bed).
+   directory (under the app's userData/projects/<project id> - "default" for the first
+   project, found via your OS's Electron userData path) now has `..._v1.py`, `..._v1.stl`,
+   `..._v1.step`, and that the chat shows the validator result as **PASS** (watertight, fits
+   the bed).
 6. Toggle **Select region**, drag a marquee over one of the two holes, then send
    `"make this hole 5mm"`.
 7. Confirm model **v2** renders, and `outputs/` now also has `..._v2.py/.stl/.step`.
@@ -139,8 +140,6 @@ Electron download). **Before shipping a build, a real Mac run should confirm:**
 
 - **Auth**: subscription-only via the Claude Code CLI (`claude login`). No API-key mode
   yet.
-- **Single project**: no project browser or multi-project switching - one implicit
-  "default" project per machine.
 - **Unsigned builds**: no code signing or notarization; Gatekeeper right-click-to-open
   required on macOS.
 - **No parametric sliders UI**: refining a dimension is done through chat / region

@@ -1,14 +1,20 @@
 import type {
   AgentEvent,
+  AgentSettings,
+  CreateProjectRequest,
   ExportModelRequest,
   ExportModelResponse,
   ModelDisplayedPayload,
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  ProjectStateSnapshot,
+  ProjectSummary,
+  RenameProjectRequest,
   SendMessageRequest,
   SendMessageResponse,
-  SetupStatus
+  SetupStatus,
+  SwitchProjectRequest
 } from '../shared/ipc'
 
 /**
@@ -26,6 +32,12 @@ export interface VoyagerApi {
   }
   agent: {
     sendMessage: (request: SendMessageRequest) => Promise<SendMessageResponse>
+    /** Current model/effort choice for the active project. */
+    getSettings: () => Promise<AgentSettings>
+    /** Persists a new model/effort choice; applied by the session starting from the next turn. */
+    setSettings: (settings: AgentSettings) => Promise<AgentSettings>
+    /** Stops the in-flight turn; resolves once the interrupt is delivered. No-op when idle. */
+    interrupt: () => Promise<void>
     /** Subscribe to streaming agent events; returns an unsubscribe function. */
     onEvent: (callback: (event: AgentEvent) => void) => () => void
     /** Subscribe to out-of-policy tool approval requests; returns an unsubscribe function. */
@@ -39,5 +51,18 @@ export interface VoyagerApi {
     onDisplayed: (callback: (payload: ModelDisplayedPayload) => void) => () => void
     /** Prompts a native save dialog and copies the latest iteration's STL/STEP there. */
     export: (request: ExportModelRequest) => Promise<ExportModelResponse>
+  }
+  project: {
+    /** Every known project, in stable creation/discovery order. */
+    list: () => Promise<ProjectSummary[]>
+    /** Creates a new project and switches to it; resolves with its full hydrated state. */
+    create: (request: CreateProjectRequest) => Promise<ProjectStateSnapshot>
+    /** Switches the active project; resolves with its full hydrated state. Rejects if Voyager
+     *  is mid-turn - stop or wait first. */
+    switch: (request: SwitchProjectRequest) => Promise<ProjectStateSnapshot>
+    /** Renames any project by id, active or not. */
+    rename: (request: RenameProjectRequest) => Promise<ProjectSummary>
+    /** The active project's full hydrated state - called once on app mount. */
+    getState: () => Promise<ProjectStateSnapshot>
   }
 }

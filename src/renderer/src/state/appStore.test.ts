@@ -6,6 +6,9 @@ function resetStore(): void {
   useAppStore.setState({
     messages: [],
     model: null,
+    agentSettings: { model: 'claude-opus-4-8', effort: 'xhigh' },
+    projects: [],
+    activeProjectId: null,
     selection: null,
     selectMode: false,
     pendingPermission: null,
@@ -85,6 +88,13 @@ describe('appStore', () => {
     expect(useAppStore.getState().model).toBeNull()
   })
 
+  it('replaces the model/effort choice wholesale via setAgentSettings', () => {
+    expect(useAppStore.getState().agentSettings).toEqual({ model: 'claude-opus-4-8', effort: 'xhigh' })
+
+    useAppStore.getState().setAgentSettings({ model: 'claude-sonnet-5', effort: 'medium' })
+    expect(useAppStore.getState().agentSettings).toEqual({ model: 'claude-sonnet-5', effort: 'medium' })
+  })
+
   it('toggles selectMode independently of other state', () => {
     expect(useAppStore.getState().selectMode).toBe(false)
 
@@ -151,5 +161,130 @@ describe('appStore', () => {
 
     useAppStore.getState().applyAgentEvent({ type: 'message-complete', messageId: 'turn-1' })
     expect(useAppStore.getState().thinkingText).toBe('')
+  })
+
+  it('completes the streaming message, adds a status line, and clears turn state on stopped', () => {
+    useAppStore.getState().setPendingPermission({
+      requestId: 'perm-1-1',
+      toolName: 'Write',
+      summary: 'Write to /Users/x/Desktop/foo.py (outside the project folder)'
+    })
+    useAppStore.getState().setAgentBusy(true)
+
+    useAppStore.getState().applyAgentEvent({ type: 'text-delta', messageId: 'turn-1', delta: 'Hel' })
+    useAppStore.getState().applyAgentEvent({ type: 'text-delta', messageId: 'turn-1', delta: 'lo' })
+
+    useAppStore.getState().applyAgentEvent({ type: 'stopped', messageId: 'turn-1' })
+
+    const { messages, agentBusy, thinkingText, pendingPermission } = useAppStore.getState()
+    const streamed = messages.find((m) => m.text === 'Hello')
+
+    expect(streamed?.streaming).toBe(false)
+    expect(messages.at(-1)?.role).toBe('system-status')
+    expect(messages.at(-1)?.text).toBe('Stopped.')
+    expect(agentBusy).toBe(false)
+    expect(thinkingText).toBe('')
+    expect(pendingPermission).toBeNull()
+  })
+
+  it('handles stopped for an unknown messageId without crashing', () => {
+    useAppStore.getState().setAgentBusy(true)
+
+    expect(() =>
+      useAppStore.getState().applyAgentEvent({ type: 'stopped', messageId: 'turn-unknown' })
+    ).not.toThrow()
+
+    const { messages, agentBusy } = useAppStore.getState()
+    expect(messages.at(-1)?.role).toBe('system-status')
+    expect(messages.at(-1)?.text).toBe('Stopped.')
+    expect(agentBusy).toBe(false)
+  })
+
+  describe('hydrateProject', () => {
+    it('replaces messages/model/agentSettings/projects/activeProjectId from a snapshot', () => {
+      useAppStore.getState().hydrateProject({
+        activeProjectId: 'proj-b',
+        projects: [
+          { id: 'proj-a', name: 'First', createdAt: '2024-01-01T00:00:00.000Z' },
+          { id: 'proj-b', name: 'Second', createdAt: '2024-01-02T00:00:00.000Z' }
+        ],
+        messages: [
+          { id: 'm1', role: 'user', text: 'hi', createdAt: '2024-01-02T00:00:00.000Z' },
+          {
+            id: 'm2',
+            role: 'assistant',
+            text: 'hello back',
+            createdAt: '2024-01-02T00:00:01.000Z',
+            attachments: [{ name: 'ref.png', mediaType: 'image/png' }]
+          }
+        ],
+        agentSettings: { model: 'claude-sonnet-5', effort: 'medium' },
+        model: {
+          stlPath: 'outputs/part_v1.stl',
+          stepPath: 'outputs/part_v1.step',
+          scriptPath: 'outputs/part_v1.py',
+          summary: 'a part',
+          iteration: 1,
+          stlBuffer: new ArrayBuffer(8)
+        }
+      })
+
+      const state = useAppStore.getState()
+      expect(state.activeProjectId).toBe('proj-b')
+      expect(state.projects.map((p) => p.id)).toEqual(['proj-a', 'proj-b'])
+      expect(state.agentSettings).toEqual({ model: 'claude-sonnet-5', effort: 'medium' })
+      expect(state.model).toMatchObject({ name: 'part_v1.stl', iteration: 1, stepPath: 'outputs/part_v1.step' })
+      expect(state.messages).toHaveLength(2)
+      expect(state.messages[0]).toMatchObject({ id: 'm1', role: 'user', text: 'hi' })
+      expect(state.messages[1].attachments).toEqual([{ name: 'ref.png', mediaType: 'image/png', data: '' }])
+    })
+
+    it('resets ephemeral turn state so a stale turn cannot bleed into the newly-hydrated project', () => {
+      useAppStore.getState().setAgentBusy(true)
+      useAppStore.getState().setSelection(sampleSelection())
+      useAppStore.getState().setPendingPermission({ requestId: 'p-1', toolName: 'Write', summary: 'x' })
+      useAppStore.getState().applyAgentEvent({ type: 'thinking-delta', messageId: 'turn-1', delta: 'thinking...' })
+
+      useAppStore.getState().hydrateProject({
+        activeProjectId: 'proj-a',
+        projects: [{ id: 'proj-a', name: 'First', createdAt: '2024-01-01T00:00:00.000Z' }],
+        messages: [],
+        agentSettings: { model: 'claude-opus-4-8', effort: 'xhigh' },
+        model: null
+      })
+
+      const state = useAppStore.getState()
+      expect(state.agentBusy).toBe(false)
+      expect(state.selection).toBeNull()
+      expect(state.pendingPermission).toBeNull()
+      expect(state.thinkingText).toBe('')
+      expect(state.agentStreamIds).toEqual({})
+      expect(state.model).toBeNull()
+    })
+  })
+
+  describe('updateProject', () => {
+    it('updates an existing project entry in place', () => {
+      useAppStore.setState({
+        projects: [
+          { id: 'proj-a', name: 'First', createdAt: '2024-01-01T00:00:00.000Z' },
+          { id: 'proj-b', name: 'Second', createdAt: '2024-01-02T00:00:00.000Z' }
+        ]
+      })
+
+      useAppStore.getState().updateProject({ id: 'proj-a', name: 'Renamed', createdAt: '2024-01-01T00:00:00.000Z' })
+
+      const { projects } = useAppStore.getState()
+      expect(projects.find((p) => p.id === 'proj-a')?.name).toBe('Renamed')
+      expect(projects.find((p) => p.id === 'proj-b')?.name).toBe('Second')
+    })
+
+    it('appends the project if it is not already known', () => {
+      useAppStore.setState({ projects: [] })
+      useAppStore.getState().updateProject({ id: 'proj-c', name: 'Third', createdAt: '2024-01-03T00:00:00.000Z' })
+      expect(useAppStore.getState().projects).toEqual([
+        { id: 'proj-c', name: 'Third', createdAt: '2024-01-03T00:00:00.000Z' }
+      ])
+    })
   })
 })

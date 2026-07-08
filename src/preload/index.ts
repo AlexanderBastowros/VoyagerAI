@@ -2,15 +2,21 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
+  AgentSettings,
+  CreateProjectRequest,
   ExportModelRequest,
   ExportModelResponse,
   ModelDisplayedPayload,
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  ProjectStateSnapshot,
+  ProjectSummary,
+  RenameProjectRequest,
   SendMessageRequest,
   SendMessageResponse,
-  SetupStatus
+  SetupStatus,
+  SwitchProjectRequest
 } from '../shared/ipc'
 import type { VoyagerApi } from './api'
 
@@ -29,6 +35,10 @@ const api: VoyagerApi = {
   agent: {
     sendMessage: (request: SendMessageRequest): Promise<SendMessageResponse> =>
       ipcRenderer.invoke(IPC.agentSendMessage, request),
+    getSettings: (): Promise<AgentSettings> => ipcRenderer.invoke(IPC.agentGetSettings),
+    setSettings: (settings: AgentSettings): Promise<AgentSettings> =>
+      ipcRenderer.invoke(IPC.agentSetSettings, settings),
+    interrupt: (): Promise<void> => ipcRenderer.invoke(IPC.agentInterrupt),
     onEvent: (callback) => subscribe<AgentEvent>(IPC.agentEvent, callback),
     onPermissionRequest: (callback) => subscribe<PermissionRequestPayload>(IPC.agentPermissionRequest, callback),
     respondPermission: (request: PermissionRespondRequest): Promise<PermissionRespondResponse> =>
@@ -39,6 +49,16 @@ const api: VoyagerApi = {
     onDisplayed: (callback) => subscribe<ModelDisplayedPayload>(IPC.modelDisplayed, callback),
     export: (request: ExportModelRequest): Promise<ExportModelResponse> =>
       ipcRenderer.invoke(IPC.modelExport, request)
+  },
+  project: {
+    list: (): Promise<ProjectSummary[]> => ipcRenderer.invoke(IPC.projectList),
+    create: (request: CreateProjectRequest): Promise<ProjectStateSnapshot> =>
+      ipcRenderer.invoke(IPC.projectCreate, request),
+    switch: (request: SwitchProjectRequest): Promise<ProjectStateSnapshot> =>
+      ipcRenderer.invoke(IPC.projectSwitch, request),
+    rename: (request: RenameProjectRequest): Promise<ProjectSummary> =>
+      ipcRenderer.invoke(IPC.projectRename, request),
+    getState: (): Promise<ProjectStateSnapshot> => ipcRenderer.invoke(IPC.projectGetState)
   }
 }
 

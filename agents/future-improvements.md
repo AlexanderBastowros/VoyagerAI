@@ -24,63 +24,20 @@ Working conventions for any agent picking up an item:
 
 The near-term priorities, in order. Each is a self-contained work order.
 
-### R1. Render markdown in the chat transcript
-- **Why:** assistant replies come back as markdown (bold, headings, bulleted/numbered lists,
-  tables, inline + fenced code), but the chat renders the raw string, so `**bold**` shows
-  literally and tables render as unreadable pipe soup. This is the most visible polish gap in
-  the app.
-- **Where:** `src/renderer/src/components/ChatPanel.tsx` — the `chat-message-text` div
-  currently renders `{message.text}` verbatim (plus the streaming cursor `|`); swap in a
-  markdown renderer. No markdown dependency exists in `package.json` yet — add a lightweight,
-  sanitized one (e.g. `react-markdown` + `remark-gfm` for GitHub-flavored tables/strikethrough),
-  and render **HTML-sanitized** output only (never `dangerouslySetInnerHTML` on model text).
-  Add table/code/list styling in `src/renderer/src/styles.css`. Must degrade gracefully on the
-  partial markdown that arrives mid-stream (unterminated `**`, half-written table) and keep the
-  streaming cursor working.
-- **Done-when:** bold/italic/headings/lists/tables/inline + fenced code all render correctly
-  for both completed and mid-stream assistant messages; no literal `**`/`|` artifacts; code
-  blocks are monospaced and scroll rather than overflow; raw HTML in model output is neutralized.
-
-### R2. Stop / cancel an in-flight turn
-- **Why:** a long generation can't be interrupted; the input stays locked (`agentBusy`) until
-  message-complete. The SDK's `Query` exposes `interrupt()`.
-- **Where:** `src/main/agent/session.ts` — add an `interrupt()` that calls
-  `this.activeQuery?.interrupt()` and clears `busy`; new `agent:interrupt` channel in
-  `src/shared/ipc.ts` wired through `src/main/ipc.ts`, `src/preload/api.ts` (`agent.interrupt`),
-  and `src/preload/index.ts`; a **Stop** button in `ChatPanel.tsx` shown in place of/next to
-  **Send** while `agentBusy`; a "stopped" `system-status` line and `agentBusy` cleared in
-  `src/renderer/src/state/appStore.ts`.
-- **Done-when:** clicking Stop ends the turn promptly, the chat shows a "stopped" status, the
-  input re-enables, and the next message works normally against the resumed session; covered by
-  a session test asserting `interrupt()` is invoked and `busy` resets.
-
-### R3. Multiple models, each in its own chat (project switcher)
-- **Why:** the MVP hard-codes a single `'default'` project (documented in
-  `src/main/projects/store.ts`), so there is exactly one chat and one model. Users want several
-  parts, each with its own conversation, model, and history — displayed in a **right-hand menu**,
-  with the **chat moved to the left**. Includes **R3.1: persist each chat and its STLs to disk**
-  so switching and relaunching restore the full conversation and model (today the SDK session
-  resumes via `sessionId` in `project.json`, but the chat panel starts empty and the transcript
-  is lost).
-- **Where:**
-  - Main — `src/main/projects/store.ts`: replace the fixed `activeProjectId = 'default'` with
-    real ids + an active-project pointer file; add list/create/rename/switch; persist the chat
-    transcript alongside iterations (extend `ProjectRecord` with a `messages` array — STLs are
-    already saved as `outputs/*_vN.stl` by `recordIteration`, so persisting the transcript and
-    isolating projects is the actual gap); migrate the existing `default` data. `AgentSession`
-    (`src/main/agent/session.ts`): one session per project (or re-`ensureStarted` on switch with
-    that project's `resume` id + `cwd`).
-  - IPC — new `project:*` channels in `src/shared/ipc.ts` (`list`/`create`/`switch`/`rename`
-    plus `project:getState` to hydrate messages + latest STL), wired via `src/main/ipc.ts` and
-    `src/preload/api.ts`.
-  - Renderer — `src/renderer/src/App.tsx` layout: move `ChatPanel` to the left column and add a
-    right-hand projects sidebar; `src/renderer/src/state/appStore.ts` gains active-project state
-    and per-project messages with hydrate-on-switch; `src/renderer/src/styles.css` for the new
-    three-column shell.
-- **Done-when:** create/switch/rename projects from the right-hand menu; each keeps its own
-  chat, iterations, resumable session, and STLs; switching swaps both the chat and the viewport;
-  quit + relaunch restores the last active project's conversation and latest model; existing
-  `default` data migrates cleanly.
+> **Done:** R1 (markdown chat rendering — `Markdown.tsx` via `react-markdown` + `remark-gfm`,
+> raw HTML neutralized, mid-stream-safe) and R2 (stop/cancel — `AgentSession.interrupt()`, a
+> `stopped` terminal `AgentEvent`, `agent:interrupt` IPC, Stop button in `ChatPanel.tsx`)
+> landed together, plus a persona rebrand of user-visible "Claude" strings to "Voyager"
+> (setup/CLI-dependency strings intentionally still say Claude). R9 (image attachment support —
+> `ChatAttachment` in `src/shared/ipc.ts`, paperclip-icon attach button + paste/drag-and-drop in
+> `ChatPanel.tsx`, `buildUserMessage` in `prompts.ts` builds image content blocks) also landed;
+> attachments show as `📎 filename` chips rather than thumbnails. R8 (model + effort selectors —
+> two dropdowns in `ChatPanel.tsx`'s header, `AgentSettings` persisted per project in
+> `store.ts`/`session.ts`, applied on the next turn) landed too. R3 (multi-project switcher —
+> `ProjectStore` manifest + list/create/switch/rename in `src/main/projects/store.ts`, a
+> right-hand `ProjectSidebar.tsx`, and R3.1's chat-transcript persistence via
+> `AgentSession.flushAssistantBuffer`/`appendMessage`) has also landed; a pre-R3 single-project
+> install migrates automatically (its `default` project is discovered, not recreated).
 
 ### R4. STL version history with revert
 - **Why:** every `display_model` call already writes a versioned STL and records a
@@ -133,17 +90,23 @@ The near-term priorities, in order. Each is a self-contained work order.
 - **Done-when:** a Wireframe toggle switches the displayed model between shaded and wireframe
   without reloading, and the setting persists across model swaps within the session.
 
-### R8. Model selector + effort selector
-- **Why:** the SDK options are hard-coded — `effort: 'xhigh'` and the default (Opus) model in
-  `src/main/agent/session.ts`'s `ensureStarted`. Users should be able to trade speed vs. depth
-  (pick a faster/cheaper model, or lower effort for quick tweaks) without editing code.
-- **Where:** `src/main/agent/session.ts` — surface `model` and `effort` on the `query()`
-  `Options` (both already accepted there; `effort` is set to `'xhigh'` today, `model` is unset →
-  defaults to Opus); pass the current choices into `ensureStarted` and apply them on the next
-  turn (a new session/`resume` may be needed to change model mid-conversation). New IPC to set
-  the choices (or fold into the `project:*` state so each project remembers its model/effort),
-  wired via `src/shared/ipc.ts`, `src/main/ipc.ts`, `src/preload/api.ts`. Two dropdowns in the
-  UI — `Toolbar.tsx` or a chat header — backed by `src/renderer/src/state/appStore.ts`.
-- **Done-when:** the user picks a model and an effort level from the UI; subsequent turns run
-  with those settings; the selection persists (per project, or app-wide) across relaunch; the
-  default remains today's Opus + `xhigh` behavior when untouched.
+---
+
+## Possible ideas
+
+Unscheduled, less-defined ideas — bigger architectural bets than the roadmap items above, worth
+scoping properly before committing to a design.
+
+- **Anthropic API key as an alternative to the CLI.** Today the app depends on the Claude CLI
+  being installed and on the machine's own auth (`ClaudeChecker` in
+  `src/main/setup/claudeChecks.ts`, `cliPath` threaded into `session.ts`). Let the user choose,
+  as a setting, between "use the Claude CLI" (current behavior) and "use an Anthropic API key"
+  entered directly in the app — the SDK's `query()` can likely be pointed at an API key instead
+  of a CLI binary. Needs a settings surface for entering/storing the key (securely — not plain
+  JSON) and a code path in `session.ts` that skips the CLI preflight when a key is configured.
+- **Support for other LLM APIs and Ollama.** Beyond Anthropic, let users plug in other providers
+  (OpenAI, Gemini, etc.) or a local Ollama endpoint. This is a bigger bet than it sounds since
+  the whole agent loop (`src/main/agent/session.ts`) is built around the Claude Agent SDK's tool
+  calling, permission model, and streaming events — a different provider likely means either an
+  adapter layer that normalizes to the SDK's event shape, or accepting reduced functionality
+  (no custom tools/MCP) for non-Anthropic providers. Worth a design spike before implementation.
