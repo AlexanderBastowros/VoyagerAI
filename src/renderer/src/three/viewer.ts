@@ -5,6 +5,9 @@ import { colors } from '../colors'
 
 const BACKGROUND_COLOR = colors.bgApp
 const MODEL_COLOR = colors.accent
+/** Length (mm) of each axis line drawn by the orientation gizmo - large enough to read against
+ *  the 200mm grid without dwarfing small parts. */
+const AXES_SIZE = 35
 
 /**
  * Thin wrapper around a three.js scene/camera/renderer set up for viewing a
@@ -21,6 +24,10 @@ export class ModelViewer {
 
   private mesh: THREE.Mesh | null = null
   private highlight: THREE.Object3D | null = null
+  private measurementObject: THREE.Object3D | null = null
+  private axesHelper: THREE.AxesHelper | null = null
+  /** Applied to every material created by `loadSTL` so the mode survives a model swap. */
+  private wireframe = false
   private rafHandle = 0
   private disposed = false
 
@@ -97,11 +104,13 @@ export class ModelViewer {
     const geometry = loader.parse(buffer)
     geometry.computeVertexNormals()
     geometry.computeBoundingSphere()
+    geometry.computeBoundingBox()
 
     const material = new THREE.MeshStandardMaterial({
       color: MODEL_COLOR,
       metalness: 0.1,
-      roughness: 0.65
+      roughness: 0.65,
+      wireframe: this.wireframe
     })
 
     const mesh = new THREE.Mesh(geometry, material)
@@ -139,11 +148,12 @@ export class ModelViewer {
   /**
    * Removes and disposes the current model, if any, and detaches (but does
    * not dispose - the caller owns its lifecycle) any active selection
-   * highlight, since its triangle indices refer to the mesh being cleared.
-   * Safe to call repeatedly.
+   * highlight or measurement overlay, since both refer to points/triangles
+   * on the mesh being cleared. Safe to call repeatedly.
    */
   clear(): void {
     this.setHighlightObject(null)
+    this.setMeasurementObject(null)
 
     if (!this.mesh) return
 
@@ -163,6 +173,13 @@ export class ModelViewer {
   /** The currently displayed mesh, or null if no model is loaded. */
   getMesh(): THREE.Mesh | null {
     return this.mesh
+  }
+
+  /** The current mesh's bounding-box size (X/Y/Z, mm), or null if no model is loaded. */
+  getDimensions(): { x: number; y: number; z: number } | null {
+    const box = this.mesh?.geometry.boundingBox
+    if (!box) return null
+    return { x: box.max.x - box.min.x, y: box.max.y - box.min.y, z: box.max.z - box.min.z }
   }
 
   /** The viewer's camera - useful for building a view-projection matrix for selection. */
@@ -193,6 +210,40 @@ export class ModelViewer {
     if (this.highlight) this.scene.add(this.highlight)
   }
 
+  /**
+   * Attaches `object` to the scene as the active measurement overlay (the
+   * line + point markers built by `MeasurementController`), detaching
+   * whatever measurement object (if any) was previously attached. Pass null
+   * to detach without attaching a replacement. Mirrors `setHighlightObject`
+   * but uses a dedicated slot - measurement and selection can be visible
+   * independently of one another. Does not dispose the detached object.
+   */
+  setMeasurementObject(object: THREE.Object3D | null): void {
+    if (this.measurementObject === object) return
+    if (this.measurementObject) this.scene.remove(this.measurementObject)
+    this.measurementObject = object
+    if (this.measurementObject) this.scene.add(this.measurementObject)
+  }
+
+  /** Shows/hides the XYZ orientation gizmo. Since it's added directly to the scene (not the
+   *  camera), it orbits along with everything else as the user rotates the view. Created lazily
+   *  on first enable. */
+  setAxesVisible(enabled: boolean): void {
+    if (!this.axesHelper) {
+      if (!enabled) return
+      this.axesHelper = new THREE.AxesHelper(AXES_SIZE)
+    }
+    this.axesHelper.visible = enabled
+    if (enabled && this.axesHelper.parent !== this.scene) this.scene.add(this.axesHelper)
+  }
+
+  /** Toggles wireframe rendering on the current mesh (if any) and remembers the setting so it
+   *  carries over to the next model loaded via `loadSTL`/`syncModel`. */
+  setWireframe(enabled: boolean): void {
+    this.wireframe = enabled
+    if (this.mesh) (this.mesh.material as THREE.MeshStandardMaterial).wireframe = enabled
+  }
+
   /** Tears down the renderer, controls, and observers. The instance is unusable after this. */
   dispose(): void {
     if (this.disposed) return
@@ -201,6 +252,10 @@ export class ModelViewer {
     cancelAnimationFrame(this.rafHandle)
     this.resizeObserver.disconnect()
     this.clear()
+    if (this.axesHelper) {
+      this.axesHelper.geometry.dispose()
+      ;(this.axesHelper.material as THREE.Material).dispose()
+    }
     this.controls.dispose()
     this.renderer.dispose()
 

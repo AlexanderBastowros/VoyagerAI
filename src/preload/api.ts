@@ -4,13 +4,16 @@ import type {
   CreateProjectRequest,
   ExportModelRequest,
   ExportModelResponse,
+  IterationInfo,
   ModelDisplayedPayload,
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrintSettings,
   ProjectStateSnapshot,
   ProjectSummary,
   RenameProjectRequest,
+  RevertToRequest,
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus,
@@ -49,6 +52,8 @@ export interface VoyagerApi {
     loadSample: () => Promise<ArrayBuffer>
     /** Subscribe to model-displayed events; returns an unsubscribe function. */
     onDisplayed: (callback: (payload: ModelDisplayedPayload) => void) => () => void
+    /** Subscribe to on-demand print-settings recommendations; returns an unsubscribe function. */
+    onPrintSettings: (callback: (payload: PrintSettings) => void) => () => void
     /** Prompts a native save dialog and copies the latest iteration's STL/STEP there. */
     export: (request: ExportModelRequest) => Promise<ExportModelResponse>
   }
@@ -64,5 +69,11 @@ export interface VoyagerApi {
     rename: (request: RenameProjectRequest) => Promise<ProjectSummary>
     /** The active project's full hydrated state - called once on app mount. */
     getState: () => Promise<ProjectStateSnapshot>
+    /** Every iteration ever recorded for the active project, oldest first (R4 version history). */
+    listIterations: () => Promise<IterationInfo[]>
+    /** Reverts the active project's "current" iteration to an earlier (or later) generation;
+     *  resolves with its full hydrated state (same shape as switch/create) so the caller can
+     *  `hydrateProject()` + re-sync the viewport. Rejects if Voyager is mid-turn. */
+    revertTo: (request: RevertToRequest) => Promise<ProjectStateSnapshot>
   }
 }

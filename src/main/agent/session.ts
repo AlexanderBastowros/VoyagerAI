@@ -8,6 +8,7 @@ import type {
   AgentSettings,
   ChatAttachment,
   ModelDisplayedPayload,
+  PrintSettings,
   SelectionSummary,
   SendMessageResponse
 } from '../../shared/ipc'
@@ -95,6 +96,7 @@ export interface AgentSessionDeps {
   claudeCliPath: () => string | null
   emitAgentEvent: (event: AgentEvent) => void
   emitModelDisplayed: (payload: ModelDisplayedPayload) => void
+  emitPrintSettings: (payload: PrintSettings) => void
   /**
    * Surfaces an out-of-policy tool call to the user (an inline Allow/Deny
    * card in the chat) and resolves with their decision. Backed by an IPC
@@ -182,6 +184,8 @@ export function humanizeToolUse(name: string, input: Record<string, unknown>): s
       return null // internal bookkeeping - not worth a chat line
     case 'mcp__voyager__display_model':
       return 'Displaying the model in the viewport'
+    case 'mcp__voyager__recommend_print_settings':
+      return 'Recommending print settings'
     case 'mcp__voyager__set_status':
       return null // the tool handler itself emits the (better) status text
     default:
@@ -506,6 +510,7 @@ export class AgentSession {
         'Skill',
         'TodoWrite',
         'mcp__voyager__display_model',
+        'mcp__voyager__recommend_print_settings',
         'mcp__voyager__set_status'
       ],
       canUseTool: this.canUseTool,
@@ -601,15 +606,21 @@ export class AgentSession {
   }
 
   private handleEmission(emission: VoyagerMcpEmission): void {
-    if (emission.kind === 'status') {
-      this.deps.emitAgentEvent({
-        type: 'tool-activity',
-        messageId: this.currentMessageId,
-        toolName: 'set_status',
-        detail: emission.detail
-      })
-      return
+    switch (emission.kind) {
+      case 'status':
+        this.deps.emitAgentEvent({
+          type: 'tool-activity',
+          messageId: this.currentMessageId,
+          toolName: 'set_status',
+          detail: emission.detail
+        })
+        return
+      case 'model-displayed':
+        this.deps.emitModelDisplayed(emission.payload)
+        return
+      case 'print-settings':
+        this.deps.emitPrintSettings(emission.payload)
+        return
     }
-    this.deps.emitModelDisplayed(emission.payload)
   }
 }

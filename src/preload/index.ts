@@ -6,13 +6,16 @@ import type {
   CreateProjectRequest,
   ExportModelRequest,
   ExportModelResponse,
+  IterationInfo,
   ModelDisplayedPayload,
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrintSettings,
   ProjectStateSnapshot,
   ProjectSummary,
   RenameProjectRequest,
+  RevertToRequest,
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus,
@@ -47,6 +50,7 @@ const api: VoyagerApi = {
   model: {
     loadSample: (): Promise<ArrayBuffer> => ipcRenderer.invoke(IPC.modelLoadSample),
     onDisplayed: (callback) => subscribe<ModelDisplayedPayload>(IPC.modelDisplayed, callback),
+    onPrintSettings: (callback) => subscribe<PrintSettings>(IPC.printSettingsUpdated, callback),
     export: (request: ExportModelRequest): Promise<ExportModelResponse> =>
       ipcRenderer.invoke(IPC.modelExport, request)
   },
@@ -58,7 +62,10 @@ const api: VoyagerApi = {
       ipcRenderer.invoke(IPC.projectSwitch, request),
     rename: (request: RenameProjectRequest): Promise<ProjectSummary> =>
       ipcRenderer.invoke(IPC.projectRename, request),
-    getState: (): Promise<ProjectStateSnapshot> => ipcRenderer.invoke(IPC.projectGetState)
+    getState: (): Promise<ProjectStateSnapshot> => ipcRenderer.invoke(IPC.projectGetState),
+    listIterations: (): Promise<IterationInfo[]> => ipcRenderer.invoke(IPC.projectListIterations),
+    revertTo: (request: RevertToRequest): Promise<ProjectStateSnapshot> =>
+      ipcRenderer.invoke(IPC.projectRevertTo, request)
   }
 }
 

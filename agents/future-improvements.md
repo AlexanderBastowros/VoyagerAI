@@ -38,57 +38,26 @@ The near-term priorities, in order. Each is a self-contained work order.
 > right-hand `ProjectSidebar.tsx`, and R3.1's chat-transcript persistence via
 > `AgentSession.flushAssistantBuffer`/`appendMessage`) has also landed; a pre-R3 single-project
 > install migrates automatically (its `default` project is discovered, not recreated).
-
-### R4. STL version history with revert
-- **Why:** every `display_model` call already writes a versioned STL and records a
-  `ProjectIteration` (`src/main/projects/store.ts` `recordIteration`, `outputs/*_vN.stl`), but
-  there is no way to browse past versions or roll back — the viewport only ever shows the latest.
-  Users want to revert to a previous state.
-- **Where:** new `project:listIterations` / `project:revertTo` IPC (read `ProjectRecord.iterations`,
-  load a chosen iteration's `stlPath` into the viewport through the existing
-  `model:displayed` / `setModel` path); a version-history list in the UI (right-hand panel under
-  the active project, or a viewport strip); reverting sets the active model and marks it current
-  so a follow-up refinement branches from the reverted state — `AgentSession` must know which
-  version is active (add an `activeIteration` pointer in `store.ts` rather than assuming
-  `latestIteration`). Touches `store.ts`, `src/renderer/src/state/appStore.ts` (`ModelInfo`),
-  and a new history component / `Toolbar.tsx`.
-- **Done-when:** the user sees the list of generated versions with summaries + timestamps;
-  clicking one loads that STL into the viewport; continuing the chat refines from the reverted
-  version; no STL is deleted (old versions stay on disk and remain reachable).
-
-### R5. Orientation axes + model dimensions panel
-- **Why:** hobbyists need to read orientation and overall size at a glance; the viewer is
-  orbit/zoom over a plain grid with no axes indicator and no dimension readout.
-- **Where:** `src/renderer/src/three/viewer.ts` — add an XYZ axes gizmo (e.g. a corner
-  `AxesHelper`/overlay) alongside `createGrid()`; compute `geometry.boundingBox` in `loadSTL`
-  and expose the bounding-box size (X/Y/Z in mm); optional section/clipping-plane view via the
-  renderer/material `clippingPlanes`. Surface the dimensions in a small panel —
-  `src/renderer/src/components/Viewport.tsx` / `Toolbar.tsx` + `appStore.ts` `ModelInfo`
-  (add `dims`), styled in `styles.css`.
-- **Done-when:** an XYZ axes indicator is visible and tracks orbit; a dimensions readout shows
-  the current model's bounding-box X/Y/Z in mm and updates on every new/reverted model;
-  (optional) a section-plane toggle cuts through the model.
-
-### R6. Point-to-point measurement tool
-- **Why:** users sanity-check printability by measuring features; there's no way to measure the
-  distance between two points on the model.
-- **Where:** `src/renderer/src/three/viewer.ts` plus a new measurement module that reuses the
-  raycasting/picking pattern in `src/renderer/src/three/selectionController.ts`; the user clicks
-  two points on the mesh surface and the tool draws a line + a distance label (mm), overlaid via
-  the `setHighlightObject` attach pattern or a dedicated overlay object. Toggle in `Toolbar.tsx`
-  (mirrors the existing "Select region" toggle), with state in `appStore.ts`.
-- **Done-when:** enabling the tool lets the user click two surface points and see the
-  straight-line distance in mm with a visible measurement line; clearing/toggling removes it;
-  orbit still works while the tool is active.
-
-### R7. Wireframe view mode
-- **Why:** wireframe exposes topology and faceting that a shaded surface hides — handy for
-  spotting non-manifold edges or over/under-tessellation before printing.
-- **Where:** `src/renderer/src/three/viewer.ts` — a `setWireframe(enabled)` that toggles
-  `material.wireframe` on the current mesh and applies to any model loaded while the mode is on;
-  a Wireframe toggle in `Toolbar.tsx` with state in `appStore.ts`.
-- **Done-when:** a Wireframe toggle switches the displayed model between shaded and wireframe
-  without reloading, and the setting persists across model swaps within the session.
+> R5 (orientation axes + dimensions panel — `ModelViewer.setAxesVisible`/`getDimensions` in
+> `viewer.ts`, `showAxes` toggle + dimensions chip in `ViewportControls.tsx`), R6
+> (point-to-point measurement — `src/renderer/src/three/measurement.ts` (raycasting math +
+> `MeasurementOverlay`) and `measurementController.ts` (DOM glue, mirrors
+> `selectionController.ts`), `ModelViewer.setMeasurementObject`, `measureMode`/`measurement` in
+> `appStore.ts`, a Measure toggle + distance chip in `ViewportControls.tsx`), and R7 (wireframe
+> view mode — `ModelViewer.setWireframe` applied on load and persisted across model swaps,
+> `wireframe` toggle in `appStore.ts`/`ViewportControls.tsx`) have also landed. `ProjectSidebar.tsx`
+> and `Toolbar.tsx` were removed in a later refactor; the viewer toolbar now lives in
+> `ViewportControls.tsx` and the project switcher in `ProjectsDrawer.tsx`. R4 (STL version history
+> with revert — an explicit `activeIteration` pointer on `ProjectRecord` in `store.ts`, rather than
+> always assuming the latest iteration; `revertTo`/`listIterations`/`activeIterationRecord` on
+> `ProjectStore`; `project:listIterations`/`project:revertTo` IPC returning the renderer-safe
+> `IterationInfo` shape and a full `ProjectStateSnapshot`; `iterations`/`activeIteration` state in
+> `appStore.ts`; a version-history list under the project list in `ProjectsDrawer.tsx` with the
+> current version highlighted) has also landed — no STL is ever deleted, and `model:export`
+> resolves the active iteration rather than always the latest. Print settings recommendation —
+> `recommend_print_settings` MCP tool in `mcpTools.ts`, `PrintSettings` + `printSettings:updated`
+> IPC, on-demand via a button in the new `PrintSettingsPanel.tsx` (collapsible, above the chat),
+> settings tagged to the active iteration and cleared on model change.
 
 ---
 

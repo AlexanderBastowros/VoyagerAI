@@ -4,7 +4,9 @@ import type { ProjectIteration } from './store'
 
 /**
  * Resolves which on-disk file `model:export` should copy for a given format,
- * given the project's latest recorded iteration.
+ * given the project's active iteration (R4: the explicit `activeIteration`
+ * pointer set by `revertTo()`, not necessarily the most recently recorded
+ * one - see `ProjectStore.activeIterationRecord`).
  *
  * Kept as a pure function (no `electron` import, no filesystem I/O) so it is
  * unit-testable without a dialog or a real project directory - `src/main/
@@ -21,15 +23,15 @@ export type ExportSourceResolution =
   | { ok: false; reason: string }
 
 export function resolveExportSource(
-  latestIteration: Pick<ProjectIteration, 'stlPath' | 'stepPath'> | null,
+  activeIteration: Pick<ProjectIteration, 'stlPath' | 'stepPath'> | null,
   projectDir: string,
   format: ExportFormat
 ): ExportSourceResolution {
-  if (!latestIteration) {
+  if (!activeIteration) {
     return { ok: false, reason: 'No model has been generated yet.' }
   }
 
-  const candidate = format === 'step' ? latestIteration.stepPath : latestIteration.stlPath
+  const candidate = format === 'step' ? activeIteration.stepPath : activeIteration.stlPath
   if (!candidate) {
     return {
       ok: false,

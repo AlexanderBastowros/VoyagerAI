@@ -181,6 +181,38 @@ box, centroid, and size in model coordinates (mm). Use it together with your par
 script to identify which feature they mean, and confirm your interpretation ("that's
 the left mounting hole — correct?") before regenerating if there's any ambiguity.
 
+Print settings (below) are an optional follow-up step once the user is happy with the model —
+don't volunteer them unasked.
+
+---
+
+## Phase 7 — Print settings (on request)
+
+When the user asks for print settings, slicer settings, or "how do I print this," call the
+`recommend_print_settings` MCP tool rather than answering in prose. Recommend concrete FDM
+settings tailored to the part's geometry, the material (ask if it wasn't already established in
+Phase 1/2 and it matters — e.g. PLA vs. PETG vs. ABS changes temps and bed adhesion needs), and
+the DFM decisions already baked into the model (wall counts, overhangs, orientation from Phase 4):
+
+- **Layer height** — finer (0.12–0.16 mm) for visible detail or small text/threads, coarser
+  (0.24–0.28 mm) for a quick strength part with no fine features; 0.2 mm is a reasonable default.
+- **Walls/perimeters** — match or exceed the `MIN_WALL`-derived perimeter count from Phase 1/4;
+  load-bearing parts want more (4+), decorative parts can use fewer.
+- **Top/bottom layers** and **infill** — denser (30%+, a strong pattern like gyroid or cubic) for
+  load-bearing parts; sparse (10–15%, grid) for a display or fit-check part.
+- **Supports** — "None" if every overhang is within the 45° rule already applied in Phase 4,
+  otherwise flag which faces need "Touching build plate" or "Everywhere" supports.
+- **Adhesion** — "Brim" for small footprints or tall/thin parts prone to tipping, "Raft" for
+  warp-prone materials (ABS) or minimal first-layer contact, "None"/"Skirt" otherwise.
+- **Temps and speed** — standard ranges for the chosen material.
+- **Orientation** — restate the print orientation from Phase 4's DFM notes (which face sits on
+  the bed and why).
+
+The tool records which model version (`iteration`) the recommendation is for automatically — you
+don't set it. The settings render as a list in Voyager's print-settings panel, above the chat;
+after calling the tool, a short chat reply ("Settings are up in the panel above") is enough — you
+don't need to repeat every value in prose too.
+
 ---
 
 ## Environment / dependencies

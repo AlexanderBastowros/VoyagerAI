@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
@@ -7,8 +7,11 @@ import Divider from '@mui/material/Divider'
 import Paper from '@mui/material/Paper'
 import Snackbar from '@mui/material/Snackbar'
 import ToggleButton from '@mui/material/ToggleButton'
+import ExploreIcon from '@mui/icons-material/Explore'
 import FileDownloadIcon from '@mui/icons-material/FileDownload'
+import GridOnIcon from '@mui/icons-material/GridOn'
 import HighlightAltIcon from '@mui/icons-material/HighlightAlt'
+import StraightenIcon from '@mui/icons-material/Straighten'
 import ViewInArIcon from '@mui/icons-material/ViewInAr'
 import type { ExportFormat } from '../../../shared/ipc'
 import type { ModelViewer } from '../three/viewer'
@@ -24,21 +27,61 @@ function formatSelectionChip(dims: [number, number, number], triCount: number): 
   return `~${fmt(dims[0])}×${fmt(dims[1])}×${fmt(dims[2])} mm · ${triCount} tris`
 }
 
-/** Floating controls over the viewport: sample-model dev action, export, region-selection controls. */
+function formatDimensions(dims: { x: number; y: number; z: number }): string {
+  const fmt = (n: number): string => n.toFixed(1)
+  return `Size: ${fmt(dims.x)}×${fmt(dims.y)}×${fmt(dims.z)} mm`
+}
+
+function formatDistanceChip(distanceMm: number): string {
+  return `Distance: ${distanceMm.toFixed(1)} mm`
+}
+
+/** Floating controls over the viewport: sample-model dev action, export, region-selection,
+ *  measurement, and view-mode (axes/wireframe) controls. */
 export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JSX.Element {
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState<ExportFormat | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [status, setStatus] = useState<string | null>(null)
+  const [dims, setDims] = useState<{ x: number; y: number; z: number } | null>(null)
   const model = useAppStore((state) => state.model)
   const setModel = useAppStore((state) => state.setModel)
   const selectMode = useAppStore((state) => state.selectMode)
   const setSelectMode = useAppStore((state) => state.setSelectMode)
   const selection = useAppStore((state) => state.selection)
   const setSelection = useAppStore((state) => state.setSelection)
+  const measureMode = useAppStore((state) => state.measureMode)
+  const setMeasureMode = useAppStore((state) => state.setMeasureMode)
+  const measurement = useAppStore((state) => state.measurement)
+  const setMeasurement = useAppStore((state) => state.setMeasurement)
+  const showAxes = useAppStore((state) => state.showAxes)
+  const setShowAxes = useAppStore((state) => state.setShowAxes)
+  const wireframe = useAppStore((state) => state.wireframe)
+  const setWireframe = useAppStore((state) => state.setWireframe)
 
   function flashStatus(message: string): void {
     setStatus(message)
+  }
+
+  // The viewer loads the STL synchronously (see App.tsx/ProjectsDrawer/handleLoadSample below),
+  // so by the time this effect runs after a `model` change the new geometry's bounding box is
+  // already computed - read it straight from the viewer rather than threading dims through
+  // every load call site.
+  useEffect(() => {
+    setDims(viewerRef.current?.getDimensions() ?? null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [model])
+
+  function handleSelectModeChange(): void {
+    const next = !selectMode
+    setSelectMode(next)
+    if (next) setMeasureMode(false)
+  }
+
+  function handleMeasureModeChange(): void {
+    const next = !measureMode
+    setMeasureMode(next)
+    if (next) setSelectMode(false)
   }
 
   async function handleLoadSample(): Promise<void> {
@@ -97,13 +140,15 @@ export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JS
           gap: 1,
           px: 1,
           py: 0.5,
-          bgcolor: colors.bgPanelRaised
+          bgcolor: colors.bgPanelRaised,
+          flexWrap: 'wrap'
         }}
       >
         <Button startIcon={<ViewInArIcon />} onClick={() => void handleLoadSample()} disabled={loading}>
           {loading ? 'Loading...' : 'Load sample'}
         </Button>
         {model && <Chip size="small" variant="outlined" label={model.name} sx={{ fontFamily: fontMono }} />}
+        {dims && <Chip size="small" variant="outlined" label={formatDimensions(dims)} sx={{ fontFamily: fontMono }} />}
         <Divider orientation="vertical" flexItem />
         <Button
           startIcon={<FileDownloadIcon />}
@@ -120,13 +165,7 @@ export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JS
           {exporting === 'step' ? 'Exporting…' : 'Export STEP'}
         </Button>
         <Divider orientation="vertical" flexItem />
-        <ToggleButton
-          value="select"
-          size="small"
-          selected={selectMode}
-          onChange={() => setSelectMode(!selectMode)}
-          disabled={!model}
-        >
+        <ToggleButton value="select" size="small" selected={selectMode} onChange={handleSelectModeChange} disabled={!model}>
           <HighlightAltIcon fontSize="small" sx={{ mr: 0.5 }} />
           Select region
         </ToggleButton>
@@ -138,6 +177,39 @@ export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JS
             sx={{ fontFamily: fontMono }}
           />
         )}
+        <ToggleButton
+          value="measure"
+          size="small"
+          selected={measureMode}
+          onChange={handleMeasureModeChange}
+          disabled={!model}
+        >
+          <StraightenIcon fontSize="small" sx={{ mr: 0.5 }} />
+          Measure
+        </ToggleButton>
+        {measurement !== null && (
+          <Chip
+            size="small"
+            label={formatDistanceChip(measurement)}
+            onDelete={() => setMeasurement(null)}
+            sx={{ fontFamily: fontMono }}
+          />
+        )}
+        <Divider orientation="vertical" flexItem />
+        <ToggleButton value="axes" size="small" selected={showAxes} onChange={() => setShowAxes(!showAxes)}>
+          <ExploreIcon fontSize="small" sx={{ mr: 0.5 }} />
+          Axes
+        </ToggleButton>
+        <ToggleButton
+          value="wireframe"
+          size="small"
+          selected={wireframe}
+          onChange={() => setWireframe(!wireframe)}
+          disabled={!model}
+        >
+          <GridOnIcon fontSize="small" sx={{ mr: 0.5 }} />
+          Wireframe
+        </ToggleButton>
       </Paper>
       {error ? (
         <Alert

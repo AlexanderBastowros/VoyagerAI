@@ -123,13 +123,30 @@ export interface PersistedMessage {
   attachments?: PersistedAttachment[]
 }
 
-/** Hydrates the renderer on mount and on every project switch/create. */
+/**
+ * One row of the version-history list (R4). A trimmed, renderer-safe view of `ProjectIteration`
+ * (which lives in `src/main/projects/store.ts` and isn't imported here to keep this module free
+ * of main-only types) - `hasStep` replaces the raw `stepPath` since the renderer only ever needs
+ * to know whether a STEP export exists, not its on-disk path.
+ */
+export interface IterationInfo {
+  n: number
+  summary: string
+  at: string
+  hasStep: boolean
+}
+
+/** Hydrates the renderer on mount and on every project switch/create/revert. */
 export interface ProjectStateSnapshot {
   activeProjectId: string
   projects: ProjectSummary[]
   messages: PersistedMessage[]
   agentSettings: AgentSettings
   model: ModelDisplayedPayload | null
+  /** Every iteration ever recorded for the active project, oldest first (R4 version history). */
+  iterations: IterationInfo[]
+  /** The `n` of the iteration currently shown/exported, or null if the project has none yet. */
+  activeIteration: number | null
 }
 
 export interface CreateProjectRequest {
@@ -143,6 +160,10 @@ export interface SwitchProjectRequest {
 export interface RenameProjectRequest {
   id: string
   name: string
+}
+
+export interface RevertToRequest {
+  n: number
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +203,33 @@ export interface ModelDisplayedPayload {
 }
 
 // ---------------------------------------------------------------------------
+// Print settings (on-demand recommend_print_settings MCP tool)
+// ---------------------------------------------------------------------------
+
+/**
+ * Recommended FDM slicer settings for the currently displayed model, produced on demand by the
+ * `recommend_print_settings` MCP tool (mirrors `ModelDisplayedPayload`'s `display_model` pattern).
+ * `iteration` is set server-side (from `ProjectStore.activeIterationRecord()`), never by the
+ * agent, so a stale recommendation can be detected against the live `ModelInfo.iteration`.
+ */
+export interface PrintSettings {
+  iteration: number
+  material: string
+  layerHeightMm: number
+  wallCount: number
+  topBottomLayers: number
+  infillPercent: number
+  infillPattern?: string
+  supports: string
+  adhesion: string
+  nozzleTempC: number
+  bedTempC: number
+  printSpeedMmS: number
+  orientation: string
+  notes?: string
+}
+
+// ---------------------------------------------------------------------------
 // Model export (M5 Export STL/STEP)
 // ---------------------------------------------------------------------------
 
@@ -216,13 +264,16 @@ export const IPC = {
   agentPermissionRequest: 'agent:permissionRequest',
   agentPermissionRespond: 'agent:permissionRespond',
   modelDisplayed: 'model:displayed',
+  printSettingsUpdated: 'printSettings:updated',
   modelLoadSample: 'model:loadSample',
   modelExport: 'model:export',
   projectList: 'project:list',
   projectCreate: 'project:create',
   projectSwitch: 'project:switch',
   projectRename: 'project:rename',
-  projectGetState: 'project:getState'
+  projectGetState: 'project:getState',
+  projectListIterations: 'project:listIterations',
+  projectRevertTo: 'project:revertTo'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

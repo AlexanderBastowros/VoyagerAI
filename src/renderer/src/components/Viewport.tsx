@@ -5,22 +5,30 @@ import Typography from '@mui/material/Typography'
 import { ModelViewer } from '../three/viewer'
 import { SelectionHighlight } from '../three/selection'
 import { SelectionController } from '../three/selectionController'
+import { MeasurementOverlay } from '../three/measurement'
+import { MeasurementController } from '../three/measurementController'
 import { useAppStore } from '../state/appStore'
 
 interface ViewportProps {
   viewerRef: MutableRefObject<ModelViewer | null>
 }
 
-/** Hosts the three.js canvas and the marquee-select overlay/controller. Creates a
- *  ModelViewer on mount, disposes it (and the selection controller/highlight) on unmount. */
+/** Hosts the three.js canvas and the marquee-select/measurement overlays and controllers.
+ *  Creates a ModelViewer on mount, disposes it (and both controllers/overlays) on unmount. */
 export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const marqueeRef = useRef<HTMLDivElement | null>(null)
   const controllerRef = useRef<SelectionController | null>(null)
+  const measureControllerRef = useRef<MeasurementController | null>(null)
 
   const selectMode = useAppStore((state) => state.selectMode)
   const selection = useAppStore((state) => state.selection)
   const setSelection = useAppStore((state) => state.setSelection)
+  const measureMode = useAppStore((state) => state.measureMode)
+  const measurement = useAppStore((state) => state.measurement)
+  const setMeasurement = useAppStore((state) => state.setMeasurement)
+  const showAxes = useAppStore((state) => state.showAxes)
+  const wireframe = useAppStore((state) => state.wireframe)
   const model = useAppStore((state) => state.model)
 
   useEffect(() => {
@@ -41,11 +49,23 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
     })
     controllerRef.current = controller
 
+    const measurementOverlay = new MeasurementOverlay()
+    const measureController = new MeasurementController({
+      container,
+      getViewer: () => viewerRef.current,
+      overlay: measurementOverlay,
+      onMeasureChange: (distanceMm) => setMeasurement(distanceMm)
+    })
+    measureControllerRef.current = measureController
+
     return () => {
       controller.dispose()
       highlight.dispose()
+      measureController.dispose()
+      measurementOverlay.dispose()
       viewer.dispose()
       controllerRef.current = null
+      measureControllerRef.current = null
       viewerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -55,6 +75,11 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   useEffect(() => {
     controllerRef.current?.setActive(selectMode)
   }, [selectMode])
+
+  // Keep measure-mode interaction (and orbit enable/disable) in sync with the toolbar toggle.
+  useEffect(() => {
+    measureControllerRef.current?.setActive(measureMode)
+  }, [measureMode])
 
   // Any code path that clears the store selection (auto-clear after an accepted
   // send, Escape, a new model iteration arriving) should also hide the visual
@@ -66,6 +91,27 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selection])
 
+  // Same idea for measurement: a model swap (setModel) and Escape/toggle-off both clear the
+  // store field, and both should also tear down the (now possibly-stale) line/markers.
+  useEffect(() => {
+    if (measurement === null) {
+      measureControllerRef.current?.reset()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [measurement])
+
+  // Orientation gizmo visibility follows the toolbar toggle directly - no controller involved.
+  useEffect(() => {
+    viewerRef.current?.setAxesVisible(showAxes)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showAxes])
+
+  // Wireframe mode likewise applies straight to the viewer's current material.
+  useEffect(() => {
+    viewerRef.current?.setWireframe(wireframe)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wireframe])
+
   return (
     <Box
       ref={containerRef}
@@ -74,7 +120,7 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
         inset: 0,
         overflow: 'hidden',
         bgcolor: 'background.default',
-        cursor: selectMode ? 'crosshair' : 'default',
+        cursor: selectMode || measureMode ? 'crosshair' : 'default',
         '& canvas': { display: 'block' }
       }}
     >

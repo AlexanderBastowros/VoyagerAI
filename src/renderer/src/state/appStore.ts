@@ -3,8 +3,10 @@ import type {
   AgentEvent,
   AgentSettings,
   ChatAttachment,
+  IterationInfo,
   ModelDisplayedPayload,
   PermissionRequestPayload,
+  PrintSettings,
   ProjectStateSnapshot,
   ProjectSummary,
   SelectionSummary,
@@ -80,10 +82,31 @@ export interface AppState {
   projects: ProjectSummary[]
   /** The currently-active project's id, or null before the initial `project:getState` hydration. */
   activeProjectId: string | null
+  /** The active project's version history, oldest first (R4) - hydrated alongside `model`. */
+  iterations: IterationInfo[]
+  /** The `n` of the currently-shown/exported iteration, or null before hydration / with no
+   *  iterations yet. Note the agent always branches from the live conversation + on-disk files,
+   *  never from this pointer - it only governs what's displayed and what `model:export` copies
+   *  (see `ProjectStore.activeIterationRecord` in the main process). */
+  activeIteration: number | null
+  /** The most recent on-demand print-settings recommendation, or null if none has been requested
+   *  yet for the current model. Session-only (not persisted in `project.json`) and tagged with
+   *  the iteration it applies to - cleared whenever the displayed model changes (`setModel`) or
+   *  the project is (re)hydrated, since a new/reverted model invalidates it. */
+  printSettings: PrintSettings | null
   setupStatus: SetupStatus
   selection: SelectionSummary | null
   /** True while the "Select region" toolbar toggle is active. */
   selectMode: boolean
+  /** True while the "Measure" toolbar toggle is active. */
+  measureMode: boolean
+  /** The straight-line distance (mm) between the two most recently picked measurement points,
+   *  or null before a measurement is completed / after it's cleared. */
+  measurement: number | null
+  /** True while the XYZ orientation gizmo is shown in the viewport. Defaults on. */
+  showAxes: boolean
+  /** True while the displayed model is rendered in wireframe rather than shaded. */
+  wireframe: boolean
   /** True from an accepted send until the agent's message-complete/error event. */
   agentBusy: boolean
   /**
@@ -106,8 +129,9 @@ export interface AppState {
   appendToMessage: (id: string, delta: string) => void
   /** Marks a streaming message as finished. */
   completeMessage: (id: string) => void
-  /** Replaces the current model. Also clears any active selection - its triangle indices
-   *  and coordinates refer to the previous iteration's geometry and must not leak forward. */
+  /** Replaces the current model. Also clears any active selection and measurement - their
+   *  triangle indices/points refer to the previous iteration's geometry and must not leak
+   *  forward. */
   setModel: (model: ModelInfo | null) => void
   /** Replaces the current model/effort choice - called on mount and after the user changes it. */
   setAgentSettings: (settings: AgentSettings) => void
@@ -118,9 +142,25 @@ export interface AppState {
   /** Updates (or inserts) one project's sidebar entry - used after a rename, which returns
    *  just the renamed summary rather than a full snapshot. */
   updateProject: (summary: ProjectSummary) => void
+  /** Replaces the active project's version-history list - used after `project:revertTo` (also
+   *  set wholesale by `hydrateProject`). */
+  setIterations: (iterations: IterationInfo[]) => void
+  /** Replaces the active-iteration pointer - used after `project:revertTo` (also set wholesale
+   *  by `hydrateProject`). */
+  setActiveIteration: (activeIteration: number | null) => void
+  /** Appends a freshly-generated iteration (from a live `model:displayed` push, not a hydration)
+   *  to the version-history list and marks it active - keeps `ProjectsDrawer`'s history in sync
+   *  without a round-trip to `project:listIterations` every time the agent displays a model. */
+  addIteration: (payload: ModelDisplayedPayload) => void
+  /** Sets or clears (pass `null`) the current print-settings recommendation - see `printSettings`. */
+  setPrintSettings: (settings: PrintSettings | null) => void
   setSetupStatus: (status: SetupStatus) => void
   setSelection: (selection: SelectionSummary | null) => void
   setSelectMode: (selectMode: boolean) => void
+  setMeasureMode: (measureMode: boolean) => void
+  setMeasurement: (measurement: number | null) => void
+  setShowAxes: (showAxes: boolean) => void
+  setWireframe: (wireframe: boolean) => void
   setAgentBusy: (busy: boolean) => void
   /** Sets or clears (pass `null`) the pending approval card. */
   setPendingPermission: (request: PermissionRequestPayload | null) => void
@@ -134,9 +174,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   agentSettings: DEFAULT_AGENT_SETTINGS,
   projects: [],
   activeProjectId: null,
+  iterations: [],
+  activeIteration: null,
+  printSettings: null,
   setupStatus: initialSetupStatus(),
   selection: null,
   selectMode: false,
+  measureMode: false,
+  measurement: null,
+  showAxes: true,
+  wireframe: false,
   agentBusy: false,
   agentStreamIds: {},
   pendingPermission: null,
@@ -162,7 +209,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }))
   },
 
-  setModel: (model) => set({ model, selection: null }),
+  setModel: (model) => set({ model, selection: null, measurement: null, printSettings: null }),
   setAgentSettings: (agentSettings) => set({ agentSettings }),
 
   hydrateProject: (snapshot) => {
@@ -171,6 +218,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectId: snapshot.activeProjectId,
       agentSettings: snapshot.agentSettings,
       model: snapshot.model ? toModelInfo(snapshot.model) : null,
+      iterations: snapshot.iterations,
+      activeIteration: snapshot.activeIteration,
       messages: snapshot.messages.map((m) => ({
         id: m.id,
         role: m.role,
@@ -181,6 +230,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       // Ephemeral turn state can't legitimately still apply to a different project's chat -
       // reset it defensively even though the main process blocks switching mid-turn.
       selection: null,
+      measurement: null,
+      // Session-only, not part of ProjectStateSnapshot - a hydrated project never carries a
+      // stale recommendation forward.
+      printSettings: null,
       agentBusy: false,
       agentStreamIds: {},
       pendingPermission: null,
@@ -196,9 +249,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     }))
   },
 
+  setIterations: (iterations) => set({ iterations }),
+  setActiveIteration: (activeIteration) => set({ activeIteration }),
+
+  addIteration: (payload) => {
+    set((state) => ({
+      iterations: [
+        ...state.iterations,
+        {
+          n: payload.iteration,
+          summary: payload.summary,
+          at: new Date().toISOString(),
+          hasStep: Boolean(payload.stepPath)
+        }
+      ],
+      activeIteration: payload.iteration
+    }))
+  },
+  setPrintSettings: (printSettings) => set({ printSettings }),
   setSetupStatus: (setupStatus) => set({ setupStatus }),
   setSelection: (selection) => set({ selection }),
   setSelectMode: (selectMode) => set({ selectMode }),
+  setMeasureMode: (measureMode) => set({ measureMode }),
+  setMeasurement: (measurement) => set({ measurement }),
+  setShowAxes: (showAxes) => set({ showAxes }),
+  setWireframe: (wireframe) => set({ wireframe }),
   setAgentBusy: (agentBusy) => set({ agentBusy }),
   setPendingPermission: (pendingPermission) => set({ pendingPermission }),
 

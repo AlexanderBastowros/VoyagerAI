@@ -8,12 +8,15 @@ import type {
   CreateProjectRequest,
   ExportModelRequest,
   ExportModelResponse,
+  IterationInfo,
   ModelDisplayedPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrintSettings,
   ProjectStateSnapshot,
   ProjectSummary,
   RenameProjectRequest,
+  RevertToRequest,
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus,
@@ -65,35 +68,51 @@ function askUser(request: { requestId: string; toolName: string; summary: string
   })
 }
 
+/** Maps a main-only `ProjectIteration` to the renderer-safe `IterationInfo` (R4). */
+function toIterationInfo(iteration: { n: number; summary: string; at: string; stepPath?: string }): IterationInfo {
+  return { n: iteration.n, summary: iteration.summary, at: iteration.at, hasStep: Boolean(iteration.stepPath) }
+}
+
 /**
- * Reads everything the renderer needs to hydrate a project on mount, create, or switch: its
- * summary list, full chat history, model/effort settings, and (if any iteration exists) the
- * latest STL's bytes ready for the same `viewerRef.current?.loadSTL(...)` call the live
- * `model:displayed` path already uses - the ArrayBuffer-slice here mirrors `modelLoadSample`
- * below and `mcpTools.ts`'s `toArrayBuffer`.
+ * Reads everything the renderer needs to hydrate a project on mount, create, switch, or revert:
+ * its summary list, full chat history, model/effort settings, the version-history list (R4),
+ * and (if any iteration exists) the *active* iteration's STL bytes ready for the same
+ * `viewerRef.current?.loadSTL(...)` call the live `model:displayed` path already uses - the
+ * ArrayBuffer-slice here mirrors `modelLoadSample` below and `mcpTools.ts`'s `toArrayBuffer`.
+ * Uses `activeIterationRecord()` (not `latestIteration()`) so a prior `revertTo()` call is
+ * honored - see `ProjectStore.activeIterationRecord`.
  */
 async function buildProjectSnapshot(projectStore: ProjectStore): Promise<ProjectStateSnapshot> {
-  const [projects, messages, agentSettings, latest] = await Promise.all([
+  const [projects, messages, agentSettings, active, iterations] = await Promise.all([
     projectStore.listProjects(),
     projectStore.getChatHistory(),
     projectStore.getAgentSettings(),
-    projectStore.latestIteration()
+    projectStore.activeIterationRecord(),
+    projectStore.listIterations()
   ])
 
   let model: ModelDisplayedPayload | null = null
-  if (latest) {
-    const buffer = await readFile(join(projectStore.getProjectDir(), latest.stlPath))
+  if (active) {
+    const buffer = await readFile(join(projectStore.getProjectDir(), active.stlPath))
     model = {
-      stlPath: latest.stlPath,
-      stepPath: latest.stepPath,
-      scriptPath: latest.scriptPath,
-      summary: latest.summary,
-      iteration: latest.n,
+      stlPath: active.stlPath,
+      stepPath: active.stepPath,
+      scriptPath: active.scriptPath,
+      summary: active.summary,
+      iteration: active.n,
       stlBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
     }
   }
 
-  return { activeProjectId: projectStore.getActiveProjectId(), projects, messages, agentSettings, model }
+  return {
+    activeProjectId: projectStore.getActiveProjectId(),
+    projects,
+    messages,
+    agentSettings,
+    model,
+    iterations: iterations.map(toIterationInfo),
+    activeIteration: active?.n ?? null
+  }
 }
 
 /** Registers all main-process IPC handlers. */
@@ -117,6 +136,7 @@ export function registerIpcHandlers(): void {
     claudeCliPath: () => claudeChecker.cliPath(),
     emitAgentEvent: (event: AgentEvent) => broadcast(IPC.agentEvent, event),
     emitModelDisplayed: (payload: ModelDisplayedPayload) => broadcast(IPC.modelDisplayed, payload),
+    emitPrintSettings: (payload: PrintSettings) => broadcast(IPC.printSettingsUpdated, payload),
     requestUserApproval: askUser
   })
   app.on('will-quit', () => agentSession.dispose())
@@ -167,10 +187,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC.modelExport,
     async (event, request: ExportModelRequest): Promise<ExportModelResponse> => {
-      // latestIteration() awaits ensureProject() internally, so getProjectDir()
-      // below is guaranteed to have a resolved project by the time we reach it.
-      const latest = await projectStore.latestIteration()
-      const resolved = resolveExportSource(latest, projectStore.getProjectDir(), request.format)
+      // activeIterationRecord() awaits ensureProject() internally, so getProjectDir()
+      // below is guaranteed to have a resolved project by the time we reach it. Exporting the
+      // *active* (not necessarily latest) iteration means a reverted project exports what's
+      // actually on screen.
+      const active = await projectStore.activeIterationRecord()
+      const resolved = resolveExportSource(active, projectStore.getProjectDir(), request.format)
       if (!resolved.ok) return { saved: false, reason: resolved.reason }
 
       const filters =
@@ -272,5 +294,24 @@ export function registerIpcHandlers(): void {
     IPC.projectRename,
     async (_event, request: RenameProjectRequest): Promise<ProjectSummary> =>
       projectStore.renameProject(request.id, request.name)
+  )
+
+  ipcMain.handle(
+    IPC.projectListIterations,
+    async (): Promise<IterationInfo[]> => (await projectStore.listIterations()).map(toIterationInfo)
+  )
+
+  ipcMain.handle(
+    IPC.projectRevertTo,
+    async (_event, request: RevertToRequest): Promise<ProjectStateSnapshot> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before reverting.')
+      }
+      await projectStore.revertTo(request.n)
+      // Returning the full snapshot (rather than broadcasting model:displayed) mirrors
+      // project:switch: the renderer that initiated the revert calls hydrateProject() + syncModel()
+      // with this response, and there's exactly one active window's viewport to update.
+      return buildProjectSnapshot(projectStore)
+    }
   )
 }

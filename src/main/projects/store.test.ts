@@ -79,6 +79,103 @@ describe('ProjectStore.recordIteration', () => {
   })
 })
 
+describe('ProjectStore R4 version history', () => {
+  it('recordIteration marks each freshly-recorded iteration as active', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+
+    const first = await store.recordIteration({
+      stlPath: 'outputs/part_v1.stl',
+      scriptPath: 'outputs/part_v1.py',
+      summary: 'first'
+    })
+    expect((await store.activeIterationRecord())?.n).toBe(first.n)
+
+    const second = await store.recordIteration({
+      stlPath: 'outputs/part_v2.stl',
+      scriptPath: 'outputs/part_v2.py',
+      summary: 'second'
+    })
+    expect((await store.activeIterationRecord())?.n).toBe(second.n)
+  })
+
+  it('activeIterationRecord falls back to latestIteration when nothing has been reverted', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    expect(await store.activeIterationRecord()).toBeNull()
+
+    await store.recordIteration({ stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    const second = await store.recordIteration({ stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
+
+    expect((await store.activeIterationRecord())?.n).toBe(second.n)
+  })
+
+  it('listIterations returns every recorded iteration, oldest first, as a copy', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await store.recordIteration({ stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    await store.recordIteration({ stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
+
+    const listed = await store.listIterations()
+    expect(listed.map((it) => it.n)).toEqual([1, 2])
+
+    listed.push({ n: 99, stlPath: 'x', scriptPath: 'y', summary: 'z', at: 'now' })
+    expect((await store.listIterations()).map((it) => it.n)).toEqual([1, 2])
+  })
+
+  it('revertTo points activeIteration at an earlier version without touching the iterations array', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    const first = await store.recordIteration({ stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    await store.recordIteration({ stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
+
+    const reverted = await store.revertTo(first.n)
+    expect(reverted.n).toBe(first.n)
+    expect((await store.activeIterationRecord())?.n).toBe(first.n)
+    expect((await store.listIterations()).map((it) => it.n)).toEqual([1, 2])
+
+    // Persists across reloads.
+    const reloaded = makeStore()
+    await reloaded.ensureProject()
+    expect((await reloaded.activeIterationRecord())?.n).toBe(first.n)
+
+    // A further generation supersedes the reverted-to version and becomes active again.
+    const third = await store.recordIteration({ stlPath: 'outputs/a_v3.stl', scriptPath: 'outputs/a_v3.py', summary: 'v3' })
+    expect((await store.activeIterationRecord())?.n).toBe(third.n)
+  })
+
+  it('revertTo throws for an unknown iteration number', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await store.recordIteration({ stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+
+    await expect(store.revertTo(99)).rejects.toThrow(/Unknown iteration/)
+  })
+
+  it('back-fills activeIteration to the latest iteration for a pre-R4 project.json', async () => {
+    const legacyDir = join(scratch, 'projects', 'default')
+    await mkdir(join(legacyDir, 'outputs'), { recursive: true })
+    await writeFile(
+      join(legacyDir, 'project.json'),
+      JSON.stringify({
+        id: 'default',
+        name: 'Pre-R4 project',
+        createdAt: '2023-01-01T00:00:00.000Z',
+        iterations: [
+          { n: 1, stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1', at: '2023-01-01T00:00:00.000Z' },
+          { n: 2, stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2', at: '2023-01-02T00:00:00.000Z' }
+        ]
+        // no `activeIteration` field - this is the pre-R4 schema.
+      }),
+      'utf-8'
+    )
+
+    const store = makeStore()
+    await store.ensureProject()
+    expect((await store.activeIterationRecord())?.n).toBe(2)
+  })
+})
+
 describe('ProjectStore.getProjectDir', () => {
   it('throws before ensureProject has resolved', () => {
     expect(() => makeStore().getProjectDir()).toThrow(/ensureProject/)

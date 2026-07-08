@@ -77,4 +77,9 @@ describe('systemPromptAppend', () => {
     expect(prompt).toMatch(/build123d/)
     expect(prompt).toMatch(/never generate `?viewer\.html`?/i)
   })
+
+  it('instructs the agent to call recommend_print_settings when the user asks for print settings', () => {
+    const prompt = systemPromptAppend('/tmp/project')
+    expect(prompt).toContain('recommend_print_settings')
+  })
 })

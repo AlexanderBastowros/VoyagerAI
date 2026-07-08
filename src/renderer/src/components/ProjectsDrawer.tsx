@@ -2,6 +2,8 @@ import { useState } from 'react'
 import type { MutableRefObject } from 'react'
 import Alert from '@mui/material/Alert'
 import Button from '@mui/material/Button'
+import Chip from '@mui/material/Chip'
+import Divider from '@mui/material/Divider'
 import Drawer from '@mui/material/Drawer'
 import IconButton from '@mui/material/IconButton'
 import List from '@mui/material/List'
@@ -13,9 +15,17 @@ import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
 import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
+import HistoryIcon from '@mui/icons-material/History'
 import { useAppStore } from '../state/appStore'
 import type { ModelViewer } from '../three/viewer'
 import { colors } from '../colors'
+
+/** Formats an ISO timestamp for the version-history list, e.g. "Jul 7, 3:42 PM". */
+function formatIterationTimestamp(at: string): string {
+  const date = new Date(at)
+  if (Number.isNaN(date.getTime())) return at
+  return date.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
 
 interface ProjectsDrawerProps {
   open: boolean
@@ -30,10 +40,19 @@ interface ProjectsDrawerProps {
  * the old turn running in the background" (the main process enforces this too; see
  * `project:switch`/`project:create` in `src/main/ipc.ts` - this is defense in depth, not the
  * only guard).
+ *
+ * Below the project list, a version-history section (R4) lists the *active* project's recorded
+ * iterations newest-first, with the current one highlighted. Clicking any other version calls
+ * `project:revertTo`, which points the project's `activeIteration` at that generation (no STL is
+ * ever deleted or rewritten) and returns a full snapshot - the same `hydrateProject()` +
+ * `viewerRef.current?.syncModel(...)` pairing `handleSwitch`/`handleCreate` already use. Reverting
+ * is blocked while a turn is in flight for the same reason switching is.
  */
 export function ProjectsDrawer({ open, onClose, viewerRef }: ProjectsDrawerProps): React.JSX.Element {
   const projects = useAppStore((state) => state.projects)
   const activeProjectId = useAppStore((state) => state.activeProjectId)
+  const iterations = useAppStore((state) => state.iterations)
+  const activeIteration = useAppStore((state) => state.activeIteration)
   const agentBusy = useAppStore((state) => state.agentBusy)
   const hydrateProject = useAppStore((state) => state.hydrateProject)
   const updateProject = useAppStore((state) => state.updateProject)
@@ -42,6 +61,7 @@ export function ProjectsDrawer({ open, onClose, viewerRef }: ProjectsDrawerProps
   const [switchingId, setSwitchingId] = useState<string | null>(null)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
+  const [revertingN, setRevertingN] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   async function handleCreate(): Promise<void> {
@@ -76,6 +96,25 @@ export function ProjectsDrawer({ open, onClose, viewerRef }: ProjectsDrawerProps
       setError(err instanceof Error ? err.message : 'Failed to switch projects')
     } finally {
       setSwitchingId(null)
+    }
+  }
+
+  async function handleRevert(n: number): Promise<void> {
+    if (n === activeIteration || revertingN !== null) return
+    if (agentBusy) {
+      setError('Voyager is still working — stop or wait before reverting.')
+      return
+    }
+    setRevertingN(n)
+    setError(null)
+    try {
+      const snapshot = await window.voyager.project.revertTo({ n })
+      hydrateProject(snapshot)
+      viewerRef.current?.syncModel(snapshot.model?.stlBuffer ?? null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to revert to that version')
+    } finally {
+      setRevertingN(null)
     }
   }
 
@@ -128,7 +167,7 @@ export function ProjectsDrawer({ open, onClose, viewerRef }: ProjectsDrawerProps
           {error}
         </Alert>
       )}
-      <List dense sx={{ flex: 1, overflowY: 'auto', px: 1 }}>
+      <List dense sx={{ flex: '1 1 45%', minHeight: 0, overflowY: 'auto', px: 1 }}>
         {projects.map((project) => {
           const isActive = project.id === activeProjectId
 
@@ -187,6 +226,78 @@ export function ProjectsDrawer({ open, onClose, viewerRef }: ProjectsDrawerProps
           )
         })}
       </List>
+      <Divider />
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={0.75}
+        sx={{ px: 1.5, py: 1, borderBottom: 1, borderColor: 'divider' }}
+      >
+        <HistoryIcon fontSize="small" sx={{ color: colors.textSecondary }} />
+        <Typography variant="overline" color="text.secondary">
+          Versions
+        </Typography>
+      </Stack>
+      {iterations.length === 0 ? (
+        <Typography variant="caption" color="text.secondary" sx={{ px: 1.5, py: 1 }}>
+          No versions yet
+        </Typography>
+      ) : (
+        <List dense sx={{ flex: '1 1 55%', minHeight: 0, overflowY: 'auto', px: 1 }}>
+          {[...iterations].reverse().map((iteration) => {
+            const isActive = iteration.n === activeIteration
+            return (
+              <ListItem key={iteration.n} disablePadding sx={{ py: 0.25 }}>
+                <ListItemButton
+                  selected={isActive}
+                  disabled={agentBusy && !isActive}
+                  onClick={() => void handleRevert(iteration.n)}
+                  sx={{
+                    alignItems: 'flex-start',
+                    '&.Mui-selected': {
+                      bgcolor: colors.accentDim,
+                      color: colors.textPrimary,
+                      '&:hover': { bgcolor: colors.accentDim }
+                    }
+                  }}
+                >
+                  <ListItemText
+                    primary={
+                      <Stack direction="row" alignItems="center" spacing={0.75}>
+                        <Typography variant="body2" fontWeight={600} fontSize={12.5}>
+                          v{iteration.n}
+                        </Typography>
+                        {isActive && (
+                          <Chip
+                            label={revertingN === iteration.n ? 'Reverting…' : 'Current'}
+                            size="small"
+                            sx={{ height: 16, fontSize: 10, bgcolor: colors.accent, color: colors.onAccent }}
+                          />
+                        )}
+                        {!isActive && revertingN === iteration.n && (
+                          <Typography variant="caption" color="text.secondary">
+                            Reverting…
+                          </Typography>
+                        )}
+                      </Stack>
+                    }
+                    secondary={
+                      <>
+                        <Typography component="span" variant="caption" color="text.secondary" display="block" noWrap>
+                          {iteration.summary}
+                        </Typography>
+                        <Typography component="span" variant="caption" color="text.secondary" display="block">
+                          {formatIterationTimestamp(iteration.at)}
+                        </Typography>
+                      </>
+                    }
+                  />
+                </ListItemButton>
+              </ListItem>
+            )
+          })}
+        </List>
+      )}
     </Drawer>
   )
 }

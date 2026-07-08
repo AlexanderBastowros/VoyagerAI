@@ -6,7 +6,7 @@ import type { CanUseTool, Options, Query, SDKMessage, SDKUserMessage } from '@an
 import { AgentSession, humanizeToolUse, translateSdkMessage } from './session'
 import type { QueryFn } from './session'
 import { ProjectStore } from '../projects/store'
-import type { AgentEvent, ModelDisplayedPayload } from '../../shared/ipc'
+import type { AgentEvent, ModelDisplayedPayload, PrintSettings } from '../../shared/ipc'
 
 // ---------------------------------------------------------------------------
 // translateSdkMessage (pure)
@@ -198,6 +198,7 @@ interface Harness {
   inputs: SDKUserMessage[]
   events: AgentEvent[]
   models: ModelDisplayedPayload[]
+  printSettings: PrintSettings[]
   /** Returns the `canUseTool` handler from the most recent `queryFn` call's options. */
   getCanUseTool: () => CanUseTool
   /** Returns the options object from the most recent `queryFn` call, if any. */
@@ -231,6 +232,7 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
   const inputs: SDKUserMessage[] = []
   const events: AgentEvent[] = []
   const models: ModelDisplayedPayload[] = []
+  const printSettings: PrintSettings[] = []
 
   const interruptSpy = vi.fn(async () => {
     const current = outputsHistory.at(-1)
@@ -271,6 +273,7 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     claudeCliPath: () => null,
     emitAgentEvent: (e) => events.push(e),
     emitModelDisplayed: (p) => models.push(p),
+    emitPrintSettings: (p) => printSettings.push(p),
     queryFn,
     env: { PATH: '/usr/bin' },
     requestUserApproval,
@@ -289,6 +292,7 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     inputs,
     events,
     models,
+    printSettings,
     getCanUseTool: () => {
       const options = optionsHistory.at(-1)
       if (!options?.canUseTool) throw new Error('canUseTool was not set on the query() options')
@@ -701,6 +705,7 @@ describe('AgentSession project switching', () => {
       claudeCliPath: () => null,
       emitAgentEvent: (e) => events.push(e),
       emitModelDisplayed: () => {},
+      emitPrintSettings: () => {},
       queryFn,
       env: { PATH: '/usr/bin' },
       requestUserApproval: async () => {

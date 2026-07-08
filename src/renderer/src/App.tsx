@@ -8,6 +8,7 @@ import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline'
 import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 import MenuIcon from '@mui/icons-material/Menu'
 import { ChatPanel } from './components/ChatPanel'
+import { PrintSettingsPanel } from './components/PrintSettingsPanel'
 import { ProjectsDrawer } from './components/ProjectsDrawer'
 import { SetupScreen } from './components/SetupScreen'
 import { ViewportControls } from './components/ViewportControls'
@@ -20,6 +21,8 @@ export function App(): React.JSX.Element {
   const applyAgentEvent = useAppStore((state) => state.applyAgentEvent)
   const addMessage = useAppStore((state) => state.addMessage)
   const setModel = useAppStore((state) => state.setModel)
+  const addIteration = useAppStore((state) => state.addIteration)
+  const setPrintSettings = useAppStore((state) => state.setPrintSettings)
   const setPendingPermission = useAppStore((state) => state.setPendingPermission)
   const hydrateProject = useAppStore((state) => state.hydrateProject)
   const projects = useAppStore((state) => state.projects)
@@ -55,15 +58,18 @@ export function App(): React.JSX.Element {
     const unsubscribeModel = window.voyager.model.onDisplayed((payload) => {
       viewerRef.current?.loadSTL(payload.stlBuffer)
       setModel(toModelInfo(payload))
+      addIteration(payload)
       addMessage({ role: 'system-status', text: `Model v${payload.iteration} displayed: ${payload.summary}` })
     })
     const unsubscribePermission = window.voyager.agent.onPermissionRequest(setPendingPermission)
+    const unsubscribePrintSettings = window.voyager.model.onPrintSettings(setPrintSettings)
     return () => {
       unsubscribeEvents()
       unsubscribeModel()
       unsubscribePermission()
+      unsubscribePrintSettings()
     }
-  }, [applyAgentEvent, addMessage, setModel, setPendingPermission])
+  }, [applyAgentEvent, addMessage, addIteration, setModel, setPendingPermission, setPrintSettings])
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', overflow: 'hidden' }}>
@@ -115,6 +121,7 @@ export function App(): React.JSX.Element {
             minWidth: 0
           }}
         >
+          <PrintSettingsPanel />
           <ChatPanel />
         </Box>
       </Box>

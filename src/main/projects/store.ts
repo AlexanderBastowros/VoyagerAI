@@ -28,6 +28,16 @@ export interface ProjectRecord {
   /** Durable chat transcript (R3.1) - user/assistant turns only; see `AgentSession`'s
    *  `flushAssistantBuffer` for why routine tool-activity narration isn't included. */
   messages: PersistedMessage[]
+  /**
+   * The `n` of the iteration currently considered "current" for display/export (R4 version
+   * history + revert). Explicit rather than always-latest so `revertTo()` can point back at an
+   * older generation without deleting or re-recording anything - the agent keeps working from
+   * the live conversation and on-disk files (it never rewrites history), while this pointer is
+   * what governs what the viewport shows and `model:export` copies. Undefined for a project with
+   * no iterations yet; back-filled to the latest iteration's `n` for older `project.json` files
+   * that predate this field (see `readRecord()`).
+   */
+  activeIteration?: number
 }
 
 /** Applied whenever a project has no explicit model/effort recorded yet - matches the MVP's
@@ -193,6 +203,10 @@ export class ProjectStore {
     const n = (record.iterations.at(-1)?.n ?? 0) + 1
     const iteration: ProjectIteration = { ...entry, n, at: new Date().toISOString() }
     record.iterations.push(iteration)
+    // A freshly-generated iteration always becomes the active/current one - if the user had
+    // reverted to an older version and then asked Voyager to refine further, the new generation
+    // supersedes it.
+    record.activeIteration = n
     await this.writeRecord(this.dirFor(record.id), record)
     return iteration
   }
@@ -231,6 +245,46 @@ export class ProjectStore {
   async latestIteration(): Promise<ProjectIteration | null> {
     const record = await this.requireRecord()
     return record.iterations.at(-1) ?? null
+  }
+
+  /** Every iteration ever recorded for the active project, oldest first. A copy, not the live
+   *  array - callers must go through `recordIteration()`/`revertTo()` to mutate it. */
+  async listIterations(): Promise<ProjectIteration[]> {
+    const record = await this.requireRecord()
+    return [...record.iterations]
+  }
+
+  /**
+   * The iteration that should currently be shown/exported (R4). Prefers the explicit
+   * `activeIteration` pointer; falls back to `latestIteration()` for a project that predates
+   * `revertTo()` ever having been called (or has no iterations at all). Use this - not
+   * `latestIteration()` - anywhere "the current model" is needed.
+   */
+  async activeIterationRecord(): Promise<ProjectIteration | null> {
+    const record = await this.requireRecord()
+    if (record.activeIteration !== undefined) {
+      const active = record.iterations.find((it) => it.n === record.activeIteration)
+      if (active) return active
+    }
+    return record.iterations.at(-1) ?? null
+  }
+
+  /**
+   * Points the active project's "current" iteration at an earlier (or later) generation without
+   * deleting or re-recording anything - old STLs stay on disk and reachable. A subsequent
+   * `recordIteration()` (i.e. the user asks Voyager to keep refining) supersedes this and again
+   * becomes active, so continuing the conversation branches from whatever was last reverted to.
+   * Throws if `n` doesn't name a known iteration.
+   */
+  async revertTo(n: number): Promise<ProjectIteration> {
+    const record = await this.requireRecord()
+    const iteration = record.iterations.find((it) => it.n === n)
+    if (!iteration) {
+      throw new Error(`Unknown iteration: v${n}`)
+    }
+    record.activeIteration = n
+    await this.writeRecord(this.dirFor(record.id), record)
+    return iteration
   }
 
   /** Appends one durable chat entry (user or assistant text) - see `AgentSession`. */
@@ -355,8 +409,14 @@ export class ProjectStore {
     try {
       const raw = await readFile(join(dir, 'project.json'), 'utf-8')
       const record = JSON.parse(raw) as ProjectRecord
-      // Defends against a pre-R3 project.json with no `messages` field yet.
-      return { ...record, messages: record.messages ?? [] }
+      // Defends against a pre-R3 project.json with no `messages` field yet, and a pre-R4
+      // project.json with no `activeIteration` pointer yet (defaults to "the latest one",
+      // matching the pre-R4 always-latest behavior).
+      return {
+        ...record,
+        messages: record.messages ?? [],
+        activeIteration: record.activeIteration ?? record.iterations.at(-1)?.n
+      }
     } catch {
       return null
     }
