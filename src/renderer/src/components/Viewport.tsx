@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { MutableRefObject } from 'react'
 import Box from '@mui/material/Box'
+import CircularProgress from '@mui/material/CircularProgress'
 import Typography from '@mui/material/Typography'
 import { ModelViewer } from '../three/viewer'
 import { SelectionHighlight } from '../three/selection'
@@ -30,6 +31,7 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   const showAxes = useAppStore((state) => state.showAxes)
   const wireframe = useAppStore((state) => state.wireframe)
   const model = useAppStore((state) => state.model)
+  const paramUpdatePending = useAppStore((state) => state.paramUpdatePending)
 
   useEffect(() => {
     const container = containerRef.current
@@ -112,6 +114,14 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wireframe])
 
+  // Freeze orbit while a param-panel re-run is in flight - the overlay below also blocks pointer
+  // events outright, but this covers scroll-wheel zoom too and matches the semantic "frozen"
+  // state even if the overlay's positioning ever changes.
+  useEffect(() => {
+    viewerRef.current?.setOrbitEnabled(!paramUpdatePending)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramUpdatePending])
+
   return (
     <Box
       ref={containerRef}
@@ -152,6 +162,28 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
           <Typography color="text.disabled" align="center">
             Ask Voyager for a part and it will appear here
           </Typography>
+        </Box>
+      )}
+      {paramUpdatePending && (
+        <Box
+          sx={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 6,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 1.5,
+            bgcolor: 'rgba(0, 0, 0, 0.35)',
+            // Blocks clicks/drags/scroll from reaching the canvas underneath - the model view is
+            // frozen on its current geometry until the re-run's model:displayed arrives.
+            pointerEvents: 'auto',
+            cursor: 'wait'
+          }}
+        >
+          <CircularProgress size={32} />
+          <Typography color="text.secondary">Updating model…</Typography>
         </Box>
       )}
     </Box>

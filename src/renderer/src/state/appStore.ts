@@ -172,6 +172,11 @@ export interface AppState {
   /** Every saved printer profile (WS-E) and which one is active, or null if none is set yet. */
   printerProfiles: PrinterProfileRef[]
   activePrinterProfileId: string | null
+  /** True while a parameter-panel edit's venv re-run is in flight (WS-B) - the viewport reads
+   *  this to show a loading spinner over the model and freeze orbit/selection interaction until
+   *  the re-run's `model:displayed` broadcast arrives (or it fails). Distinct from `agentBusy`:
+   *  a param edit never goes through `AgentSession`. */
+  paramUpdatePending: boolean
 
   /** Appends a new message and returns its generated id (for later streaming updates). */
   addMessage: (message: Omit<ChatMessage, 'id' | 'createdAt'>) => string
@@ -229,6 +234,8 @@ export interface AppState {
   /** Replaces the printer-profile list and active id - used after `printerProfile.list`/`save`/
    *  `setActive` and the `printerProfile:updated` push. */
   setPrinterProfiles: (profiles: PrinterProfileRef[], activeId: string | null) => void
+  /** Sets or clears the in-flight flag for a parameter-panel re-run - see `paramUpdatePending`. */
+  setParamUpdatePending: (pending: boolean) => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -257,6 +264,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   verificationReport: null,
   printerProfiles: [],
   activePrinterProfileId: null,
+  paramUpdatePending: false,
 
   addMessage: (message) => {
     const id = createMessageId()
@@ -306,7 +314,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       agentBusy: false,
       agentStreamIds: {},
       pendingPermission: null,
-      thinkingText: ''
+      thinkingText: '',
+      paramUpdatePending: false
     })
   },
 
@@ -414,5 +423,6 @@ export const useAppStore = create<AppState>((set, get) => ({
   setManifest: (manifest) => set({ manifest }),
   setVerificationReport: (verificationReport) => set({ verificationReport }),
   setPrinterProfiles: (printerProfiles, activePrinterProfileId) =>
-    set({ printerProfiles, activePrinterProfileId })
+    set({ printerProfiles, activePrinterProfileId }),
+  setParamUpdatePending: (paramUpdatePending) => set({ paramUpdatePending })
 }))

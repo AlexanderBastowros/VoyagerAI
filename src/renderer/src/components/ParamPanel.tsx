@@ -103,6 +103,7 @@ export function ParamPanel(): React.JSX.Element {
   const setManifest = useAppStore((state) => state.setManifest)
   const agentBusy = useAppStore((state) => state.agentBusy)
   const setupStatus = useAppStore((state) => state.setupStatus)
+  const setParamUpdatePending = useAppStore((state) => state.setParamUpdatePending)
 
   const [expanded, setExpanded] = useState(true)
   const [loaded, setLoaded] = useState(false)
@@ -136,6 +137,9 @@ export function ParamPanel(): React.JSX.Element {
 
   async function commit(entry: ParamEntry, value: number): Promise<void> {
     setPending((p) => ({ ...p, [entry.name]: true }))
+    // Global (not per-param) - the panel already disables every control while any one edit is in
+    // flight, so at most one re-run runs at a time and the viewport can just key off this flag.
+    setParamUpdatePending(true)
     setErrors((e) => ({ ...e, [entry.name]: undefined }))
     try {
       const response = await window.voyager.param.update({ name: entry.name, value })
@@ -153,6 +157,7 @@ export function ParamPanel(): React.JSX.Element {
       setDrafts((d) => ({ ...d, [entry.name]: entry.value }))
     } finally {
       setPending((p) => ({ ...p, [entry.name]: false }))
+      setParamUpdatePending(false)
     }
   }
 
