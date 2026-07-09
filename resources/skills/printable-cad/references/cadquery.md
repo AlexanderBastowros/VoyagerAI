@@ -1,7 +1,9 @@
 # CadQuery cookbook
 
-The same printable features in CadQuery's fluent (chaining) API. Constants at the top;
-`Workplane` selectors (`faces`, `edges`, `>Z`, `<Z`, `|Z`) do the feature targeting.
+The same printable features in CadQuery's fluent (chaining) API. Constants at the top -
+user-tunable ones go in the `PARAMS` block (SKILL.md Phase 4), derived/printer constants
+stay outside it. `Workplane` selectors (`faces`, `edges`, `>Z`, `<Z`, `|Z`) do the feature
+targeting.
 
 ```python
 import cadquery as cq
@@ -10,7 +12,12 @@ NOZZLE   = 0.4
 MIN_WALL = 3 * NOZZLE
 BED_X, BED_Y, BED_Z = 256, 256, 256
 EF_CHAMFER = 0.5
-L, W, H = 40, 30, 20
+
+# --- PARAMS ---
+WIDTH = 40.0    # unit=mm min=10 max=200 label="Width"
+DEPTH = 30.0    # unit=mm min=10 max=200 label="Depth"
+HEIGHT = 20.0   # unit=mm min=5 max=100 label="Height"
+# --- END PARAMS ---
 ```
 
 ## Basic solid + export

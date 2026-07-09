@@ -66,6 +66,11 @@ export interface ProjectStoreOptions {
    *  every project's skill copy at `scripts/validate_stl.py` since it lives outside
    *  `skillSourceDir` (see `packages/verify`'s single-source-of-truth ownership of the validator). */
   verifyScriptPath: string
+  /** Absolute path to the bundled `extract_params.py` (owned by `packages/agent-core/params`) -
+   *  copied into every project's skill copy at `scripts/extract_params.py`, mirroring
+   *  `verifyScriptPath`, so the skill's Phase 4 can run it with a plain relative path. Optional
+   *  (skips the copy when omitted) so existing callers/tests that predate WS-B keep compiling. */
+  extractParamsScriptPath?: string
 }
 
 const SKILL_DIR_SEGMENTS = ['.claude', 'skills', 'printable-cad'] as const
@@ -107,6 +112,7 @@ export class ProjectStore {
   private readonly baseDir: string
   private readonly skillSourceDir: string
   private readonly verifyScriptPath: string
+  private readonly extractParamsScriptPath?: string
 
   /** The currently-active project's loaded record, once `ensureProject()` (or `createProject()`/
    *  `switchProject()`) has resolved at least once. Cleared only by being replaced - there is
@@ -117,6 +123,7 @@ export class ProjectStore {
     this.baseDir = options.baseDir
     this.skillSourceDir = options.skillSourceDir
     this.verifyScriptPath = options.verifyScriptPath
+    this.extractParamsScriptPath = options.extractParamsScriptPath
   }
 
   private dirFor(id: string): string {
@@ -422,6 +429,12 @@ export class ProjectStore {
       // guaranteed to already have a scripts/ subdirectory (e.g. a skill with no other scripts).
       await mkdir(join(skillDestDir, 'scripts'), { recursive: true })
       await copyFile(this.verifyScriptPath, join(skillDestDir, 'scripts', 'validate_stl.py'))
+      // Same reasoning as validate_stl.py above: the PARAMS extractor's source of truth is
+      // packages/agent-core/params (WS-B), not skillSourceDir, but the skill's Phase 4 documents
+      // running it as `python scripts/extract_params.py ...` so it needs to land at that path too.
+      if (this.extractParamsScriptPath) {
+        await copyFile(this.extractParamsScriptPath, join(skillDestDir, 'scripts', 'extract_params.py'))
+      }
     }
 
     let record = await this.readRecord(dir)

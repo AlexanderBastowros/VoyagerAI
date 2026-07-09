@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { copyFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { IPC, emptyScriptManifest } from '../shared/ipc'
+import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
   AgentSettings,
@@ -41,8 +41,11 @@ import {
   ClaudeChecker,
   EnvManager,
   ProjectStore,
+  readManifestForIteration,
+  rerunWithParam,
   resolveExportSource,
-  runPreflight
+  runPreflight,
+  validateParamUpdate
 } from '@voyager/agent-core'
 
 /**
@@ -64,6 +67,17 @@ function verifyScriptPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'verify', 'validate_stl.py')
     : join(__dirname, '../../packages/verify/python/validate_stl.py')
+}
+
+/**
+ * Absolute path to `packages/agent-core/params`'s bundled `extract_params.py`. Same dev/packaged
+ * resolution as `verifyScriptPath` - packaged builds copy it via electron-builder's
+ * `extraResources` `params` entry.
+ */
+function extractParamsScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'params', 'extract_params.py')
+    : join(__dirname, '../../packages/agent-core/params/python/extract_params.py')
 }
 
 function broadcast(channel: string, payload: unknown): void {
@@ -143,10 +157,11 @@ async function buildProjectSnapshot(projectStore: ProjectStore): Promise<Project
 }
 
 /**
- * In-memory stubs for the WS-B/C/E/F contracts landed by WS-0b (WS-A's brief handlers below are
- * real - see `briefStore`). None of this is persisted or per-project - each real work order (see
- * `agents/production-roadmap.md`) replaces its stub with durable, project-scoped state without
- * needing to touch this file again, since the IPC shapes are already final.
+ * In-memory stubs for the WS-C/E/F contracts landed by WS-0b (WS-A's brief handlers and WS-B's
+ * parameter handlers below are both real - see `briefStore` and the venv re-run path). None of
+ * this is persisted or per-project - each real work order (see `agents/production-roadmap.md`)
+ * replaces its stub with durable, project-scoped state without needing to touch this file again,
+ * since the IPC shapes are already final.
  */
 
 /** Registers all main-process IPC handlers. */
@@ -162,7 +177,8 @@ export function registerIpcHandlers(): void {
   const projectStore = new ProjectStore({
     baseDir: join(app.getPath('userData'), 'projects'),
     skillSourceDir: resourcePath('skills', 'printable-cad'),
-    verifyScriptPath: verifyScriptPath()
+    verifyScriptPath: verifyScriptPath(),
+    extractParamsScriptPath: extractParamsScriptPath()
   })
 
   const briefStore = new BriefStore()
@@ -382,20 +398,74 @@ export function registerIpcHandlers(): void {
     return { brief }
   })
 
-  // -- WS-B Parameter panel (stub - no venv re-run wired up yet) ----------
+  // -- WS-B Parameter panel (venv re-run, no agent turn) ------------------
 
   ipcMain.handle(
     IPC.paramUpdate,
-    async (_event, _request: ParamUpdateRequest): Promise<ParamUpdateResponse> => ({
-      accepted: false,
-      reason: 'Parameter re-run is not implemented yet.'
-    })
+    async (_event, request: ParamUpdateRequest): Promise<ParamUpdateResponse> => {
+      // Both the agent and a param edit call `recordIteration` - serializing them avoids two
+      // writers racing on project.json (and, worse, an agent turn overwriting the model the user
+      // is mid-way through tweaking with a slider).
+      if (agentSession.isBusy()) {
+        return {
+          accepted: false,
+          reason: 'Voyager is still working — wait for it to finish before editing a parameter.'
+        }
+      }
+
+      const active = await projectStore.activeIterationRecord()
+      if (!active) return { accepted: false, reason: 'No model has been generated yet.' }
+
+      const manifest = await readManifestForIteration(projectStore.getProjectDir(), active)
+      const validation = validateParamUpdate(manifest, request.name, request.value)
+      if (!validation.ok) return { accepted: false, reason: validation.reason }
+      if (!manifest) return { accepted: false, reason: 'No parameters are available for this iteration.' }
+
+      const result = await rerunWithParam(
+        {
+          projectDir: projectStore.getProjectDir(),
+          scriptRelPath: active.scriptSnapshotPath ?? active.scriptPath,
+          name: request.name,
+          value: request.value,
+          manifest
+        },
+        { pythonPath: envManager.pythonPath() }
+      )
+      if (!result.ok) return { accepted: false, reason: result.reason }
+
+      const entry = manifest.params.find((p) => p.name === request.name)
+      const summary = entry
+        ? `${entry.label}: ${request.value} ${entry.unit}`
+        : `${request.name}: ${request.value}`
+
+      const iteration = await projectStore.recordIteration({
+        stlPath: result.stlRelPath,
+        stepPath: result.stepRelPath,
+        scriptPath: result.scriptRelPath,
+        summary
+      })
+
+      const buffer = await readFile(join(projectStore.getProjectDir(), iteration.stlPath))
+      const payload: ModelDisplayedPayload = {
+        stlPath: iteration.stlPath,
+        stepPath: iteration.stepPath,
+        scriptPath: iteration.scriptPath,
+        summary: iteration.summary,
+        iteration: iteration.n,
+        stlBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+      }
+      // Pushed the same way an agent-authored `display_model` call is, so the viewport/version
+      // history update identically either path - see `ParamUpdateResponse`'s doc comment.
+      broadcast(IPC.modelDisplayed, payload)
+      return { accepted: true, model: payload }
+    }
   )
 
-  ipcMain.handle(
-    IPC.paramGetManifest,
-    async (): Promise<ParamGetManifestResponse> => ({ manifest: emptyScriptManifest() })
-  )
+  ipcMain.handle(IPC.paramGetManifest, async (): Promise<ParamGetManifestResponse> => {
+    const active = await projectStore.activeIterationRecord()
+    if (!active) return { manifest: null }
+    return { manifest: await readManifestForIteration(projectStore.getProjectDir(), active) }
+  })
 
   // -- WS-C Verification (stub - no verify pipeline wired up yet) ---------
 

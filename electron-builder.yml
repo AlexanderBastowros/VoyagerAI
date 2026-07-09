@@ -18,6 +18,8 @@ extraResources:
     to: .
   - from: packages/verify/python
     to: verify
+  - from: packages/agent-core/params/python
+    to: params
 
 # CRITICAL: the Claude Agent SDK (@anthropic-ai/claude-agent-sdk) spawns a
 # native `claude` CLI binary as a child process at runtime - either the path

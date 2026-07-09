@@ -185,14 +185,55 @@ Notes on the two gates:
 - **Done when:** the README box-with-holes flow produces a locked brief whose fields match
   the conversation; direct panel edits round-trip into the next agent turn.
 
-### WS-B — PARAMS convention + parameter panel (no-LLM re-run) · **Status: TODO** · depends: 0a, 0b
+### WS-B — PARAMS convention + parameter panel (no-LLM re-run) · **Status: DONE**
 
+- **Landed:** `resources/skills/printable-cad/SKILL.md` Phase 4 gained the formal `# ---
+  PARAMS ---` / `# --- END PARAMS ---` block grammar (one bare `NAME = VALUE` assignment
+  per line, `unit=`/`label=` required, `min=`/`max=`/`brief=` optional) and an instruction
+  to run the new extractor and save `<part>_vN.manifest.json` beside that version's
+  STL/STEP; `references/build123d.md`/`cadquery.md` preambles updated to match.
+  `packages/agent-core/params/python/extract_params.py` is the deterministic (no-LLM)
+  extractor - a line-oriented parser over the block, not a full `ast` walk (the grammar is
+  intentionally too constrained to need one), emitting `ScriptManifest` JSON to stdout or
+  `--out`. On the TS side, `packages/agent-core/params/` adds `paramsBlock.ts`
+  (regex substitution of one constant's literal, preserving indentation/comment),
+  `manifestConvention.ts` (`manifest.json` always lives beside its STL, same basename -
+  no new `ProjectIteration` field needed), `validate.ts`/`patchManifest.ts` (range-check
+  and clone-patch a manifest without re-invoking the extractor - the edited value is
+  already known exactly), `findExports.ts` (locates whatever filename a re-run script
+  chose for its own STL/STEP), and `rerun.ts` (orchestrates all of the above: substitute →
+  write to a fresh `outputs/param-edits/<uuid>/` scratch dir → run with the managed venv's
+  python, 60s timeout → locate the export → write the patched manifest beside it). All six
+  new modules are unit-tested (mocked spawn); `rerun.ts` was additionally smoke-tested
+  end-to-end against a real `python3` subprocess (not just the mocked test) to confirm the
+  substituted constant actually reaches the re-run script. `src/main/ipc.ts`'s WS-0b stub
+  handlers for `param:update`/`param:getManifest` are now real: validate → `rerunWithParam`
+  → `recordIteration` → broadcast `model:displayed` (same push the agent path already
+  uses, so the viewport/version history update identically either way) - gated on
+  `agentSession.isBusy()` like the other project-mutating handlers. `ParamPanel.tsx`
+  renders sliders (bounded entries) or number inputs (unbounded), committing on
+  release/blur/Enter rather than continuously, and refetches the manifest whenever the
+  displayed iteration changes.
+  Necessarily touched a few adjacent/shared files with small, additive, non-restructuring
+  edits rather than filing a contract-change note, since each was either explicitly
+  invited (the `param:update`/`getManifest` handler *bodies* in `ipc.ts` were WS-0b's own
+  designated stub-replacement points) or a mechanical consequence of adding a new
+  package-local folder (same pattern WS-0b already used for `tools/`): `packages/agent-
+  core/tsconfig.json`/`src/index.ts` (barrel export for `params/`), `projects/store.ts`
+  (optional `extractParamsScriptPath` constructor option + copy-into-skill step, mirroring
+  `verifyScriptPath` exactly; omitted → skips the copy, so it's backward compatible),
+  `electron-builder.yml` (one more `extraResources` entry, mirroring the `verify` one).
+  Did **not** add a `createdBy: 'param'` tag to `ProjectIteration`/`recordIteration()` (the
+  scope note below anticipated one) - the "done when" bar only requires version history to
+  treat a param edit identically to an agent iteration, which a plain descriptive summary
+  string (`"<Label>: <value> <unit>"`) already satisfies without widening `recordIteration`'s
+  signature; worth revisiting only if a future work order actually needs to distinguish
+  provenance programmatically. Quality gate green: 269 tests (228 prior + 41 new), build,
+  typecheck. Manual Electron E2E (dragging a real slider in the running app) was not
+  exercised - the app's own setup gate needs a signed-in Claude CLI + provisioned managed
+  Python env, neither available in this sandbox; the real-python3 smoke test above is the
+  closest substitute obtained.
 - **Why:** product doc §4.5 P0 — instant, free dimension tweaks; the biggest UX/cost win.
-- **Scope:** skill updates (PARAMS block grammar + `manifest.json` emission required in
-  Phase 4); param extraction (Python `ast` — no LLM) in `packages/agent-core/params/`;
-  re-run path: overridden constants → script re-execution in the managed venv → export →
-  record as new iteration (`createdBy: 'param'`); `ParamPanel.tsx` (sliders/inputs from
-  manifest, debounced re-run).
 - **Files owned:** `resources/skills/printable-cad/**` (except `scripts/validate_stl.py`,
   which moved to `packages/verify`), `packages/agent-core/params/**`,
   `src/renderer/src/components/ParamPanel.tsx`.

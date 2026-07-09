@@ -1,8 +1,10 @@
 # build123d cookbook
 
 Idiomatic **builder-mode** patterns for the printable features you'll reach for most.
-Put all dimensions in named constants at the top of the script. build123d centers
-primitives at the origin by default (`Align.CENTER`); pass `align=` to change datum.
+Put all dimensions in named constants at the top of the script - user-tunable ones go
+in the `PARAMS` block (SKILL.md Phase 4), derived/printer constants stay outside it.
+build123d centers primitives at the origin by default (`Align.CENTER`); pass `align=` to
+change datum.
 
 ```python
 from build123d import *
@@ -12,6 +14,12 @@ NOZZLE   = 0.4
 MIN_WALL = 3 * NOZZLE          # structural default = 1.2 mm
 BED_X, BED_Y, BED_Z = 256, 256, 256
 EF_CHAMFER = 0.5               # elephant's-foot relief
+
+# --- PARAMS ---
+WIDTH = 40.0    # unit=mm min=10 max=200 label="Width"
+DEPTH = 30.0    # unit=mm min=10 max=200 label="Depth"
+HEIGHT = 20.0   # unit=mm min=5 max=100 label="Height"
+# --- END PARAMS ---
 ```
 
 ## Basic solid + export

@@ -62,6 +62,33 @@ describe('ProjectStore.ensureProject', () => {
     expect(record.iterations).toEqual([])
   })
 
+  it('copies extract_params.py into the skill scripts/ dir when extractParamsScriptPath is given', async () => {
+    const extractParamsScript = join(scratch, 'params-src', 'extract_params.py')
+    await mkdir(join(scratch, 'params-src'), { recursive: true })
+    await writeFile(extractParamsScript, '# fake extractor')
+
+    const store = new ProjectStore({
+      baseDir: join(scratch, 'projects'),
+      skillSourceDir: skillSource,
+      verifyScriptPath: verifyScript,
+      extractParamsScriptPath: extractParamsScript
+    })
+    const { dir } = await store.ensureProject()
+
+    expect(
+      await readFile(join(dir, '.claude', 'skills', 'printable-cad', 'scripts', 'extract_params.py'), 'utf-8')
+    ).toBe('# fake extractor')
+  })
+
+  it('skips the extract_params.py copy when extractParamsScriptPath is omitted', async () => {
+    const store = makeStore()
+    const { dir } = await store.ensureProject()
+
+    await expect(
+      stat(join(dir, '.claude', 'skills', 'printable-cad', 'scripts', 'extract_params.py'))
+    ).rejects.toThrow()
+  })
+
   it('is idempotent and preserves existing project.json contents', async () => {
     const store = makeStore()
     await store.ensureProject()
