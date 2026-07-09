@@ -1,0 +1,334 @@
+# Voyager AI — Product Design (v1 production)
+
+**Status:** proposal for productionizing the POC · **Audience:** product + engineering
+**Companion doc:** [`TECHNICAL_ARCHITECTURE.md`](./TECHNICAL_ARCHITECTURE.md)
+
+---
+
+## 1. Thesis
+
+Voyager AI turns a plain-language description of a physical part into a **verified, printable,
+parametric model** — and keeps the human in control of every dimension along the way.
+
+The POC already proves the core loop: chat → clarify → design contract → build123d script →
+STL/STEP → live viewport → iterate. Production is not "the POC but bigger"; it is three
+deliberate bets layered on that loop:
+
+1. **The Design Brief is the product.** A structured, machine-checkable specification that the
+   AI co-authors with the user, that gates generation, and that verification is run *against*.
+2. **Trust through verification, not vibes.** Every generated model ships with a verification
+   report: deterministic geometry checks first, model-based review only for what can't be
+   computed. Multi-model (Bedrock) is the tool here, not the headline.
+3. **Human control at the script level.** Users adjust parameters, drag features, and revert
+   versions without prompting the AI — because both the human and the AI edit the same
+   artifact: the parametric script.
+
+---
+
+## 2. Where we are (POC recap)
+
+Electron desktop app; one Claude Agent SDK session per project running on the **user's own
+Claude subscription** via the Claude Code CLI; a bundled `printable-cad` skill enforcing a
+phased workflow (printer constraints → clarify → confirm contract → generate → validate →
+display); an in-process MCP server (`display_model`, `recommend_print_settings`, `set_status`);
+three.js viewport with region-select, measurement, view cube, version history with revert, and
+a print-settings panel. Everything runs on the user's machine; the company pays $0 of inference.
+
+That last fact matters more than it looks: **moving to Bedrock means the company pays for
+inference for the first time.** That single decision forces accounts, metering, quotas, and a
+backend — most of the "productionization" work is downstream of it, not of any AI feature.
+
+---
+
+## 3. Positioning: "a competitor to Zoo" — challenged
+
+Zoo (formerly KittyCAD) made two enormous bets we should not copy:
+
+- **A proprietary geometry kernel** and a new modeling language (KCL). That is a decade-scale
+  moat-building exercise aimed at professional mechanical engineers and at developers via API.
+- **Text-to-CAD as an API primitive** — one-shot generation, developer-integrated.
+
+Voyager's edge is orthogonal, and we should lean into the difference rather than the label:
+
+| | Zoo | Voyager |
+|---|---|---|
+| Kernel | Proprietary (KittyCAD) | Open ecosystem (OCCT via build123d/CadQuery) |
+| Interface | KCL code + API + design studio | Conversation + Design Brief + viewport |
+| Unit of value | Geometry generation | **Verified, printable outcome** |
+| Target user | Pro MEs, developers | Prosumer functional-print users → small eng. teams |
+| Trust story | You review the code | The system reviews itself and shows you the report |
+
+**ICP (initial):** the "functional print" prosumer — owns 1–3 printers, prints brackets,
+enclosures, adapters, jigs; is dimension-literate but not CAD-fluent; today either fights
+Fusion/FreeCAD or begs on forums. Print farms and hardware-adjacent engineers are the natural
+second ring. We deliberately do **not** chase pro mechanical engineers in v1 — they need
+assemblies, GD&T, and simulation, none of which we should build yet.
+
+**Differentiators to defend:** (1) the brief→verify contract loop, (2) DFM-for-printing depth
+(the skill's real IP), (3) manufacturable-outcome guarantees (fits *your* bed, split plans,
+print settings), (4) the hybrid human/AI editing model.
+
+---
+
+## 4. The five founding ideas — each challenged, then shaped
+
+The request was explicit: challenge every idea. Here is each one, the pushback, and what
+survives.
+
+### 4.1 "Pick models by complexity of the user's ask" — **mostly rejected, reshaped as role routing**
+
+**Pushback.** Complexity-routing the *designer* is the wrong lever:
+
+- CAD code generation is a frontier-hard task. The quality gap between a top-tier and a cheap
+  model is not marginal — a failed generation costs a full retry loop (script run, export,
+  validation, render), which is slower and more expensive than having used the strong model
+  once. Routing pays off on high-volume easy tasks, and "design me a part" is never easy.
+- "Complexity of what the user is asking" is unknowable before clarification. A one-line
+  request ("a spool holder") can hide more geometric complexity than a paragraph.
+- Bedrock's Intelligent Prompt Routing is built for general chat and routes within one model
+  family — it has no notion of an agentic CAD task and shouldn't be in the designer path.
+
+**What survives — route by *role*, not by guessed complexity:**
+
+| Role | Task | Model class (Bedrock) | Why |
+|---|---|---|---|
+| Designer | Clarify + write/repair the parametric script (agent loop) | Strongest Claude (Opus tier) | Correctness dominates cost |
+| Clarifier/intake | Extract structured brief fields from chat, summarize, title projects | Haiku tier | High volume, low stakes |
+| Vision critic | Judge canonical renders vs. brief | Sonnet tier (vision) | Vision + judgment at mid cost |
+| Cross-checker | Second-opinion code review (escalation only) | Different family (e.g. Nova / DeepSeek-R1 / Llama on Bedrock) | Diversity of failure modes |
+| Router/misc | Classification, notifications | Cheapest / heuristics | Often no model at all |
+
+Complexity can still modulate **effort within the designer role** (Claude's `effort` levels —
+`medium` for a dimension tweak, `xhigh` for a novel part), which is cheaper and safer than
+swapping models. That is the honest version of the original idea.
+
+### 4.2 "Verify output across models" — **accepted with a hard hierarchy**
+
+**Pushback.** LLM-verifies-LLM is the *last* resort, not the first. Most of what makes a CAD
+output wrong is objectively computable: watertightness, bed fit, wall thickness, overhangs,
+hole diameters, whether the brief's "40mm" is actually 40mm in the STEP file. Burning a second
+model's tokens to "check" arithmetic a script checks perfectly is waste, and worse, it's less
+reliable (models agree with each other; calipers don't).
+
+**What survives — the verification pyramid** (cheap/deterministic at the bottom, expensive
+judgment at the top; each layer only sees what the layers below can't decide):
+
+1. **Static script checks** — parses, params block well-formed, no forbidden imports.
+2. **Geometry validation** — extends the existing `validate_stl.py`: watertight/manifold, bed
+   fit (any orientation), overhang fraction, min-feature scan, part interference (multi-body).
+3. **Brief conformance** — *the killer feature*: every numeric field in the Design Brief
+   becomes an automated assertion measured against the B-rep/mesh (bounding box, hole
+   diameters and positions, wall thickness at named faces). "Spec: 40.0mm, Measured: 40.0mm ✓"
+   in the report. No LLM involved.
+4. **Vision critique** — a vision model reviews the deterministic render rig's canonical views
+   against the brief and any user-uploaded reference image. It checks what geometry math
+   can't: is a feature *missing*, misplaced, mirrored, mis-oriented; does this look like what
+   was asked for. It is explicitly **forbidden from judging dimensions** — VLMs cannot
+   measure, and pretending they can would poison trust in the report.
+5. **Cross-model code review** — a different model family reviews the script against the
+   brief. Runs only on escalation: first generation of a project, after N failed iterations,
+   or on user request ("second opinion" button). Not on every tweak.
+
+Verification output is a single **Verification Report** artifact per iteration (see §5.4) —
+that report, not the multi-model machinery, is what the user sees and what marketing sells.
+
+### 4.3 "Take images of models through a preview and have other models verify/suggest" — **accepted, but not the user's preview**
+
+**Pushback.** Screenshotting the live viewport gives you whatever camera angle the user last
+left it at, with selection highlights, gizmos, and theme colors baked in — useless for
+systematic review, and it makes verification depend on client state.
+
+**What survives.** A server-side, deterministic **render rig**: headless renders of every
+iteration from a fixed camera protocol — 6 orthographic axis views + 2 isometric, plus
+optional section cuts and a turntable strip — with consistent lighting, neutral material, and
+a millimeter grid/scale reference in frame. These renders are:
+
+- fed to the vision critic (4.2 layer 4),
+- fed back to the **designer itself** before it declares success ("look at what you built" —
+  self-inspection catches most gross errors at zero extra-model cost),
+- stored as iteration thumbnails/history for the user,
+- the basis for visual diffing between iterations ("what changed v3→v4").
+
+### 4.4 "Standard-sized prompt / mandatory design request doc" — **goal accepted, mechanism rejected**
+
+**Pushback.** A mandatory long-form intake form is an activation killer and pushes the cost of
+ambiguity onto the party least equipped to resolve it. Hobbyists don't know their fit
+tolerances or that an M3 clearance hole is modeled at 3.4mm — *teaching them that is the
+product's job*, and the POC's clarify-phase already does it conversationally. Also,
+"standard-sized" is the wrong constraint: prompt *size* doesn't need normalizing; prompt
+*content* needs structuring.
+
+**What survives — the Design Brief as a co-authored artifact, not a form:**
+
+- **Structured schema** (see architecture doc §6): part identity/purpose, global envelope,
+  features (holes with purpose, pockets, bosses, text…), materials & tolerance classes,
+  explicit *don't-wants*, constraints (must fit bed / may be split / max pieces / orientation),
+  reference images with at least one scaled dimension, acceptance criteria.
+- **Three ways in, one artifact out:** (a) free-form chat — the clarifier extracts fields and
+  the designer asks only for what's missing (current UX, kept); (b) the brief panel — a live
+  side-by-side document the user can edit directly at any time; (c) template import — power
+  users and repeat customers start from a filled template. All paths converge on the same
+  schema.
+- **Printer profiles are settings, not questions.** Bed size, nozzle, materials on hand live
+  in a reusable machine profile (per printer, per user). The POC re-asks these every project —
+  that stops. Constraints like "must be split into multiple prints" *derive automatically*
+  from profile + requested envelope.
+- **Completeness gates generation, not form-filling.** The brief has required fields per
+  feature type; generation unlocks when the brief validates, however the fields got filled.
+  The existing "confirm the design contract" moment becomes "review and lock the brief," and
+  the locked brief version is stamped onto every iteration it produces.
+- Because the brief is schema'd, it is **machine-checkable** — which is what makes
+  verification layer 3 (brief conformance) possible. This is the deep reason to structure
+  intake, and it's a much better justification than prompt-size hygiene.
+
+### 4.5 "More 3D modeling tools so users don't fully rely on the AI" — **goal strongly accepted, scope aggressively cut**
+
+**Pushback.** "3D modeling tools" read naively means mesh/B-rep direct editing — push/pull
+faces, booleans, fillet tools. That path has two fatal problems: (1) it is the entire product
+surface of Fusion/Onshape/Zoo, built over decades on purpose-built kernels — we would ship a
+worse Tinkercad and starve the differentiating work; (2) **representation conflict**: the
+source of truth is the parametric script. A manual mesh edit forks from the script, and the
+next AI regeneration silently destroys it. Any manual tool that doesn't write back to the
+script is a trap for the user.
+
+**What survives — human editing at the same level the AI edits (the script):**
+
+- **P0 — Parameter panel.** Generated scripts already carry named constants at the top; we
+  formalize this into an annotated `PARAMS` block (name, value, unit, range, description). The
+  client renders sliders/inputs; changing a value re-runs the script server-side and produces
+  a new iteration in seconds, no LLM call, near-zero cost. This alone covers the majority of
+  "make it 2mm wider" traffic that currently burns a full agent turn.
+- **P1 — Direct manipulation mapped to parameters.** Drag a face/edge in the viewport; the
+  system resolves which parameter(s) drive that geometry (via a feature↔parameter map the
+  designer emits with each script) and turns the drag into a parameter change. Feels like
+  CAD; is actually parameter editing; never forks the model.
+- **P1 — Feature list.** A tree derived from the script's structure (base solid, holes,
+  fillets…) supporting select-in-viewport, suppress/unsuppress, and "ask AI about this
+  feature" — a precision upgrade over today's marquee region-select.
+- **P2 — Constrained sketch-on-face** (add a hole/pocket on a picked face with numeric
+  placement) — emitted *as script code*, so it stays in the single representation.
+- **Explicit non-goals for v1:** mesh sculpting, freeform surfacing, a general boolean/CSG
+  editor, assemblies with mating constraints, our own kernel. Written down so we can say no
+  quickly.
+
+### 4.6 "Use Amazon Bedrock" — **accepted, with eyes open (and one alternative to keep on the table)**
+
+**Pushback / trade-offs to acknowledge:**
+
+- Bedrock's Claude surface trails the first-party API in features (no server-side web
+  search/code execution, no Files/Batches/Models APIs, no automatic prompt caching — manual
+  `cache_control` works; details in the architecture doc). None are blockers for our loop —
+  we run our own sandbox anyway — but it's a real constraint list, not zero.
+- The genuine wins: **multi-model under one roof** (Claude + Nova + Llama + Mistral +
+  DeepSeek for the verifier/critic roles), AWS-native IAM/VPC/PrivateLink, Guardrails,
+  marketplace billing, and — the sleeper enterprise feature — **"deploy into the customer's
+  own AWS account"** as a sales motion.
+- **Alternative to keep on the table:** *Claude Platform on AWS* (Anthropic-operated, SigV4
+  auth, AWS billing, same-day feature parity, bare model IDs) for the Claude roles, with
+  Bedrock's Converse API only for the non-Anthropic verifier models. Because we put every
+  model call behind our own gateway (architecture doc §5), this stays a config decision, not
+  an architecture decision — we don't have to be right about it today.
+
+---
+
+## 5. Product surface (v1)
+
+### 5.1 The core journey
+
+1. **Set up once:** account, printer profile(s) (bed, nozzle, materials), units.
+2. **Start a design:** chat, brief panel, or template. Attach reference photos/sketches.
+3. **Clarify:** the agent asks only what the brief is missing; the brief panel fills in live
+   on the side. User can type answers or edit fields directly — same thing.
+4. **Lock the brief:** review the compact contract (today's Phase 3, now a real artifact with
+   a version number). One click to lock and generate.
+5. **Generate & verify:** progress narration (existing `set_status`), then the model appears
+   *with its Verification Report* — geometry checks, brief conformance table, render strip,
+   vision-critic notes. Failures block the "verified" badge, not the display.
+6. **Iterate three ways:** parameter panel (instant, free), direct manipulation (instant,
+   free), or chat/region-select (agent turn). Every path yields a new immutable iteration;
+   revert works exactly as today.
+7. **Make it printable:** bed-fit check against the *user's* profile; if oversized, the
+   split-planner proposes cut planes + joint features (dowels/dovetail/screw bosses), each
+   piece re-verified for bed fit; print settings on demand (existing tool, kept).
+8. **Export:** STL/STEP/3MF, plus the script and the brief — the user owns the full stack.
+
+### 5.2 The Design Brief panel
+
+Persistent right-hand document with completeness meter, per-field provenance (user-typed vs.
+AI-inferred — inferred fields render in a distinct style until confirmed), lock/version
+history, and diffing between brief versions. The brief is exportable/importable (JSON +
+human-readable render) — this is also the B2B seed: a team lead writes briefs, others run them.
+
+### 5.3 Multi-part / split plans
+
+First-class object, not a chat suggestion: a split plan names pieces, cut planes, joint types
+and clearances; each piece gets its own bed-fit validation and appears in the viewport as an
+exploded/assembled toggle. Deterministic checks own "does each piece fit"; the AI owns "where
+should the seams go" (visible surfaces, strength across layer lines).
+
+### 5.4 The Verification Report
+
+Per-iteration artifact with a three-state badge (Verified ✓ / Warnings ⚠ / Failed ✗):
+
+- Geometry: watertight, bed fit (orientation found), overhang %, min-feature warnings.
+- **Brief conformance table:** every numeric spec vs. measured value, pass/fail.
+- Render strip (canonical views) + vision-critic findings, each tagged `blocking` /
+  `suggestion`, each dismissible by the user (dismissals are remembered on the brief).
+- Cross-model review findings when that tier ran.
+
+The report is shareable (link/PDF) — "I printed this because the report was green" is the
+word-of-mouth artifact.
+
+### 5.5 What stays from the POC (deliberately)
+
+Chat-first interaction; versioned never-overwrite iterations with revert; region-select →
+agent context; viewport toolset (measure, wireframe, view cube, dimensions); print settings
+panel; the `printable-cad` skill's phased discipline and DFM reference tables (now also the
+source of truth for verification thresholds — one set of numbers, two consumers).
+
+---
+
+## 6. Packaging & pricing (directional)
+
+Paying for inference forces this conversation now, not later:
+
+- **Free / local:** the current desktop mode — BYO Claude subscription, everything runs
+  locally. Costs us ~nothing, remains the community funnel and the dev harness.
+- **Cloud Starter (~$15–25/mo):** hosted projects, N verified designs/mo, parameter edits
+  free and unmetered (they cost us ~nothing — a deliberate pricing asymmetry that *teaches
+  users the manual tools*, aligning cost incentives with the product bet in §4.5).
+- **Pro (~$50–80/mo):** more designs, cross-model review tier, split planner, brief templates,
+  priority queue.
+- **Team/Enterprise:** shared brief libraries, admin, SSO — and **BYO-AWS**: the agent runtime
+  and Bedrock calls deployed into the customer's account (their IAM, their data boundary,
+  their negotiated Bedrock pricing). This is the Bedrock bet paying for itself.
+
+Meter on **verified design iterations** (agent turns), never on parameter tweaks or renders.
+
+## 7. Success metrics
+
+- **Activation:** first verified model within 15 minutes of install/signup.
+- **North star:** verified designs printed per active user per month (proxy: exports of
+  green-badge iterations).
+- **Trust:** first-generation brief-conformance pass rate; % of dimension errors caught by
+  verification *before* the user notices (report catches vs. user-reported).
+- **Control:** share of iterations from parameter panel / direct manipulation vs. chat
+  (target: >40% non-chat by v1.1 — measures whether §4.5 worked).
+- **Efficiency:** median iterations-to-accepted; inference cost per accepted design.
+
+## 8. Top risks
+
+1. **Backend pivot underestimated** — accounts/metering/sandboxing is more work than any AI
+   feature. Mitigation: keep local mode alive as the fallback ship vehicle; phase the backend
+   (architecture doc §11).
+2. **Verification over-promise** — a green badge on a wrong part is worse than no badge.
+   Mitigation: brief conformance only asserts what it measures; vision findings are labeled
+   as opinions; badge semantics documented in-product.
+3. **Param extraction brittleness** — the panel dies if scripts drift from the convention.
+   Mitigation: PARAMS block is enforced by the skill *and* validated in CI of every iteration
+   (a script that breaks the convention fails verification layer 1).
+4. **Cost blowout on the designer role** — Opus-tier agent turns with renders and re-runs.
+   Mitigation: prompt caching, effort modulation, free parameter-edit path absorbing tweak
+   traffic, per-tier turn budgets.
+5. **Zoo/Autodesk ship "good enough" text-to-CAD** — mitigation: our moat is the brief +
+   verification + print-readiness loop, not raw generation; keep compounding DFM depth.
