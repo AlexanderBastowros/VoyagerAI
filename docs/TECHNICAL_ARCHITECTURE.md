@@ -212,11 +212,15 @@ planner (constraints).
 interface DesignBrief {
   version: number                     // brief versions are immutable once locked
   lockedAt?: string                   // generation stamps briefVersion on each iteration
-  part: { name: string; purpose: string; referenceImages: ImageRef[] }  // images carry ≥1 user-scaled dimension
+  parts: Array<{ id: string; name: string; purpose: string; referenceImages: ImageRef[] }>
+                                      // ≥1 part (§14); images carry ≥1 user-scaled dimension;
+                                      // every Feature below carries a `partId`
   printer: PrinterProfileRef          // bed XYZ, nozzle Ø, materials — reusable, per-user settings
   envelope: { x: Dim; y: Dim; z: Dim }       // Dim = { value, unit, tolerance?, provenance: 'user'|'inferred' }
   features: Feature[]                 // discriminated union: hole {Ø, purpose: clearance|tapped|press_fit,
-                                      //   position}, pocket, boss, fillet/chamfer, text, insert{type, size}…
+                                      //   position}, pocket, boss, fillet/chamfer, text, insert{type, size},
+                                      //   gear {module, teeth, pressureAngle, helix?, bore, hub?,
+                                      //     meshesWith?: featureId}  (§13)…
   materials: { requested?: string; onHand: string[] }
   constraints: {
     mustFitBed: boolean
@@ -260,14 +264,16 @@ enforceable.
 ```
 s3://voyager-{env}/projects/{projectId}/
   brief/v{N}.json
-  iterations/{n}/ script.py · manifest.json · part.stl · part.step · part.3mf
-                 · renders/{front,back,left,right,top,bottom,iso1,iso2}.png
-                 · report.json
+  parts/{partId}/iterations/{n}/ script.py · manifest.json · part.stl · part.step · part.3mf
+                                · renders/{front,back,left,right,top,bottom,iso1,iso2}.png
+                                · report.json
   attachments/{uploadId}
+  imports/{importId}.{step|stl|3mf|obj}   # externally sourced base models (§12.5)
 ```
 
 Postgres: `users`, `printer_profiles`, `projects`, `briefs(project, version, json, locked_at)`,
-`iterations(project, n, brief_version, s3_prefix, badge, created_by: agent|param|revert)`,
+`parts(project, part_id, name, placement, visible)` (§14),
+`iterations(project, part_id, n, brief_version, s3_prefix, badge, created_by: agent|param|revert|import)`,
 `transcripts` (chat persistence — replaces `appendMessage` into `project.json`),
 `usage_events` (per-turn tokens by role/model — metering + the eval feedback loop).
 
@@ -426,11 +432,112 @@ geometric selectors (face normals + centroids) rather than OCCT topology ids pre
 rebuilt-in-Fusion solid can re-find them. Gated on Tier 1/2 telemetry (§11 deferred
 decisions).
 
-### 12.5 Return path (import, not sync)
+### 12.5 Import & remix (the return path, generalized)
 
-An externally edited STEP can be attached back onto a Voyager project: the script imports it
-as a base solid (OCCT/build123d STEP reader) and models on top ("add the mounting holes to
-this"). It enters as reference geometry — the brief records the import, verification layers
-1–2 still run, but brief-conformance (layer 3) only asserts features Voyager added. One-way
-in each direction; there is deliberately no state that must be kept consistent between
-Voyager and the external tool.
+Any external model — a Voyager part edited elsewhere, or a file that never touched Voyager
+(Thingiverse STL, a colleague's STEP, a scan) — can start or continue a project. One-way in
+each direction; there is deliberately no state kept consistent between Voyager and the
+external tool. Product framing: product doc §5.6.
+
+**Import flow:** file picker / drag-drop → copied into the project (`imports/`), measured
+(bbox, watertight, triangle/face count) → **unit confirmation** for unitless formats
+(STL/OBJ carry no units; the dialog shows one measured dimension and asks the user to
+confirm or correct it — the skill's never-guess-scale rule, enforced at the door) →
+recorded as iteration v1 with `createdBy: 'import'`, displayed and verified like any other
+iteration.
+
+**Two lineages, set by format:**
+
+- **STEP lineage** — OCCT/build123d imports a true B-rep solid. Generated scripts reference
+  it (`base = import_step("imports/…")`) and model on top; everything downstream (params on
+  added features, fillets touching new geometry, full STEP export) works.
+- **Mesh lineage** (STL/3MF/OBJ via trimesh) — booleans run on the mesh (manifold3d-class
+  robust booleans); parametric features are built in build123d, meshed, then fused or
+  subtracted. A **repair pass** (fill holes, drop degenerate faces) runs on request and
+  reports exactly what it changed. Explicitly out of scope: mesh→B-rep conversion —
+  feature recognition on triangle soup is research-grade, and naive triangle→face
+  conversion blows up OCCT on real files. Mesh-lineage iterations export STL/3MF only;
+  `resolveExportSource` already degrades gracefully when an iteration has no STEP.
+
+**Semantics downstream:** the manifest marks the base as `imported`, so the parameter panel
+scopes itself to Voyager-added features; the brief records the import and tracks added
+features only; verification layers 1–2 run unchanged on any lineage, layer 3 asserts only
+what Voyager added; the render rig and region-select need no changes at all.
+
+---
+
+## 13. Mechanism generation — gears first
+
+Product framing: product doc §5.7. Fully CLI-phase work — nothing here needs Bedrock.
+
+**Library strategy (spike, then pin).** Gear teeth are never hand-modeled by the agent;
+generation comes from vetted libraries. Candidates for a timeboxed eval:
+`bd_warehouse.gear` (build123d-native, same author as build123d), `cq_gears` (CadQuery;
+broadest coverage — spur/helical/herringbone/bevel/planetary/ring), `gggears`
+(build123d-compatible), plus anything else the spike surfaces. Criteria: involute
+correctness (profile inspection against the analytic curve), gear-type coverage, export
+mesh quality, maintenance/license. The result is a per-gear-type default recorded in the
+work order, not a religion.
+
+**Framework interop, not framework switch.** build123d and CadQuery both wrap OCCT through
+the same OCP bindings — a CadQuery-generated gear is a `TopoDS` shape that a build123d
+script can wrap directly (STEP handoff as the fallback path). So the primary authoring API
+stays build123d, CadQuery-based libraries are imported where they win, and the managed env
+(`EnvManager` package list) adds the chosen gear libraries — CadQuery lazily, since its OCP
+wheel is large (the skill already documents that install path).
+
+**Skill:** a new `references/gears.md` teaches: which library per gear type; the meshing
+math the agent must confirm before generating (module/PA matching across a pair, center
+distance `m·(z₁+z₂)/2` ± profile shift, minimum tooth count vs. undercut at the chosen
+pressure angle); PARAMS conventions for gears (module, teeth, PA, helix, bore, hub — so
+the parameter panel gets gears for free); and clarify-phase questions ("what does it mesh
+with?" is as mandatory as "what's the hole for?"). Gear **DFM numbers** (min module vs.
+nozzle, print-flat orientation, herringbone preference for FDM, backlash allowance) are
+added to `references/design-for-printing.md` — the existing single source of truth that
+generation and verification share.
+
+**Verification:** gear-spec checks join the deterministic layers (§5): given the brief's
+gear features, verify matched module/PA between declared mates, center distance against
+the modeled axes, backlash within the DFM allowance, and warn on undercut-prone tooth
+counts. These are formula checks on brief + geometry — exactly the caliper-class work the
+verification pyramid keeps away from LLMs.
+
+**Brief:** the `gear` feature type (§6) makes pairs first-class via `meshesWith`, which is
+what turns "generate a gear" into a checkable spec instead of a shape request.
+
+---
+
+## 14. Multi-part projects & placement
+
+Product framing: product doc §5.3. Contract-level change — it reshapes `ProjectStore`, the
+`display_model` tool, the brief, and export, so it lands in the WS-0b contracts before the
+parallel streams build against single-part assumptions.
+
+**Data model.** A project holds **parts**; each part carries its own script lineage,
+iteration history, and active-iteration pointer. All existing single-part semantics —
+immutable iterations, revert, the parameter panel's re-run path — apply *per part*. A
+pre-existing project migrates to one part (`main`), the same discover-don't-recreate
+migration style the POC used for pre-R3 single-project installs. `display_model` gains a
+`part` argument (slug, created on first use, default `main`), so the agent declares which
+part an export belongs to; region-select context gains part identity. Storage becomes
+part-scoped (§8): `parts/{partId}/iterations/{n}/`.
+
+**Placement is layout, not geometry.** Each part has a persisted placement (position +
+orientation) edited with a viewport gizmo (three.js `TransformControls`-class, with
+ground-snap). Placements never modify a part's script or mesh — no invisible geometry
+drift. They still do real work: (1) the agent receives the current arrangement as spatial
+context in the user-message envelope (alongside the existing selection summary), and
+(2) verification layer 2 runs **cross-part interference/clearance** on the placed
+arrangement. Explicitly not an assembly-constraint solver (product doc §4.5 non-goal): no
+mates, no kinematics.
+
+**Per-part export.** Export resolution (`resolveExportSource`) becomes part-scoped: an
+individual part's active iteration exports as its own STL/STEP/3MF; "export all parts"
+produces separate files in one zip — never a silent merge; an explicit **plate export**
+bakes current placements into one merged STL when an arranged build plate is actually what
+the user wants. The graduation package (§12.1) gains per-part sections under one bundle.
+
+**Agent semantics.** Still one session per project. Prompts/skill teach the parts
+vocabulary (name the part on `display_model`; ask which part a change targets when
+ambiguous). Gear pairs (§13) and split-plan pieces generate as sibling parts rather than
+multi-body single files — which is precisely the bug this section exists to fix.

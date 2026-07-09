@@ -238,7 +238,8 @@ script is a trap for the user.
 ### 5.1 The core journey
 
 1. **Set up once:** account, printer profile(s) (bed, nozzle, materials), units.
-2. **Start a design:** chat, brief panel, or template. Attach reference photos/sketches.
+2. **Start a design:** chat, brief panel, or template — or **import an existing model**
+   (STEP/STL/3MF/OBJ, from anywhere — §5.6) and remix it. Attach reference photos/sketches.
 3. **Clarify:** the agent asks only what the brief is missing; the brief panel fills in live
    on the side. User can type answers or edit fields directly — same thing.
 4. **Lock the brief:** review the compact contract (today's Phase 3, now a real artifact with
@@ -252,8 +253,10 @@ script is a trap for the user.
 7. **Make it printable:** bed-fit check against the *user's* profile; if oversized, the
    split-planner proposes cut planes + joint features (dowels/dovetail/screw bosses), each
    piece re-verified for bed fit; print settings on demand (existing tool, kept).
-8. **Export:** STL/STEP/3MF one-offs, or the **graduation package** (§5.5) — geometry +
-   script + brief + parameter manifest in one bundle. The user owns the full stack.
+8. **Export:** per-part STL/STEP/3MF (parts are never silently merged into one file —
+   §5.3), an explicit arranged-plate export, or the **graduation package** (§5.5) —
+   geometry + script + brief + parameter manifest in one bundle. The user owns the full
+   stack.
 
 ### 5.2 The Design Brief panel
 
@@ -262,12 +265,33 @@ AI-inferred — inferred fields render in a distinct style until confirmed), loc
 history, and diffing between brief versions. The brief is exportable/importable (JSON +
 human-readable render) — this is also the B2B seed: a team lead writes briefs, others run them.
 
-### 5.3 Multi-part / split plans
+### 5.3 Multi-part projects, arrangement & split plans
 
-First-class object, not a chat suggestion: a split plan names pieces, cut planes, joint types
-and clearances; each piece gets its own bed-fit validation and appears in the viewport as an
-exploded/assembled toggle. Deterministic checks own "does each piece fit"; the AI owns "where
-should the seams go" (visible surfaces, strength across layer lines).
+Real projects are rarely one body: a box *and* its lid, a gear *pair*, a bracket set. The
+POC's model — a project is one part with one iteration history — merges everything a script
+produces into a single exported file. Production makes **parts first-class**:
+
+- **A project holds parts; each part has its own script lineage, version history, and
+  active iteration.** Everything that works per-project today (immutable iterations,
+  revert, parameter panel) works per-part. Gear pairs (§5.7), split-plan pieces, and
+  imported bases (§5.6) all land naturally as sibling parts. A parts panel lists them with
+  visibility toggles and select/focus.
+- **Arrangement: move parts around the viewport — as layout, never as geometry.** A
+  move/rotate gizmo with ground-snap positions parts relative to each other; placements
+  persist with the project. They're deliberately *not* baked into any script or mesh — the
+  part's geometry stays pristine — but they're more than cosmetic: the AI receives the
+  current arrangement as spatial context ("the lid is sitting 2mm above the box"), and
+  verification runs **cross-part interference/clearance checks on the placed arrangement**.
+  The boundary from §4.5 holds: this is snap-and-transform, not an assembly-constraint
+  solver — no mates, no kinematics, and we say so.
+- **Per-part export — parts are never silently merged.** Each part downloads individually
+  (its active iteration's STL/STEP); "export all" produces *separate files* in one zip; and
+  an explicit **plate export** exists for the one case where merging is the point — baking
+  the current arrangement into a single STL as an arranged build plate.
+- **Split plans** stay first-class objects (pieces, cut planes, joint types/clearances) and
+  now simply *produce parts*: each piece gets its own bed-fit validation, placement, and
+  export. Deterministic checks own "does each piece fit"; the AI owns "where should the
+  seams go" (visible surfaces, strength across layer lines).
 
 ### 5.4 The Verification Report
 
@@ -320,7 +344,66 @@ Graduation events are tracked as a *healthy* signal, not churn — a user who gr
 part trusts the tool enough to build on it, and the brief/script they leave with carries the
 Voyager format with them.
 
-### 5.6 What stays from the POC (deliberately)
+### 5.6 Start from an existing model (import & remix)
+
+Most real hobbyist projects don't start from zero — they start from a Thingiverse/Printables
+download, a STEP file from a colleague, or a scan. A Voyager session can start from an
+**imported model** that was never created by this app, and the capability is honest about
+what each format allows instead of pretending all imports are equal:
+
+- **STEP import → full remix.** OCCT/build123d reads STEP as a true solid. The script
+  references it as the base and adds or cuts features parametrically — holes, bosses,
+  fillets on new geometry — with the parameter panel working on everything Voyager added.
+- **Mesh import (STL/3MF/OBJ) → mesh remix.** A triangle mesh is not a feature model, and
+  converting one back into features is research-grade — we say so rather than fake it. What
+  works, and works well: measure, orient, scale, **repair** (holes, degenerate faces),
+  **split for the bed**, and **boolean surgery** — parametric features are modeled fresh
+  and fused/subtracted into the mesh. "Fill this hole and re-drill it at 5mm" is a
+  plug-and-recut boolean, so even existing-geometry edits are possible; what's *not*
+  possible is a slider on geometry we didn't create.
+- **Import-only is a complete use case.** Repair + verification (watertight, bed fit,
+  overhangs) + split plan + print settings on a downloaded file involves zero generation —
+  a cheap, high-frequency reason to open the app.
+- **Scale is never assumed.** STL/OBJ are unitless; import asks the user to confirm one
+  measured dimension ("this reads as 120mm wide — correct?") — the same never-guess-scale
+  rule the skill applies to photos.
+- **The representation stays unified** (§4.5's argument extended): the imported file
+  becomes a base solid *referenced by the script*, so human and AI keep editing one
+  artifact. The brief tracks the features Voyager adds; verification asserts only those;
+  region-select works on imports for "this hole/this face" conversations.
+- Mesh-lineage iterations export STL/3MF (no STEP — there's no B-rep to export);
+  STEP-lineage keeps the full export set. Respecting the source model's license when
+  remixing is the user's responsibility.
+
+### 5.7 Mechanisms: gears done properly
+
+Gears are a top-tier functional-print request (gearboxes, replacement appliance gears, RC
+parts) — and the sharpest test of what "properly" means in this product. A freehand
+LLM-modeled gear is bumps on a circle; a real one is an **involute profile** with a matched
+module and pressure angle, FDM backlash allowance, undercut handling below the minimum
+tooth count, and a mate it actually meshes with.
+
+- **Strategy: vetted libraries, not hand-modeled teeth — and no framework switch.** Gear
+  generation comes from established code-CAD gear libraries (candidates:
+  `bd_warehouse.gear` — build123d-native, by the build123d author; `cq_gears` — CadQuery,
+  the broadest type coverage incl. helical/herringbone/bevel/planetary/ring; `gggears` —
+  build123d-compatible; a timeboxed spike picks the defaults per gear type). The tempting
+  alternative — "switch to CadQuery for its gear ecosystem" — is **rejected**: both
+  frameworks wrap the same OCCT kernel through the same OCP bindings, so a CadQuery-built
+  gear drops into a build123d script at the shape level (STEP handoff as the fallback).
+  Framework choice is per-library, not per-project; build123d stays the authoring API.
+- **Gears are brief-first-class, and *pairs* are the unit of correctness.** The brief's
+  gear feature carries module, tooth count, pressure angle, helix, bore/keyway, hub, and —
+  critically — the mesh partner. Verification then checks what a caliper-and-formula pass
+  can check: matched module/PA across a pair, center distance `m·(z₁+z₂)/2` (± profile
+  shift), backlash within the FDM allowance, undercut warnings. Gear DFM numbers (minimum
+  module vs. nozzle, print-flat orientation, herringbone preference for FDM) go into the
+  skill's `design-for-printing.md` — the same single source of truth as everything else.
+- **The pattern generalizes.** Gears are the first entry of a mechanism library
+  (bd_warehouse also covers threads and fasteners; print-in-place hinges are already in
+  the skill) — gears go first because demand and checkability are both highest.
+
+### 5.8 What stays from the POC (deliberately)
 
 Chat-first interaction; versioned never-overwrite iterations with revert; region-select →
 agent context; viewport toolset (measure, wireframe, view cube, dimensions); print settings

@@ -36,7 +36,8 @@ infra) — useful for measuring real per-design token cost; tracked in
 3. **Touch only the files your work order owns** (each work order lists them). If you need
    a change in a file another workstream owns, or in any shared contract, **stop and leave
    a note in the "Contract change requests" section at the bottom of this file** instead of
-   editing it — the dispatcher routes it through WS-0b.
+   editing it — the dispatcher routes it through a contracts work order (WS-0b, then
+   WS-0c, and so on).
 4. **Shared contracts are frozen** once WS-0b lands: everything under `src/shared/`, the
    preload API, `src/main/ipc.ts` channel wiring, `appStore` state slices, and panel mount
    points in `App.tsx`. Feature streams *consume* contracts and add their *own new files*.
@@ -51,19 +52,23 @@ infra) — useful for measuring real per-design token cost; tracked in
 ## Dependency graph
 
 ```
-WS-0a (extract agent-core)          ── single agent, everything else waits
-   └─► WS-0b (shared contracts + integration stubs)   ── single agent
-          ├─► WS-A  Design Brief system        ┐
-          ├─► WS-B  PARAMS + parameter panel   │
-          ├─► WS-C  Verification layers 1–3    ├─ parallel, disjoint file footprints
-          ├─► WS-D  Render rig + self-inspect  │
-          ├─► WS-E  Printer profiles           │
-          └─► WS-F  Graduation package export  ┘
-                     └─► M1 integration pass (dispatcher-led)
+WS-0a (extract agent-core) ── DONE
+   └─► WS-0b (shared contracts + integration stubs) ── DONE
+          ├─► WS-A  Design Brief system ── DONE
+          ├─► WS-B  PARAMS + parameter panel ── DONE
+          ├─► WS-C  Verification layers 1–3    ┐
+          ├─► WS-D  Render rig + self-inspect  ├─ parallel, disjoint file footprints
+          ├─► WS-E  Printer profiles           ┘
+          └─► WS-0c (contract addendum: import/parts/gears) ── single agent, quick
+                 ├─► WS-G  External model import/remix  ┐
+                 ├─► WS-H  Gear generation              ├─ parallel (H's verify checks after WS-C)
+                 └─► WS-I  Multi-part & placement       ┘
+                        └─► WS-F  Graduation package + per-part export (needs WS-I)
+Then: M1 integration pass (dispatcher-led).
 M2+ (Bedrock, multi-model, plugins) — sketched only; decomposed when a trigger fires.
 ```
 
-Notes on the two gates:
+Notes on the gates:
 - **WS-0a is deliberately single-agent** — it moves most of `src/main/**`, so parallel work
   during it guarantees conflicts.
 - **WS-0b exists so the parallel streams never touch the same file.** It pre-lands the
@@ -136,10 +141,35 @@ Notes on the two gates:
   per-tool `*.test.ts` alongside a `testSupport.ts` (not itself a test file). Full quality gate
   green: 228 tests (219 prior + 9 new for the three brief/manifest/verification schema files),
   build, typecheck.
-- **Why:** the coordination point that makes WS-A…WS-F conflict-free.
+- **Why:** the coordination point that makes WS-A…WS-I conflict-free.
 - **Files owned:** all of the above.
 - **Done when:** quality gate green; each downstream work order can be started without
   editing any 0b-owned file.
+
+### WS-0c — Contract addendum: import / parts / gears · **Status: TODO** · gate for WS-G/H/I, single agent, quick
+
+- **Why:** WS-G/WS-H/WS-I were added to the roadmap after WS-0b shipped, so the contract
+  surface they consume doesn't exist yet. Same rules as 0b: one owner lands the frozen
+  shared files; the streams then build against them without touching them. Also drains the
+  pending contract-change queue (below).
+- **Scope:** types + zod schemas + stub wiring, no behavior:
+  - `src/shared/brief.ts` — add the `gear` feature type (`module`, `teeth`,
+    `pressureAngle`, `helix?`, `bore`, `hub?`, `meshesWith?`; architecture doc §6, §13).
+  - `src/shared/manifest.ts` — `importedBase` marker for remix projects (§12.5).
+  - `src/shared/parts.ts` (new) — `PartRecord` + `Placement` (architecture doc §14).
+  - `src/shared/ipc.ts` — `model:import`; the part-scoped surface (`part:*`
+    list/setPlacement/setVisibility; export requests gain `partId`;
+    `ModelDisplayedPayload` gains part identity); `ExportFormat` + `'plate'`; iteration
+    provenance `createdBy: 'agent' | 'param' | 'revert' | 'import'` on
+    `ProjectIteration`/`recordIteration` (WS-B deliberately deferred this — WS-G/WS-I
+    need it programmatically); plus the queued `brief:listVersions` request from WS-A.
+  - Stub handlers in `src/main/ipc.ts` + `src/preload/**`; `appStore` parts/placements
+    slice; `PartsPanel` + `ImportDialog` placeholder mounts in `App.tsx`.
+- **Files owned:** the same contract set WS-0b owned (`src/shared/**`, preload,
+  `src/main/ipc.ts` wiring, `appStore` slices, `App.tsx` mounts) plus
+  `packages/agent-core/src/projects/store.ts` for the `createdBy` widening only.
+- **Done when:** quality gate green; WS-G, WS-H, and WS-I can each start without editing
+  any contract file; `BriefPanel` can list locked brief versions (WS-A's queued request).
 
 ### WS-A — Design Brief system · **Status: DONE** · depends: 0a, 0b
 
@@ -285,19 +315,121 @@ Notes on the two gates:
   nozzle/bed questions and the generated script's `BED_X/BED_Y/BED_Z/NOZZLE` constants
   match the profile.
 
-### WS-F — Graduation package export · **Status: TODO** · depends: 0a, 0b
+### WS-F — Graduation package + per-part export · **Status: TODO** · depends: 0a, 0b, **WS-I** (parts model)
 
-- **Why:** architecture doc §12.1 / product doc §5.5 — anti-lock-in bundle; only packages
-  artifacts every iteration already produces.
-- **Scope:** package builder (zip: STEP + 3MF + STL + script + locked brief JSON +
-  manifest + generated README); extend the export flow (`exportResolver` generalized to an
-  artifact set — keep its path-containment guard); "Export package" in `ViewportControls`'
-  export menu; skill note ensuring 3MF is always produced.
+- **Why:** architecture doc §12.1, §14 / product doc §5.3, §5.5 — anti-lock-in bundle,
+  plus the fix for "everything merges into one file": exports resolve **per part**.
+- **Scope:** part-scoped export resolution (`exportResolver` generalized to an artifact
+  set per part — keep its path-containment guard): individual STL/STEP/3MF per part;
+  "export all parts" = separate files in one zip, never silently merged; explicit
+  **plate export** baking current placements into one merged STL; package builder (zip:
+  per-part sections of STEP + 3MF + STL + script + manifest, plus locked brief JSON +
+  generated README); "Export…" menu in `ViewportControls` (per part / all / plate /
+  package); skill note ensuring 3MF is always produced.
 - **Files owned:** `packages/agent-core/projects/exportResolver.ts`,
   `packages/agent-core/projects/exportPackage.ts`,
   `src/renderer/src/components/ViewportControls.tsx` (export menu only).
-- **Done when:** exported zip opens: STEP imports into Fusion/Onshape, script re-runs with
+- **Done when:** a two-part project exports each part as its own file, "all parts" as a
+  zip of separate files, and a plate STL matching the viewport arrangement; the exported
+  package opens: STEP imports into Fusion/Onshape, script re-runs with
   `pip install build123d`, README renders.
+
+### WS-G — External model import & remix · **Status: TODO** · depends: 0a, 0b, **0c**
+
+- **Why:** product doc §5.6 / architecture doc §12.5 — most hobbyist projects start from an
+  existing file (a Thingiverse/Printables STL, a colleague's STEP, a scan), and
+  import → repair → verify → split → print settings is a complete zero-generation use case
+  on its own. Capability is format-honest: STEP = full parametric remix; mesh = boolean
+  surgery/repair/split, never sliders on geometry we didn't create.
+- **Scope:** import flow (picker/drag-drop → copy to project `imports/`, measure, **unit
+  confirmation for unitless STL/OBJ** — show one measured dimension, user confirms or
+  corrects; record as iteration with `createdBy: 'import'`, display + verify like any
+  iteration). STEP lineage: scripts reference the base via `import_step` and model on top.
+  Mesh lineage: trimesh load; robust (manifold3d-class) booleans; parametric features
+  built in build123d, meshed, then fused/subtracted; repair pass (fill holes, drop
+  degenerate faces) that reports what it changed; mesh-lineage iterations record no STEP
+  (`resolveExportSource` already degrades gracefully). Skill guidance in a **new**
+  reference file `references/remix.md` (boolean-surgery patterns like plug-and-recut,
+  unit-confirmation rule, mesh-vs-STEP capability rules). `ImportDialog.tsx` UI on the 0c
+  mount point.
+- **Files owned:** `packages/agent-core/projects/importModel.ts`,
+  `packages/agent-core/remix/**`,
+  `resources/skills/printable-cad/references/remix.md` (new file — disjoint from WS-B's
+  skill edits), `src/renderer/src/components/ImportDialog.tsx`.
+- **Coordination:** the one-line pointer to `references/remix.md` in `SKILL.md` is a
+  contract-change request (WS-B owns `SKILL.md`) — file it rather than editing.
+- **Done when:** a downloaded STL imports with confirmed scale, displays, gets a layer-2
+  verification result, and accepts "add a 5mm hole through the base" (boolean surgery →
+  new iteration); an imported STEP accepts a parametric added feature and still exports
+  STEP; an import that fails watertightness gets a repair pass with a report of what
+  changed.
+
+### WS-H — Gear generation (mechanisms v1) · **Status: TODO** · depends: 0a, 0b, **0c** (gear-spec verify checks additionally wait for WS-C)
+
+- **Why:** product doc §5.7 / architecture doc §13 — gears are a top functional-print
+  request and the sharpest "properly" test: library-generated involutes with checkable
+  meshing math, never hand-modeled teeth. Fully CLI-phase.
+- **Scope:**
+  1. **Timeboxed library spike** — evaluate `bd_warehouse.gear` (build123d-native),
+     `cq_gears` (CadQuery; broadest gear-type coverage), `gggears`
+     (build123d-compatible), and anything else surfaced. Criteria: involute correctness
+     vs. the analytic profile, type coverage, export mesh quality, license/maintenance.
+     Record the per-gear-type defaults in this work order. **No framework switch** —
+     both ecosystems share OCP/OCCT, so CadQuery-built gears wrap into build123d scripts
+     at the shape level (STEP handoff as fallback).
+  2. **Env:** add chosen libraries to the managed Python env package list; CadQuery-based
+     libs install lazily (large OCP wheel — the skill already documents this path).
+  3. **Skill:** new `references/gears.md` — library-per-gear-type, meshing math the agent
+     confirms before generating (module/PA match, center distance, undercut minimums),
+     PARAMS conventions for gears, clarify questions ("what does it mesh with?").
+  4. **Verification (after WS-C):** gear-spec checks as new files — matched module/PA
+     across declared mates, center distance vs. modeled axes, backlash within DFM
+     allowance, undercut warnings.
+- **Files owned:** `resources/skills/printable-cad/references/gears.md` (new file —
+  disjoint from WS-B's skill edits), `packages/agent-core/src/python/envManager.ts` (package
+  list), `packages/verify/**/gears*` (new files, land after WS-C).
+- **Coordination (contract-change requests, don't edit):** gear DFM numbers into
+  `references/design-for-printing.md` and a pointer line in `SKILL.md` (both WS-B-owned).
+- **Coordination:** once WS-I lands, gear pairs generate as **sibling parts** (one per
+  gear), not a multi-body single file — if both are in flight, agree the `display_model`
+  part-arg convention via the contracts section.
+- **Done when:** "a 20-tooth and 40-tooth meshing pair, module 1.5, 20° PA, 6mm bores,
+  herringbone" yields two gears whose verification passes the pair checks (center
+  distance 45mm, matched module/PA), whose profiles are library-generated involutes (not
+  freehand), and whose module/teeth appear as sliders in the parameter panel; a bare
+  "make me a gear" prompt triggers the skill's gear clarify questions instead of
+  generating an unmated guess.
+
+### WS-I — Multi-part projects: parts, placement, parts panel · **Status: TODO** · depends: 0a, 0b, **0c**
+
+- **Why:** product doc §5.3 / architecture doc §14 — real projects are a box *and* its
+  lid, a gear *pair*, a bracket set; the single-part data model is why everything merges
+  into one exported file. Gear pairs (WS-H), split-plan pieces, and imports (WS-G) all
+  need parts to land in their natural shape. WS-F builds on this.
+- **Scope:** parts data model in `ProjectStore` — per-part iteration histories,
+  active-iteration pointers, and revert (existing semantics preserved, scoped per part);
+  migration: existing projects discover a single `main` part (discover-don't-recreate,
+  like the pre-R3 project migration); `display_model` gains the `part` slug argument
+  (default `main`, part created on first use); **placements** — persisted per-part
+  position + orientation, a viewport move/rotate gizmo with ground-snap
+  (`TransformControls`-class, alongside the existing selection/measurement controllers),
+  layout-only (never rewrites script or mesh); `PartsPanel.tsx` (list, visibility
+  toggles, select/focus, per-part version history); selection context and the
+  user-message envelope gain part identity + current arrangement so the agent has spatial
+  context. Explicitly out of scope: assembly constraints/mates (product doc §4.5
+  non-goal).
+- **Files owned:** `packages/agent-core/src/projects/store.ts`,
+  `packages/agent-core/tools/displayModel.ts`,
+  `src/renderer/src/three/placementController.ts` (new) + part-related changes in
+  `src/renderer/src/three/viewer.ts`, `src/renderer/src/components/PartsPanel.tsx`.
+- **Coordination (contract-change requests, don't edit):** parts-vocabulary prompt
+  additions (`prompts.ts` is WS-A-owned); cross-part interference check lands in
+  WS-C's layer 2 (file a request naming the placement input it should consume).
+- **Done when:** a project holds a box and a lid as separate parts with independent
+  version histories and revert; the lid moves/rotates with the gizmo and its placement
+  survives an app restart; region-select reports which part was selected; the agent
+  regenerates the lid without touching the box's history; verification (if WS-C has
+  landed) flags an interpenetrating arrangement.
 
 ---
 
@@ -325,3 +457,4 @@ Notes on the two gates:
   currently shows only the current draft/locked version (no history list) as a result. Proposed
   shape: `BriefListVersionsResponse { versions: Array<{ version: number; lockedAt: string; brief:
   DesignBrief }> }` on a `brief:listVersions` channel, wired the same way `brief:get` is today.
+  **→ Scheduled: folded into WS-0c's scope.**
