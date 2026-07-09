@@ -150,6 +150,50 @@ describe('ProjectStore.recordIteration', () => {
     expect(iterations[0].briefVersion).toBe(2)
     expect(iterations[1].briefVersion).toBeUndefined()
   })
+
+  it('fires onIterationRecorded with the new iteration and project dir, without awaiting it (WS-C)', async () => {
+    const calls: Array<{ n: number; dir: string }> = []
+    const store = new ProjectStore({
+      baseDir: join(scratch, 'projects'),
+      skillSourceDir: skillSource,
+      verifyScriptPath: verifyScript,
+      onIterationRecorded: (iteration, dir) => {
+        calls.push({ n: iteration.n, dir })
+      }
+    })
+    const { dir } = await store.ensureProject()
+
+    const recorded = await recordScript(store, {
+      stlPath: 'outputs/part_v1.stl',
+      scriptPath: 'outputs/part_v1.py',
+      summary: 'first'
+    })
+
+    expect(calls).toEqual([{ n: recorded.n, dir }])
+  })
+
+  it('does not fail recordIteration when onIterationRecorded throws synchronously (WS-C)', async () => {
+    const store = new ProjectStore({
+      baseDir: join(scratch, 'projects'),
+      skillSourceDir: skillSource,
+      verifyScriptPath: verifyScript,
+      onIterationRecorded: () => {
+        throw new Error('boom')
+      }
+    })
+    await store.ensureProject()
+
+    const recorded = await recordScript(store, {
+      stlPath: 'outputs/part_v1.stl',
+      scriptPath: 'outputs/part_v1.py',
+      summary: 'first'
+    })
+
+    expect(recorded.n).toBe(1)
+    // The iteration is still persisted and active despite the hook throwing.
+    const reloaded = makeStore()
+    expect((await reloaded.activeIterationRecord())?.n).toBe(1)
+  })
 })
 
 describe('ProjectStore R4 version history', () => {

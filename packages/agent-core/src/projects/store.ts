@@ -71,6 +71,15 @@ export interface ProjectStoreOptions {
    *  `verifyScriptPath`, so the skill's Phase 4 can run it with a plain relative path. Optional
    *  (skips the copy when omitted) so existing callers/tests that predate WS-B keep compiling. */
   extractParamsScriptPath?: string
+  /**
+   * Fired at the end of every `recordIteration()` call - the single choke point every current
+   * (agent `display_model`, WS-B's `param:update`) and future iteration path already goes
+   * through, so verification (WS-C) hooks in here once instead of at each call site. Fire-and-
+   * forget: `recordIteration()` does not await this, and the callback owns its own async work
+   * and error handling (see `src/main/ipc.ts`'s wiring) - a slow or failing verification run must
+   * never block or fail the display path.
+   */
+  onIterationRecorded?: (iteration: ProjectIteration, projectDir: string) => void
 }
 
 const SKILL_DIR_SEGMENTS = ['.claude', 'skills', 'printable-cad'] as const
@@ -113,6 +122,7 @@ export class ProjectStore {
   private readonly skillSourceDir: string
   private readonly verifyScriptPath: string
   private readonly extractParamsScriptPath?: string
+  private readonly onIterationRecorded?: (iteration: ProjectIteration, projectDir: string) => void
 
   /** The currently-active project's loaded record, once `ensureProject()` (or `createProject()`/
    *  `switchProject()`) has resolved at least once. Cleared only by being replaced - there is
@@ -124,6 +134,7 @@ export class ProjectStore {
     this.skillSourceDir = options.skillSourceDir
     this.verifyScriptPath = options.verifyScriptPath
     this.extractParamsScriptPath = options.extractParamsScriptPath
+    this.onIterationRecorded = options.onIterationRecorded
   }
 
   private dirFor(id: string): string {
@@ -243,6 +254,15 @@ export class ProjectStore {
     // supersedes it.
     record.activeIteration = n
     await this.writeRecord(this.dirFor(record.id), record)
+    // Guarded, not just fire-and-forget: the iteration is already persisted and active at this
+    // point, so a hook that throws *synchronously* (rather than rejecting a promise it started)
+    // must not turn into a rejected `recordIteration()` and make display_model/param:update
+    // report failure for a write that actually succeeded.
+    try {
+      this.onIterationRecorded?.(iteration, dir)
+    } catch {
+      // The hook owns its own error handling/logging - see its doc comment above.
+    }
     return iteration
   }
 

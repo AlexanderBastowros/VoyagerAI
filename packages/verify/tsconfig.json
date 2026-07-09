@@ -15,7 +15,10 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "isolatedModules": true
+    "isolatedModules": true,
+    "paths": {
+      "@shared/*": ["../../src/shared/*"]
+    }
   },
   "include": ["src/**/*"]
 }

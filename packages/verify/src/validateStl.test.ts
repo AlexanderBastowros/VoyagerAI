@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { validateStl } from './validateStl'
-import type { ExecFileFn } from './validateStl'
+import type { ExecFileFn } from './execJson'
 
 describe('validateStl', () => {
   it('invokes the script with the STL path and passes through a successful result', async () => {

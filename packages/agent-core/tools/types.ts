@@ -1,4 +1,4 @@
-import type { DesignBrief, ModelDisplayedPayload, PrintSettings } from '@shared/ipc'
+import type { DesignBrief, ModelDisplayedPayload, PrintSettings, VerificationReport } from '@shared/ipc'
 import type { ProjectIteration } from '../src/projects/store'
 import type { BriefAgentPatch } from '../brief/agentPatch'
 
@@ -37,9 +37,18 @@ export type VoyagerMcpEmission =
   | { kind: 'model-displayed'; payload: ModelDisplayedPayload }
   | { kind: 'print-settings'; payload: PrintSettings }
   | { kind: 'brief-updated'; payload: DesignBrief }
+  | { kind: 'verification-computed'; payload: VerificationReport }
 
 export interface VoyagerMcpDeps {
   projectStore: VoyagerMcpProjectStore
   briefStore?: VoyagerBriefStore
+  /**
+   * Recomputes and persists the verification report for one iteration (WS-C) - backs the
+   * `run_verification` on-demand tool. Optional so tool tests that don't touch verification
+   * (every fixture that predates WS-C) don't need to wire one up; `AgentSession` always supplies
+   * the real `verifyIteration` function `src/main/ipc.ts` builds (the same one its automatic
+   * `ProjectStore.onIterationRecorded` hook uses) in production.
+   */
+  runVerification?: (iteration: ProjectIteration) => Promise<VerificationReport>
   emit: (emission: VoyagerMcpEmission) => void
 }
