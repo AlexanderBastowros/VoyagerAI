@@ -11,9 +11,10 @@ import type {
   ModelDisplayedPayload,
   PrintSettings,
   SelectionSummary,
-  SendMessageResponse
+  SendMessageResponse,
+  VerificationReport
 } from '@shared/ipc'
-import type { ProjectStore } from '../projects/store'
+import type { ProjectIteration, ProjectStore } from '../projects/store'
 import { BriefStore } from '../../brief/store'
 import { createVoyagerMcpServer } from '../../tools'
 import type { VoyagerMcpEmission } from '../../tools'
@@ -107,6 +108,15 @@ export interface AgentSessionDeps {
   /** Pushed whenever the `update_brief` MCP tool changes the brief - optional so existing test
    *  harnesses that never exercise that tool don't need to wire one up. */
   emitBriefUpdated?: (payload: DesignBrief) => void
+  /**
+   * Recomputes and persists the verification report for one iteration (WS-C) - the same
+   * `verifyIteration` function `src/main/ipc.ts` wires into `ProjectStore.onIterationRecorded`
+   * for the automatic path. Optional so existing test harnesses don't need to wire one up; when
+   * present, backs the `run_verification` on-demand MCP tool.
+   */
+  runVerification?: (iteration: ProjectIteration) => Promise<VerificationReport>
+  /** Pushed whenever `run_verification` recomputes a report - optional, mirrors `emitBriefUpdated`. */
+  emitVerificationUpdated?: (payload: VerificationReport) => void
   /**
    * Surfaces an out-of-policy tool call to the user (an inline Allow/Deny
    * card in the chat) and resolves with their decision. Backed by an IPC
@@ -574,6 +584,7 @@ export class AgentSession {
         voyager: createVoyagerMcpServer({
           projectStore: this.deps.projectStore,
           briefStore: this.briefStore,
+          runVerification: this.deps.runVerification,
           emit: (emission) => this.handleEmission(emission)
         })
       },
@@ -590,6 +601,7 @@ export class AgentSession {
         'TodoWrite',
         'mcp__voyager__display_model',
         'mcp__voyager__recommend_print_settings',
+        'mcp__voyager__run_verification',
         'mcp__voyager__set_status',
         'mcp__voyager__update_brief'
       ],
@@ -703,6 +715,9 @@ export class AgentSession {
         return
       case 'brief-updated':
         this.deps.emitBriefUpdated?.(emission.payload)
+        return
+      case 'verification-computed':
+        this.deps.emitVerificationUpdated?.(emission.payload)
         return
     }
   }

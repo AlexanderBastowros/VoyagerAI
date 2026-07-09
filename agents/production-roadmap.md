@@ -240,8 +240,82 @@ Notes on the two gates:
 - **Done when:** dragging a slider produces a new iteration in seconds with no agent turn;
   version history/revert treats it identically to agent iterations.
 
-### WS-C — Verification layers 1–3 · **Status: TODO** · depends: 0a (layers 1–2), 0b + WS-A landing (layer 3 end-to-end)
+### WS-C — Verification layers 1–3 · **Status: DONE** · depends: 0a (layers 1–2), 0b + WS-A landing (layer 3 end-to-end)
 
+- **Landed:** `packages/verify/python/` gained three JSON-emitting scripts, siblings of the
+  skill-facing `validate_stl.py` (left untouched - `SKILL.md` Phase 5 still runs it directly):
+  `static_check.py` (layer 1 - `ast.parse` syntax check + an import allowlist walk, blocking on
+  disallowed modules like `os`/`subprocess`/`socket`), `geometry_report.py` (layer 2 -
+  watertight/manifold, bed-fit against `brief.printer` when set, overhangs, a multi-body +
+  approximate-AABB-interference check, and a coarse per-body bounding-box thin-feature smell
+  test), and `conformance_check.py` (layer 3, OCP-only - bbox vs `envelope.{x,y,z}`, hole census
+  via cylindrical-face detection matched to brief `hole` features by nearest-diameter greedy
+  pairing, and a ray-cast min-wall-thickness sample against the exact B-rep). Each is wrapped by a
+  same-shaped TS module under `packages/verify/src/` (`layer1StaticScript.ts`/`layer2Geometry.ts`/
+  `layer3BriefConformance.ts`, injectable-spawn like `validateStl.ts`) and composed by
+  `runVerification.ts`, which runs layer 1 always, layer 2 once an STL exists, layer 3 once a STEP
+  exists **and** the brief is locked, and computes the report badge. `reportConvention.ts` mirrors
+  WS-B's manifest convention exactly - `<base>.verification.json` beside the STL.
+  `packages/agent-core/src/projects/store.ts` gained one small additive hook,
+  `ProjectStoreOptions.onIterationRecorded?`, fired (fire-and-forget) at the end of
+  `recordIteration()` - the single choke point both the agent's `display_model` tool and WS-B's
+  `param:update` handler already go through, so verification runs automatically on every iteration
+  without touching either call site. `src/main/ipc.ts` wires that hook to a new `verifyIteration()`
+  function (reads the locked brief + composes `runVerification`, persists, broadcasts
+  `verification:updated`) and replaces the `verification:get` stub with a real read via
+  `readVerificationForIteration`. The same `verifyIteration` backs a new on-demand
+  `run_verification` MCP tool (`packages/agent-core/tools/runVerification.ts`) for the case where
+  something conformance-relevant changed without a new iteration (e.g. the brief was locked after
+  the model was already displayed) - one small additive `VoyagerMcpDeps.runVerification`/
+  `VoyagerMcpEmission` variant and `AgentSessionDeps.runVerification`/`emitVerificationUpdated` in
+  `session.ts`, mirroring the `briefStore`/`emitBriefUpdated` pattern exactly.
+  `VerificationPanel.tsx` is a real collapsible panel now (badge chip, findings grouped by layer
+  with severity icons, a conformance table with failed rows in red), fetching on mount and on
+  iteration change and subscribing to `verification:updated`, mirroring `ParamPanel.tsx`'s shape;
+  pure helpers live in `src/renderer/src/state/verificationSelectors.ts` (badge label/tone, layer
+  grouping), tested without React per the existing `briefSelectors`/`setupSelectors` precedent.
+  **Execution-verified against real geometry, not just mocked-spawn tests** - a throwaway venv
+  with `trimesh`/`numpy`/`build123d` (which pulls in `cadquery-ocp`, providing the `OCP` module)
+  confirmed all three scripts against a real STL and a real STEP export (a 40×20×10 mm box with a
+  Ø3.4 mm hole), including the target "done when" case: a brief specifying a wrong hole diameter
+  produces a `pass: false` conformance row and flips the badge to `fail`. That pass caught and
+  fixed two real bugs the mocked TS tests couldn't have caught: (1) `trimesh.split()` needs an
+  optional graph engine (networkx/scipy) that isn't a hard trimesh dependency and wasn't
+  guaranteed to be in the managed venv - replaced with a dependency-free union-find over
+  `mesh.face_adjacency` (pure numpy); (2) the wall-thickness ray-cast's near-hit cutoff was too
+  tight and picked up adjacent-triangulation-facet grazing as a false near-zero "hit" on a curved
+  bore surface - fixed by widening the offset/cutoff to 0.05 mm.
+  **A follow-up adversarial code review (4 parallel finder passes) surfaced and fixed several
+  more real bugs** before landing, re-verified against the same real STL/STEP fixtures: a
+  falsy-zero bug where an explicit `tolerance: 0`/`toleranceMm: 0` in the brief was silently
+  replaced by the 0.3 mm default (`x or default` treating `0` as unset); `hole_conformance`'s
+  "nearest-diameter" matching was actually blind rank-order zipping (sort both lists, pair by
+  index) and mismatched holes whenever an unrelated cylindrical feature sat between two real
+  holes by diameter - replaced with genuine greedy nearest-diameter pairing; `static_check.py`
+  only caught `OSError`/`SyntaxError`, not `UnicodeDecodeError`/null-byte `ValueError`, so a
+  non-UTF-8 or null-byte script crashed instead of producing a clean `blocking` finding;
+  `geometry_report.py`'s checks past the initial mesh load weren't individually guarded, so any
+  trimesh exception mid-check lost the whole report - now each check (watertight, bed-fit,
+  overhang, multi-body/thin-feature) degrades independently, matching layer 3's discipline; the
+  0.3 mm default conformance tolerance was an invented number per this repo's CLAUDE.md
+  convention - reworded to explicitly ground it in design-for-printing.md §4's fit-tolerance
+  table instead of floating free; the "2× nozzle" absolute-minimum-wall formula was hardcoded
+  independently in three places - extracted to `packages/verify/python/dfm_constants.py`; the
+  wall-thickness ray-cast's 400-sample cap filled greedily in topological face order, silently
+  never sampling faces encountered late - replaced with seeded reservoir sampling so every face
+  has an equal chance regardless of order; `VerificationPanel.tsx`'s `verification:updated`
+  subscription applied any pushed report unconditionally, so a slow layer-3 run for an older
+  iteration could resolve after a newer, faster one and clobber the panel with stale data - fixed
+  with an iteration-match guard (`verificationSelectors.ts`'s `isUpdateForCurrentIteration`); the
+  empty-state message conflated "never verified" (`report === null`, e.g. after `revertTo()`,
+  which doesn't run the hook) with "verified, zero findings"; and `ProjectStore.recordIteration()`
+  now catches a synchronous throw from `onIterationRecorded` so a bug in a future hook
+  implementation can't turn an already-persisted iteration into a reported failure. `runVerification`
+  also now runs its three independent layers concurrently instead of sequentially. Quality gate
+  green: 352 tests (339 prior + 13 new), build, typecheck.
+- **Known gap:** layer 3's hole↔feature matching is nearest-diameter-greedy, not position-aware -
+  `Feature.position` is free text, not a coordinate, so there's no exact correspondence available
+  without a future manifest field that ties a feature id to a measurement recipe.
 - **Why:** architecture doc §5 — the trust artifact. Layers 1–2 need no brief and can start
   immediately after 0a.
 - **Scope:** grow `packages/verify`: layer 1 static script checks (parses, PARAMS block

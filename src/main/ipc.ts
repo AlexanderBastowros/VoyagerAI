@@ -33,7 +33,8 @@ import type {
   SendMessageResponse,
   SetupStatus,
   SwitchProjectRequest,
-  VerificationGetResponse
+  VerificationGetResponse,
+  VerificationReport
 } from '../shared/ipc'
 import {
   AgentSession,
@@ -47,6 +48,8 @@ import {
   runPreflight,
   validateParamUpdate
 } from '@voyager/agent-core'
+import type { ProjectIteration } from '@voyager/agent-core'
+import { readVerificationForIteration, runVerification, writeVerificationForIteration } from '@voyager/verify'
 
 /**
  * Resolves a path under the app's `resources/` directory, in both dev (where
@@ -78,6 +81,27 @@ function extractParamsScriptPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'params', 'extract_params.py')
     : join(__dirname, '../../packages/agent-core/params/python/extract_params.py')
+}
+
+/** Absolute paths to `packages/verify`'s WS-C layer scripts - same dev/packaged resolution as
+ *  `verifyScriptPath()`, since electron-builder's existing `verify` extraResources entry already
+ *  copies the whole `packages/verify/python` directory. */
+function staticCheckScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'verify', 'static_check.py')
+    : join(__dirname, '../../packages/verify/python/static_check.py')
+}
+
+function geometryReportScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'verify', 'geometry_report.py')
+    : join(__dirname, '../../packages/verify/python/geometry_report.py')
+}
+
+function conformanceCheckScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'verify', 'conformance_check.py')
+    : join(__dirname, '../../packages/verify/python/conformance_check.py')
 }
 
 function broadcast(channel: string, payload: unknown): void {
@@ -157,11 +181,11 @@ async function buildProjectSnapshot(projectStore: ProjectStore): Promise<Project
 }
 
 /**
- * In-memory stubs for the WS-C/E/F contracts landed by WS-0b (WS-A's brief handlers and WS-B's
- * parameter handlers below are both real - see `briefStore` and the venv re-run path). None of
- * this is persisted or per-project - each real work order (see `agents/production-roadmap.md`)
- * replaces its stub with durable, project-scoped state without needing to touch this file again,
- * since the IPC shapes are already final.
+ * In-memory stubs for the WS-E/F contracts landed by WS-0b (WS-A's brief handlers, WS-B's
+ * parameter handlers, and WS-C's verification handlers below are all real). None of this is
+ * persisted or per-project - each real work order (see `agents/production-roadmap.md`) replaces
+ * its stub with durable, project-scoped state without needing to touch this file again, since the
+ * IPC shapes are already final.
  */
 
 /** Registers all main-process IPC handlers. */
@@ -174,24 +198,60 @@ export function registerIpcHandlers(): void {
 
   const claudeChecker = new ClaudeChecker()
 
+  const briefStore = new BriefStore()
+
+  /**
+   * Recomputes verification layers 1-3 (WS-C) for one iteration and persists the report beside
+   * its STL (`writeVerificationForIteration`). Two call sites feed this: `ProjectStore`'s
+   * `onIterationRecorded` hook below (every recorded iteration, agent- or param-panel-authored -
+   * see `recordIteration()`'s doc comment) and `AgentSession`'s `runVerification` dep (the
+   * on-demand `run_verification` MCP tool, which already knows the active iteration).
+   */
+  async function verifyIteration(iteration: ProjectIteration, projectDir: string): Promise<VerificationReport> {
+    const brief = await briefStore.get(projectDir)
+    const report = await runVerification({
+      iteration: iteration.n,
+      pythonPath: envManager.pythonPath(),
+      staticCheckScriptPath: staticCheckScriptPath(),
+      geometryReportScriptPath: geometryReportScriptPath(),
+      conformanceCheckScriptPath: conformanceCheckScriptPath(),
+      extractParamsScriptPath: extractParamsScriptPath(),
+      scriptPath: join(projectDir, iteration.scriptSnapshotPath ?? iteration.scriptPath),
+      stlPath: join(projectDir, iteration.stlPath),
+      stepPath: iteration.stepPath ? join(projectDir, iteration.stepPath) : undefined,
+      brief
+    })
+    await writeVerificationForIteration(projectDir, iteration, report)
+    return report
+  }
+
   const projectStore = new ProjectStore({
     baseDir: join(app.getPath('userData'), 'projects'),
     skillSourceDir: resourcePath('skills', 'printable-cad'),
     verifyScriptPath: verifyScriptPath(),
-    extractParamsScriptPath: extractParamsScriptPath()
+    extractParamsScriptPath: extractParamsScriptPath(),
+    // Fire-and-forget: a slow or failing verification run must never block or fail the display
+    // path (see `ProjectStoreOptions.onIterationRecorded`'s doc comment).
+    onIterationRecorded: (iteration, projectDir) => {
+      void verifyIteration(iteration, projectDir)
+        .then((report) => broadcast(IPC.verificationUpdated, report))
+        .catch((err) => {
+          console.error('Verification failed for iteration', iteration.n, err)
+        })
+    }
   })
-
-  const briefStore = new BriefStore()
 
   const agentSession = new AgentSession({
     projectStore,
     briefStore,
+    runVerification: (iteration) => verifyIteration(iteration, projectStore.getProjectDir()),
     pythonPath: () => envManager.pythonPath(),
     claudeCliPath: () => claudeChecker.cliPath(),
     emitAgentEvent: (event: AgentEvent) => broadcast(IPC.agentEvent, event),
     emitModelDisplayed: (payload: ModelDisplayedPayload) => broadcast(IPC.modelDisplayed, payload),
     emitPrintSettings: (payload: PrintSettings) => broadcast(IPC.printSettingsUpdated, payload),
     emitBriefUpdated: (payload: DesignBrief) => broadcast(IPC.briefUpdated, payload),
+    emitVerificationUpdated: (payload: VerificationReport) => broadcast(IPC.verificationUpdated, payload),
     requestUserApproval: askUser
   })
   app.on('will-quit', () => agentSession.dispose())
@@ -467,9 +527,13 @@ export function registerIpcHandlers(): void {
     return { manifest: await readManifestForIteration(projectStore.getProjectDir(), active) }
   })
 
-  // -- WS-C Verification (stub - no verify pipeline wired up yet) ---------
+  // -- WS-C Verification ---------------------------------------------------
 
-  ipcMain.handle(IPC.verificationGet, async (): Promise<VerificationGetResponse> => ({ report: null }))
+  ipcMain.handle(IPC.verificationGet, async (): Promise<VerificationGetResponse> => {
+    const active = await projectStore.activeIterationRecord()
+    if (!active) return { report: null }
+    return { report: await readVerificationForIteration(projectStore.getProjectDir(), active) }
+  })
 
   // -- WS-E Printer profiles (stub - no persisted store yet) --------------
 

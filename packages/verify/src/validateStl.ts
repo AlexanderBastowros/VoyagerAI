@@ -1,11 +1,12 @@
-import { execFile } from 'node:child_process'
-import type { ExecFileException } from 'node:child_process'
+import { defaultExecFile } from './execJson'
+import type { ExecFileFn } from './execJson'
 
 /**
  * Thin TS wrapper around the bundled `validate_stl.py` (watertight/manifold, bed-fit, overhang
  * checks - see `python/validate_stl.py`). Runs it with the managed Python environment's own
  * interpreter and hands back its raw stdout/stderr; parsing that into a structured report is
- * WS-C's job (verification layer 2).
+ * `layer2Geometry.ts`'s job (verification layer 2) - this wrapper stays as the skill-facing,
+ * human-readable CLI path (SKILL.md Phase 5), unchanged.
  */
 export interface ValidateStlOptions {
   /** Absolute path to the managed venv's python (EnvManager.pythonPath()). */
@@ -25,30 +26,6 @@ export interface ValidateStlResult {
   exitCode: number | null
   stdout: string
   stderr: string
-}
-
-interface ExecFileResult {
-  code: number | null
-  stdout: string
-  stderr: string
-}
-
-/** Injectable subset of `child_process.execFile`, matching the pattern used by `ClaudeChecker`/
- *  `EnvManager` so this is unit-testable without spawning a real Python process. */
-export type ExecFileFn = (command: string, args: readonly string[]) => Promise<ExecFileResult>
-
-function defaultExecFile(command: string, args: readonly string[]): Promise<ExecFileResult> {
-  return new Promise((resolvePromise) => {
-    execFile(
-      command,
-      args as string[],
-      { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 },
-      (error, stdout, stderr) => {
-        const code = error ? ((error as ExecFileException).code ?? 1) : 0
-        resolvePromise({ code: typeof code === 'number' ? code : 1, stdout: stdout ?? '', stderr: stderr ?? '' })
-      }
-    )
-  })
 }
 
 export async function validateStl(
