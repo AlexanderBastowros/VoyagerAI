@@ -316,14 +316,110 @@ Each milestone ships something usable; the POC never stops working.
 | # | Milestone | Contents | Done when |
 |---|---|---|---|
 | **M0** | Extract the core | `packages/agent-core` (session loop, prompts, MCP tools, skill, project semantics) + `packages/verify` (validator → library); Electron main becomes a thin host. Pure refactor | POC works exactly as before; existing vitest suites pass against the packages |
-| **M1** | Brief + verification, still local | Brief schema/panel/extraction; PARAMS convention in the skill; parameter panel; verification layers 1–3 + render rig running locally; printer profiles | Box-with-holes flow produces a brief, a conformance table, and slider edits |
+| **M1** | Brief + verification, still local | Brief schema/panel/extraction; PARAMS convention in the skill; parameter panel; verification layers 1–3 + render rig running locally; printer profiles; graduation-package export (§12.1 — it only bundles artifacts every iteration already produces) | Box-with-holes flow produces a brief, a conformance table, and slider edits; the exported package opens in Fusion/Onshape via its STEP |
 | **M2** | Bedrock, single model | Model gateway; Agent SDK → Bedrock in a dev account; auth + minimal metering; session runtime containerized; WS transport carrying the existing event vocabulary | Full design loop runs server-side with the client pointed at the cloud |
 | **M3** | Multi-model verification | vision_critic on the render rig; clarifier extraction on Haiku-tier; Verification Report UI complete; prompt caching + usage accounting | Report ships with every iteration; cost per accepted design measured |
 | **M4** | Control & printability | Direct manipulation via manifest bindings; feature list; split planner + multi-piece verification | >X% of iterations are non-chat (product metric §7) |
-| **M5** | Productization | Web client GA, billing/tiers, cross_checker escalation tier, BYO-AWS deployment recipe | First paying cohort |
+| **M5** | Productization | Web client GA, billing/tiers, cross_checker escalation tier, BYO-AWS deployment recipe; Onshape integrated app + Fusion 360 add-in (§12.2–12.3) | First paying cohort |
 
 **Decisions deliberately deferred:** Bedrock vs. Claude Platform on AWS for Claude roles
 (gateway config — decide at M2 with real feature/latency data); which non-Anthropic
 cross-checker (decide at M3 via the eval suite); web-client-first vs Electron-first for cloud
 mode (M2 spike: the renderer is already plain React+three.js — the preload/IPC layer is the
-only Electron coupling).
+only Electron coupling); native feature rebuild in Fusion/Onshape (§12.4 — demand-gated M6,
+proceed only if Tier 1/2 graduation telemetry shows users asking for editable feature trees).
+
+---
+
+## 12. CAD interoperability
+
+Users graduating a part to Fusion 360 / Onshape / FreeCAD / SolidWorks is a supported,
+one-way flow (product doc §5.5 for the reasoning; bidirectional sync is rejected there).
+STEP is the interchange backbone — every iteration already produces one, and all four tools
+import it natively. The engineering below recovers progressively more design intent on top
+of that baseline.
+
+### 12.1 Graduation package (Tier 1)
+
+A zip per iteration (or per project, active iteration by default):
+
+```
+{part}_v{N}.step          # AP242 B-rep (OCCT writer — already what build123d emits)
+{part}_v{N}.3mf           # print-ready mesh (skill Phase 4 already offers 3MF)
+{part}_v{N}.stl
+{part}_v{N}.py            # the parametric build123d script — the real source of truth
+brief.v{K}.json           # the locked Design Brief this iteration was generated from (§6)
+manifest.json             # PARAMS + feature→parameter map (§5, §7)
+README.md                 # generated: how to re-run the script (pip install build123d),
+                          # how to import into Fusion/Onshape, what each file is
+```
+
+Implementation is small: extend `ExportFormat` in `src/shared/ipc.ts`
+(`'stl' | 'step'` → `+ '3mf' | 'package'`), and generalize `resolveExportSource`
+(`src/main/projects/exportResolver.ts`) to resolve the artifact set — its path-containment
+guard applies unchanged. Cloud mode serves the same bundle from the iteration's S3 prefix
+(§8) via a presigned URL. No new artifact generation: the package only bundles what every
+iteration already produces.
+
+### 12.2 Onshape integrated app (Tier 2a)
+
+Onshape is the easiest deep target — cloud-native, REST API, OAuth2, distribution through
+its app store; nothing to install on the user's machine, and the integration runs entirely
+server-side (our backend ↔ Onshape's API):
+
+- **Connect:** user links their Onshape account (OAuth) in Voyager settings; we store the
+  grant per user.
+- **Push:** "Send to Onshape" on a project creates (or reuses) an Onshape document; each
+  Voyager iteration is uploaded as a STEP translation/import and committed as a **new
+  document version** named `v{N} — {summary}` (mapping our immutable-iteration model onto
+  Onshape's versioning, which fits it naturally).
+- **Context:** the brief JSON and script ride along as attached blob elements, so the spec
+  travels with the geometry.
+
+Exact endpoint names/scopes get pinned at implementation time against Onshape's current API
+docs; the shape of the integration (OAuth + translation import + version per iteration) is
+stable.
+
+### 12.3 Fusion 360 add-in (Tier 2b)
+
+Fusion is desktop, so this is a **Python add-in** (Autodesk's supported extension model,
+distributable via the Autodesk App Store):
+
+- Signs in to the Voyager API (device-code flow — no secrets in the add-in), lists the
+  user's projects/iterations.
+- Imports the selected iteration's STEP via Fusion's import API, and creates **Fusion user
+  parameters** from `manifest.json` (name, value, unit, description).
+- "Refresh from Voyager" pulls a newer iteration as a new component/body next to the old
+  one — never silently replacing geometry the user has built on.
+
+**Honest limitation, stated in-product:** on an imported (history-free) solid, those user
+parameters *document* the design and can drive the user's own downstream native features,
+but they do not retro-drive the imported B-rep. Parameters that actually drive geometry
+require Tier 3.
+
+### 12.4 Native feature rebuild (Tier 3 — demand-gated)
+
+Reconstructing a feature tree from a bare B-rep is research-grade feature recognition — we
+don't attempt it. We sidestep it: **Voyager already knows the features**, because the
+designer emits the script and its manifest (§5). The rebuild add-in replays that constrained
+feature vocabulary as *native* operations — in Fusion via the API (sketch + extrude the base
+solid, hole features, fillet/chamfer on resolved edges), in Onshape via generated
+FeatureScript. The part is rebuilt from scratch inside the target CAD rather than annotated
+onto an import, so parameters genuinely drive geometry and the user gets a real, editable
+timeline.
+
+Scope guard: only the skill's feature vocabulary (base solid, holes, pockets, bosses,
+fillets/chamfers, text) is replayable; anything outside it falls back to Tier 2 STEP import
+for that body. Edge/face resolution for fillets is the hard 20% — the manifest carries
+geometric selectors (face normals + centroids) rather than OCCT topology ids precisely so a
+rebuilt-in-Fusion solid can re-find them. Gated on Tier 1/2 telemetry (§11 deferred
+decisions).
+
+### 12.5 Return path (import, not sync)
+
+An externally edited STEP can be attached back onto a Voyager project: the script imports it
+as a base solid (OCCT/build123d STEP reader) and models on top ("add the mounting holes to
+this"). It enters as reference geometry — the brief records the import, verification layers
+1–2 still run, but brief-conformance (layer 3) only asserts features Voyager added. One-way
+in each direction; there is deliberately no state that must be kept consistent between
+Voyager and the external tool.

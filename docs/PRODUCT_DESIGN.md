@@ -209,7 +209,9 @@ script is a trap for the user.
   placement) — emitted *as script code*, so it stays in the single representation.
 - **Explicit non-goals for v1:** mesh sculpting, freeform surfacing, a general boolean/CSG
   editor, assemblies with mating constraints, our own kernel. Written down so we can say no
-  quickly.
+  quickly. When a user genuinely needs those tools, the answer is not to rebuild them — it's
+  the **graduation path to real CAD** (§5.5): they leave with the STEP, the script, and the
+  brief, and optionally with plugins that carry the parameters along.
 
 ### 4.6 "Use Amazon Bedrock" — **accepted, with eyes open (and one alternative to keep on the table)**
 
@@ -250,7 +252,8 @@ script is a trap for the user.
 7. **Make it printable:** bed-fit check against the *user's* profile; if oversized, the
    split-planner proposes cut planes + joint features (dowels/dovetail/screw bosses), each
    piece re-verified for bed fit; print settings on demand (existing tool, kept).
-8. **Export:** STL/STEP/3MF, plus the script and the brief — the user owns the full stack.
+8. **Export:** STL/STEP/3MF one-offs, or the **graduation package** (§5.5) — geometry +
+   script + brief + parameter manifest in one bundle. The user owns the full stack.
 
 ### 5.2 The Design Brief panel
 
@@ -279,7 +282,45 @@ Per-iteration artifact with a three-state badge (Verified ✓ / Warnings ⚠ / F
 The report is shareable (link/PDF) — "I printed this because the report was green" is the
 word-of-mouth artifact.
 
-### 5.5 What stays from the POC (deliberately)
+### 5.5 Graduation & CAD interoperability
+
+**The concern:** users will eventually want to modify parts in real CAD — Fusion 360,
+Onshape, FreeCAD, SolidWorks. If Voyager can't hand off cleanly, that's a ceiling on trust
+("will I be stuck?") long before it's actual churn.
+
+**The framing, challenged both ways.** Two tempting responses are both wrong. Pretending
+users never leave breeds lock-in resentment and kills prosumer word-of-mouth. Chasing
+**bidirectional sync** ("edit in Fusion, sync back") is the two-masters trap — external
+edits fork from the parametric script, exactly the representation conflict that killed
+direct mesh editing in §4.5, except now the second master lives in someone else's kernel.
+The right shape is **one-way graduation, done so well it's a selling point**: your part
+leaves with its geometry, its source code, and its spec. Zoo and the text-to-CAD crowd only
+partially match that.
+
+**The good news: we're already halfway there.** Every iteration exports **STEP** (true
+B-rep, not a mesh) alongside STL, and STEP imports natively into Fusion, Onshape, FreeCAD,
+and SolidWorks today — no plugin required. What STEP loses is design intent: no feature
+tree, no parameters, no history. The interop ladder recovers as much of that as each target
+allows:
+
+| Tier | What the user gets | How |
+|---|---|---|
+| **0 — today** | Open the part in any real CAD | STEP/STL export (shipped); add 3MF. Document "Open in Fusion/Onshape" explicitly instead of leaving it as tribal knowledge |
+| **1 — graduation package** | Geometry **+ full parametric source + spec** in one bundle | One-click export: STEP + 3MF + the build123d script + brief JSON + parameter manifest. build123d is pip-installable OSS — a power user keeps *complete* parametric control outside Voyager, forever |
+| **2a — Onshape integration** | Iterations appear in an Onshape document automatically | Onshape is cloud+API-first: an integrated app (OAuth, no desktop install) pushes each iteration as a new document version. Technically the easiest deep integration |
+| **2b — Fusion 360 add-in** | STEP import + Voyager's named parameters carried into Fusion | Python add-in: pulls iterations from Voyager, imports geometry, creates Fusion **user parameters** from the parameter manifest. (Honesty note: on an imported dumb solid those parameters document intent and feed the user's own downstream features — they don't retro-drive the imported B-rep. Driving comes at Tier 3) |
+| **3 — native feature rebuild** (demand-gated) | A **real, editable feature tree** in the target CAD | We don't need to solve B-rep feature recognition (research-grade); we already *know* the features — the script and its manifest. Replay the constrained feature vocabulary (base solid, holes, fillets, chamfers, pockets, bosses) as native Fusion API features / Onshape FeatureScript. A genuine differentiator if Tier 1/2 demand proves it |
+
+**Return path (not sync):** an externally edited STEP can come back into a Voyager project
+as a reference/base solid the script builds on — useful ("I filleted it in Fusion, now add
+the mounting holes"), but it enters as dumb geometry and the brief notes it. One-way in each
+direction, never a sync loop.
+
+Graduation events are tracked as a *healthy* signal, not churn — a user who graduates a
+part trusts the tool enough to build on it, and the brief/script they leave with carries the
+Voyager format with them.
+
+### 5.6 What stays from the POC (deliberately)
 
 Chat-first interaction; versioned never-overwrite iterations with revert; region-select →
 agent context; viewport toolset (measure, wireframe, view cube, dimensions); print settings
@@ -332,3 +373,7 @@ Meter on **verified design iterations** (agent turns), never on parameter tweaks
    traffic, per-tier turn budgets.
 5. **Zoo/Autodesk ship "good enough" text-to-CAD** — mitigation: our moat is the brief +
    verification + print-readiness loop, not raw generation; keep compounding DFM depth.
+6. **Interop effort trap** — Tier 3 native rebuild (§5.5) is seductive and large; two
+   plugin ecosystems (Autodesk + Onshape app stores) are a maintenance tax. Mitigation:
+   Tier 1 (graduation package) ships almost for free and covers the trust story; every tier
+   above it is gated on measured demand, not roadmap optimism.
