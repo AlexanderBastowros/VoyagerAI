@@ -59,7 +59,8 @@ WS-0a (extract agent-core)          ── single agent, everything else waits
           ├─► WS-D  Render rig + self-inspect  │
           ├─► WS-E  Printer profiles           │
           ├─► WS-F  Graduation package export  │
-          └─► WS-G  External model import/remix┘
+          ├─► WS-G  External model import/remix│
+          └─► WS-H  Gear generation            ┘  (its verify checks land after WS-C)
                      └─► M1 integration pass (dispatcher-led)
 M2+ (Bedrock, multi-model, plugins) — sketched only; decomposed when a trigger fires.
 ```
@@ -96,7 +97,8 @@ Notes on the two gates:
 
 - **Why:** the coordination point that makes WS-A…WS-F conflict-free.
 - **Scope:** define and land, with types + zod schemas + tests but stub behavior:
-  - `src/shared/brief.ts` — `DesignBrief` (architecture doc §6, incl. `Dim` provenance).
+  - `src/shared/brief.ts` — `DesignBrief` (architecture doc §6, incl. `Dim` provenance and
+    the `gear` feature type with its `meshesWith` pair reference).
   - `src/shared/manifest.ts` — script `manifest.json` (PARAMS entries, feature→parameter
     bindings, `importedBase` marker for remix projects; architecture doc §5, §7, §12.5).
   - `src/shared/verification.ts` — `VerificationReport` (layers, findings, badge).
@@ -235,6 +237,39 @@ Notes on the two gates:
   new iteration); an imported STEP accepts a parametric added feature and still exports
   STEP; an import that fails watertightness gets a repair pass with a report of what
   changed.
+
+### WS-H — Gear generation (mechanisms v1) · **Status: TODO** · depends: 0a, 0b (gear-spec verify checks additionally wait for WS-C)
+
+- **Why:** product doc §5.7 / architecture doc §13 — gears are a top functional-print
+  request and the sharpest "properly" test: library-generated involutes with checkable
+  meshing math, never hand-modeled teeth. Fully CLI-phase.
+- **Scope:**
+  1. **Timeboxed library spike** — evaluate `bd_warehouse.gear` (build123d-native),
+     `cq_gears` (CadQuery; broadest gear-type coverage), `gggears`
+     (build123d-compatible), and anything else surfaced. Criteria: involute correctness
+     vs. the analytic profile, type coverage, export mesh quality, license/maintenance.
+     Record the per-gear-type defaults in this work order. **No framework switch** —
+     both ecosystems share OCP/OCCT, so CadQuery-built gears wrap into build123d scripts
+     at the shape level (STEP handoff as fallback).
+  2. **Env:** add chosen libraries to the managed Python env package list; CadQuery-based
+     libs install lazily (large OCP wheel — the skill already documents this path).
+  3. **Skill:** new `references/gears.md` — library-per-gear-type, meshing math the agent
+     confirms before generating (module/PA match, center distance, undercut minimums),
+     PARAMS conventions for gears, clarify questions ("what does it mesh with?").
+  4. **Verification (after WS-C):** gear-spec checks as new files — matched module/PA
+     across declared mates, center distance vs. modeled axes, backlash within DFM
+     allowance, undercut warnings.
+- **Files owned:** `resources/skills/printable-cad/references/gears.md` (new file —
+  disjoint from WS-B's skill edits), `packages/agent-core/python/envManager.ts` (package
+  list), `packages/verify/**/gears*` (new files, land after WS-C).
+- **Coordination (contract-change requests, don't edit):** gear DFM numbers into
+  `references/design-for-printing.md` and a pointer line in `SKILL.md` (both WS-B-owned).
+- **Done when:** "a 20-tooth and 40-tooth meshing pair, module 1.5, 20° PA, 6mm bores,
+  herringbone" yields two gears whose verification passes the pair checks (center
+  distance 45mm, matched module/PA), whose profiles are library-generated involutes (not
+  freehand), and whose module/teeth appear as sliders in the parameter panel; a bare
+  "make me a gear" prompt triggers the skill's gear clarify questions instead of
+  generating an unmated guess.
 
 ---
 

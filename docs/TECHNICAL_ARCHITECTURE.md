@@ -216,7 +216,9 @@ interface DesignBrief {
   printer: PrinterProfileRef          // bed XYZ, nozzle Ø, materials — reusable, per-user settings
   envelope: { x: Dim; y: Dim; z: Dim }       // Dim = { value, unit, tolerance?, provenance: 'user'|'inferred' }
   features: Feature[]                 // discriminated union: hole {Ø, purpose: clearance|tapped|press_fit,
-                                      //   position}, pocket, boss, fillet/chamfer, text, insert{type, size}…
+                                      //   position}, pocket, boss, fillet/chamfer, text, insert{type, size},
+                                      //   gear {module, teeth, pressureAngle, helix?, bore, hub?,
+                                      //     meshesWith?: featureId}  (§13)…
   materials: { requested?: string; onHand: string[] }
   constraints: {
     mustFitBed: boolean
@@ -458,3 +460,44 @@ iteration.
 scopes itself to Voyager-added features; the brief records the import and tracks added
 features only; verification layers 1–2 run unchanged on any lineage, layer 3 asserts only
 what Voyager added; the render rig and region-select need no changes at all.
+
+---
+
+## 13. Mechanism generation — gears first
+
+Product framing: product doc §5.7. Fully CLI-phase work — nothing here needs Bedrock.
+
+**Library strategy (spike, then pin).** Gear teeth are never hand-modeled by the agent;
+generation comes from vetted libraries. Candidates for a timeboxed eval:
+`bd_warehouse.gear` (build123d-native, same author as build123d), `cq_gears` (CadQuery;
+broadest coverage — spur/helical/herringbone/bevel/planetary/ring), `gggears`
+(build123d-compatible), plus anything else the spike surfaces. Criteria: involute
+correctness (profile inspection against the analytic curve), gear-type coverage, export
+mesh quality, maintenance/license. The result is a per-gear-type default recorded in the
+work order, not a religion.
+
+**Framework interop, not framework switch.** build123d and CadQuery both wrap OCCT through
+the same OCP bindings — a CadQuery-generated gear is a `TopoDS` shape that a build123d
+script can wrap directly (STEP handoff as the fallback path). So the primary authoring API
+stays build123d, CadQuery-based libraries are imported where they win, and the managed env
+(`EnvManager` package list) adds the chosen gear libraries — CadQuery lazily, since its OCP
+wheel is large (the skill already documents that install path).
+
+**Skill:** a new `references/gears.md` teaches: which library per gear type; the meshing
+math the agent must confirm before generating (module/PA matching across a pair, center
+distance `m·(z₁+z₂)/2` ± profile shift, minimum tooth count vs. undercut at the chosen
+pressure angle); PARAMS conventions for gears (module, teeth, PA, helix, bore, hub — so
+the parameter panel gets gears for free); and clarify-phase questions ("what does it mesh
+with?" is as mandatory as "what's the hole for?"). Gear **DFM numbers** (min module vs.
+nozzle, print-flat orientation, herringbone preference for FDM, backlash allowance) are
+added to `references/design-for-printing.md` — the existing single source of truth that
+generation and verification share.
+
+**Verification:** gear-spec checks join the deterministic layers (§5): given the brief's
+gear features, verify matched module/PA between declared mates, center distance against
+the modeled axes, backlash within the DFM allowance, and warn on undercut-prone tooth
+counts. These are formula checks on brief + geometry — exactly the caliper-class work the
+verification pyramid keeps away from LLMs.
+
+**Brief:** the `gear` feature type (§6) makes pairs first-class via `meshesWith`, which is
+what turns "generate a gear" into a checkable spec instead of a shape request.

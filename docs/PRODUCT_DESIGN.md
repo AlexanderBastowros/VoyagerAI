@@ -352,7 +352,35 @@ what each format allows instead of pretending all imports are equal:
   STEP-lineage keeps the full export set. Respecting the source model's license when
   remixing is the user's responsibility.
 
-### 5.7 What stays from the POC (deliberately)
+### 5.7 Mechanisms: gears done properly
+
+Gears are a top-tier functional-print request (gearboxes, replacement appliance gears, RC
+parts) — and the sharpest test of what "properly" means in this product. A freehand
+LLM-modeled gear is bumps on a circle; a real one is an **involute profile** with a matched
+module and pressure angle, FDM backlash allowance, undercut handling below the minimum
+tooth count, and a mate it actually meshes with.
+
+- **Strategy: vetted libraries, not hand-modeled teeth — and no framework switch.** Gear
+  generation comes from established code-CAD gear libraries (candidates:
+  `bd_warehouse.gear` — build123d-native, by the build123d author; `cq_gears` — CadQuery,
+  the broadest type coverage incl. helical/herringbone/bevel/planetary/ring; `gggears` —
+  build123d-compatible; a timeboxed spike picks the defaults per gear type). The tempting
+  alternative — "switch to CadQuery for its gear ecosystem" — is **rejected**: both
+  frameworks wrap the same OCCT kernel through the same OCP bindings, so a CadQuery-built
+  gear drops into a build123d script at the shape level (STEP handoff as the fallback).
+  Framework choice is per-library, not per-project; build123d stays the authoring API.
+- **Gears are brief-first-class, and *pairs* are the unit of correctness.** The brief's
+  gear feature carries module, tooth count, pressure angle, helix, bore/keyway, hub, and —
+  critically — the mesh partner. Verification then checks what a caliper-and-formula pass
+  can check: matched module/PA across a pair, center distance `m·(z₁+z₂)/2` (± profile
+  shift), backlash within the FDM allowance, undercut warnings. Gear DFM numbers (minimum
+  module vs. nozzle, print-flat orientation, herringbone preference for FDM) go into the
+  skill's `design-for-printing.md` — the same single source of truth as everything else.
+- **The pattern generalizes.** Gears are the first entry of a mechanism library
+  (bd_warehouse also covers threads and fasteners; print-in-place hinges are already in
+  the skill) — gears go first because demand and checkability are both highest.
+
+### 5.8 What stays from the POC (deliberately)
 
 Chat-first interaction; versioned never-overwrite iterations with revert; region-select →
 agent context; viewport toolset (measure, wireframe, view cube, dimensions); print settings
