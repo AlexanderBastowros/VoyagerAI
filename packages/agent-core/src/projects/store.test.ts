@@ -38,7 +38,7 @@ function makeStore(): ProjectStore {
  */
 async function recordScript(
   store: ProjectStore,
-  entry: { stlPath: string; stepPath?: string; scriptPath: string; summary: string }
+  entry: { stlPath: string; stepPath?: string; scriptPath: string; summary: string; briefVersion?: number }
 ): Promise<ReturnType<ProjectStore['recordIteration']>> {
   await writeFile(join(store.getProjectDir(), entry.scriptPath), `# source of ${entry.scriptPath}`)
   return store.recordIteration(entry)
@@ -97,6 +97,31 @@ describe('ProjectStore.recordIteration', () => {
     const latest = await reloaded.latestIteration()
     expect(latest?.n).toBe(2)
     expect(latest?.stepPath).toBe('outputs/part_v2.step')
+  })
+
+  it('persists an optional briefVersion and leaves it unset when omitted (WS-A)', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+
+    const stamped = await recordScript(store, {
+      stlPath: 'outputs/part_v1.stl',
+      scriptPath: 'outputs/part_v1.py',
+      summary: 'first',
+      briefVersion: 2
+    })
+    expect(stamped.briefVersion).toBe(2)
+
+    const unstamped = await recordScript(store, {
+      stlPath: 'outputs/part_v2.stl',
+      scriptPath: 'outputs/part_v2.py',
+      summary: 'second'
+    })
+    expect(unstamped.briefVersion).toBeUndefined()
+
+    const reloaded = makeStore()
+    const iterations = await reloaded.listIterations()
+    expect(iterations[0].briefVersion).toBe(2)
+    expect(iterations[1].briefVersion).toBeUndefined()
   })
 })
 

@@ -141,8 +141,35 @@ Notes on the two gates:
 - **Done when:** quality gate green; each downstream work order can be started without
   editing any 0b-owned file.
 
-### WS-A — Design Brief system · **Status: TODO** · depends: 0a, 0b
+### WS-A — Design Brief system · **Status: DONE** · depends: 0a, 0b
 
+- **Landed:** `packages/agent-core/brief/` — `BriefStore` (`store.ts`, per-project on disk at
+  `<projectDir>/brief/brief.json` + immutable `versions/v{n}.json` snapshots written on lock;
+  `get`/`replace`/`lock`/`listVersions`/`applyAgentPatch`, all taking the project dir explicitly
+  rather than tracking "the active project"), `completeness.ts` (required-field + per-feature
+  checks, `computeBriefCompleteness`/`isBriefComplete`/`missingBriefFields`), `agentPatch.ts` (the
+  `update_brief` tool's flattened zod input shape + `mergeAgentPatch`, which wraps every numeric
+  field into the domain `Dim` shape and unconditionally stamps `provenance: 'inferred'`). New
+  `packages/agent-core/tools/updateBrief.ts` (`update_brief` MCP tool, registered in `tools/index.ts`
+  and `VoyagerMcpDeps.briefStore`/`brief-updated` emission in `tools/types.ts`); `displayModel.ts`
+  now stamps the locked brief's version onto each iteration via a new optional
+  `ProjectIteration.briefVersion` (`projects/store.ts`). `session.ts` wires a `BriefStore` into the
+  MCP server (defaults to `new BriefStore()` if the (optional) dep is omitted, so no existing test
+  harness needed touching), allow-lists `mcp__voyager__update_brief`, and forwards `brief-updated`
+  emissions through a new optional `emitBriefUpdated` dep. `prompts.ts` teaches the designer to call
+  `update_brief` live during Phase 2 and to wait for the panel's lock message before Phase 4.
+  `src/main/ipc.ts`'s `brief:get`/`update`/`lock` handlers now run on a real `BriefStore` instead of
+  the WS-0b module-level stub (`lock` throws naming missing fields when incomplete). `BriefPanel.tsx`
+  is a full collapsible form (part identity, envelope with an "AI"-inferred badge per dim, materials,
+  constraints, exclusions/acceptance, a read-only feature list) with a live completeness meter and a
+  "Lock & generate" button that locks then sends the agent a chat message to proceed — the concrete
+  mechanism behind "one click to lock and generate" and the prompt's Phase-4 gate. Renderer-side pure
+  form/completeness helpers live in `src/renderer/src/state/briefSelectors.ts` (the renderer never
+  imports `@voyager/agent-core`, so this intentionally duplicates the completeness logic). Quality
+  gate green: typecheck/build/test all pass (228→275 tests, +47 new, 0 removed/changed).
+- **Known gap (see Contract change requests below):** no version-history *browsing* in the panel —
+  `BriefStore.listVersions()` is implemented and tested, but the frozen `brief:*` IPC contract has
+  no channel to fetch it from the renderer. The panel shows only the current draft/locked version.
 - **Why:** product doc §4.4/§5.2 — the co-authored, machine-checkable spec that gates
   generation and powers verification layer 3.
 - **Scope:** brief store (per-project, versioned, lock semantics) in
@@ -249,4 +276,11 @@ Notes on the two gates:
 
 *(Agents: append requests here instead of editing 0b-owned files. Dispatcher triages.)*
 
-- _none yet_
+- **WS-A needs a `brief:listVersions` channel.** `BriefStore.listVersions(projectDir)`
+  (`packages/agent-core/brief/store.ts`) reads back every locked version's full snapshot from
+  `<projectDir>/brief/versions/v{n}.json` and is unit-tested, but the frozen `brief:*` contract
+  (`src/shared/ipc.ts`, `src/preload/api.ts`/`index.ts`) has no request/response shape or channel
+  to fetch it from the renderer - only `get`/`update`/`lock`/`updated` exist. `BriefPanel.tsx`
+  currently shows only the current draft/locked version (no history list) as a result. Proposed
+  shape: `BriefListVersionsResponse { versions: Array<{ version: number; lockedAt: string; brief:
+  DesignBrief }> }` on a `brief:listVersions` channel, wired the same way `brief:get` is today.

@@ -138,4 +138,13 @@ describe('systemPromptAppend', () => {
     expect(prompt).toContain('outputs/versions/vN.py')
     expect(prompt).toContain('Reverted model')
   })
+
+  it('teaches the designer to fill the brief during Phase 2 and require a lock before Phase 4 (WS-A)', () => {
+    const prompt = systemPromptAppend('/tmp/project')
+    expect(prompt).toContain('update_brief')
+    expect(prompt).toContain('Design Brief')
+    expect(prompt).toMatch(/inferred/i)
+    expect(prompt).toMatch(/locked brief/i)
+    expect(prompt).toMatch(/Phase 4/i)
+  })
 })

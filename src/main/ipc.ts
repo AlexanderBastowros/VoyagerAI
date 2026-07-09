@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { copyFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { IPC, emptyDesignBrief, emptyScriptManifest } from '../shared/ipc'
+import { IPC, emptyScriptManifest } from '../shared/ipc'
 import type {
   AgentEvent,
   AgentSettings,
@@ -35,7 +35,15 @@ import type {
   SwitchProjectRequest,
   VerificationGetResponse
 } from '../shared/ipc'
-import { AgentSession, ClaudeChecker, EnvManager, ProjectStore, resolveExportSource, runPreflight } from '@voyager/agent-core'
+import {
+  AgentSession,
+  BriefStore,
+  ClaudeChecker,
+  EnvManager,
+  ProjectStore,
+  resolveExportSource,
+  runPreflight
+} from '@voyager/agent-core'
 
 /**
  * Resolves a path under the app's `resources/` directory, in both dev (where
@@ -135,12 +143,11 @@ async function buildProjectSnapshot(projectStore: ProjectStore): Promise<Project
 }
 
 /**
- * In-memory stubs for the WS-A/B/C/E/F contracts landed by WS-0b. None of this is persisted or
- * per-project - each real work order (see `agents/production-roadmap.md`) replaces its stub with
- * durable, project-scoped state without needing to touch this file again, since the IPC shapes
- * are already final.
+ * In-memory stubs for the WS-B/C/E/F contracts landed by WS-0b (WS-A's brief handlers below are
+ * real - see `briefStore`). None of this is persisted or per-project - each real work order (see
+ * `agents/production-roadmap.md`) replaces its stub with durable, project-scoped state without
+ * needing to touch this file again, since the IPC shapes are already final.
  */
-let stubBrief: DesignBrief = emptyDesignBrief()
 
 /** Registers all main-process IPC handlers. */
 export function registerIpcHandlers(): void {
@@ -158,13 +165,17 @@ export function registerIpcHandlers(): void {
     verifyScriptPath: verifyScriptPath()
   })
 
+  const briefStore = new BriefStore()
+
   const agentSession = new AgentSession({
     projectStore,
+    briefStore,
     pythonPath: () => envManager.pythonPath(),
     claudeCliPath: () => claudeChecker.cliPath(),
     emitAgentEvent: (event: AgentEvent) => broadcast(IPC.agentEvent, event),
     emitModelDisplayed: (payload: ModelDisplayedPayload) => broadcast(IPC.modelDisplayed, payload),
     emitPrintSettings: (payload: PrintSettings) => broadcast(IPC.printSettingsUpdated, payload),
+    emitBriefUpdated: (payload: DesignBrief) => broadcast(IPC.briefUpdated, payload),
     requestUserApproval: askUser
   })
   app.on('will-quit', () => agentSession.dispose())
@@ -343,23 +354,32 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  // -- WS-A Design Brief (stub - see stubBrief above) --------------------
+  // -- WS-A Design Brief ---------------------------------------------------
 
-  ipcMain.handle(IPC.briefGet, async (): Promise<DesignBrief> => stubBrief)
+  ipcMain.handle(IPC.briefGet, async (): Promise<DesignBrief> => {
+    await projectStore.ensureProject()
+    return briefStore.get(projectStore.getProjectDir())
+  })
 
   ipcMain.handle(
     IPC.briefUpdate,
     async (_event, request: BriefUpdateRequest): Promise<BriefUpdateResponse> => {
-      stubBrief = request.brief
-      broadcast(IPC.briefUpdated, stubBrief)
-      return { brief: stubBrief }
+      await projectStore.ensureProject()
+      const brief = await briefStore.replace(projectStore.getProjectDir(), request.brief)
+      broadcast(IPC.briefUpdated, brief)
+      return { brief }
     }
   )
 
   ipcMain.handle(IPC.briefLock, async (): Promise<BriefLockResponse> => {
-    stubBrief = { ...stubBrief, lockedAt: new Date().toISOString() }
-    broadcast(IPC.briefUpdated, stubBrief)
-    return { brief: stubBrief }
+    await projectStore.ensureProject()
+    // Throws (surfaced to the renderer as a rejected promise) when the brief is missing required
+    // fields - "completeness gates generation, not form-filling" (product doc §4.4). The brief
+    // panel disables its Lock button before this can happen in the normal flow; this is the
+    // authoritative backstop.
+    const brief = await briefStore.lock(projectStore.getProjectDir())
+    broadcast(IPC.briefUpdated, brief)
+    return { brief }
   })
 
   // -- WS-B Parameter panel (stub - no venv re-run wired up yet) ----------

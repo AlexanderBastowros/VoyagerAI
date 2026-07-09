@@ -75,12 +75,19 @@ export function createDisplayModelTool(
         return textResult(`script_path "${args.script_path}" is not a file.`, true)
       }
 
+      // Stamps the locked brief's version onto this iteration (WS-A, architecture doc §4.4) - the
+      // brief store is optional on `VoyagerMcpDeps` for older test fixtures that don't touch the
+      // brief at all, so an unlocked/absent brief just leaves `briefVersion` unset.
+      const brief = deps.briefStore ? await deps.briefStore.get(projectDir) : null
+      const briefVersion = brief?.lockedAt ? brief.version : undefined
+
       const buffer = await readFile(stl.path.abs)
       const iteration = await deps.projectStore.recordIteration({
         stlPath: stl.path.rel,
         stepPath: step?.rel,
         scriptPath: script.path.rel,
-        summary: args.summary
+        summary: args.summary,
+        ...(briefVersion !== undefined ? { briefVersion } : {})
       })
 
       deps.emit({

@@ -15,3 +15,8 @@ export type { ClaudeCheckerOptions, ExecResult } from './setup/claudeChecks'
 
 export { runPreflight, createPreflightChecks } from './setup/preflight'
 export type { PreflightCheck, PreflightDeps } from './setup/preflight'
+
+export { BriefStore } from '../brief/store'
+export type { DesignBriefVersionSummary } from '../brief/store'
+export { computeBriefCompleteness, isBriefComplete, missingBriefFields } from '../brief/completeness'
+export type { BriefCompleteness, BriefCompletenessCheck } from '../brief/completeness'

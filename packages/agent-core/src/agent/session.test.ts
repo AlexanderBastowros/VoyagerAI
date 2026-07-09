@@ -183,6 +183,13 @@ describe('humanizeToolUse', () => {
     })
   })
 
+  it('surfaces update_brief calls (WS-A)', () => {
+    expect(humanizeToolUse('mcp__voyager__update_brief', { part_name: 'Bracket' })).toMatchObject({
+      detail: 'Updating the design brief',
+      routine: false
+    })
+  })
+
   it('suppresses AskUserQuestion (denied by policy; Claude re-asks in prose)', () => {
     expect(humanizeToolUse('AskUserQuestion', { questions: [] })).toBeNull()
   })

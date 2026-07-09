@@ -7,12 +7,14 @@ import type {
   AgentModel,
   AgentSettings,
   ChatAttachment,
+  DesignBrief,
   ModelDisplayedPayload,
   PrintSettings,
   SelectionSummary,
   SendMessageResponse
 } from '@shared/ipc'
 import type { ProjectStore } from '../projects/store'
+import { BriefStore } from '../../brief/store'
 import { createVoyagerMcpServer } from '../../tools'
 import type { VoyagerMcpEmission } from '../../tools'
 import { decideToolPermission } from './permissions'
@@ -90,6 +92,11 @@ export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?
 
 export interface AgentSessionDeps {
   projectStore: ProjectStore
+  /** Design Brief store (WS-A) - defaults to a fresh `new BriefStore()` when omitted, which is
+   *  perfectly usable (its methods take the project directory per call, so it carries no
+   *  project-specific state to lose). Injectable mainly so a single instance can be shared with
+   *  `src/main/ipc.ts`'s `brief:*` IPC handlers. */
+  briefStore?: BriefStore
   /** Absolute path to the managed venv's python (EnvManager.pythonPath). */
   pythonPath: () => string
   /** Resolved Claude CLI path from preflight, if any (ClaudeChecker.cliPath). */
@@ -97,6 +104,9 @@ export interface AgentSessionDeps {
   emitAgentEvent: (event: AgentEvent) => void
   emitModelDisplayed: (payload: ModelDisplayedPayload) => void
   emitPrintSettings: (payload: PrintSettings) => void
+  /** Pushed whenever the `update_brief` MCP tool changes the brief - optional so existing test
+   *  harnesses that never exercise that tool don't need to wire one up. */
+  emitBriefUpdated?: (payload: DesignBrief) => void
   /**
    * Surfaces an out-of-policy tool call to the user (an inline Allow/Deny
    * card in the chat) and resolves with their decision. Backed by an IPC
@@ -223,6 +233,8 @@ export function humanizeToolUse(name: string, input: Record<string, unknown>): T
       return activity('Recommending print settings')
     case 'mcp__voyager__set_status':
       return null // the tool handler itself emits the (better) status text
+    case 'mcp__voyager__update_brief':
+      return activity('Updating the design brief')
     case 'AskUserQuestion':
       // Denied by policy (see decideToolPermission); Claude re-asks in prose,
       // so a "Using AskUserQuestion" line would just be confusing noise.
@@ -317,6 +329,7 @@ export function translateSdkMessage(
 export class AgentSession {
   private readonly deps: AgentSessionDeps
   private readonly queryFn: QueryFn
+  private readonly briefStore: BriefStore
 
   private queue: AsyncPushQueue<SDKUserMessage> | null = null
   private activeQuery: Query | null = null
@@ -345,6 +358,7 @@ export class AgentSession {
   constructor(deps: AgentSessionDeps) {
     this.deps = deps
     this.queryFn = deps.queryFn ?? (query as QueryFn)
+    this.briefStore = deps.briefStore ?? new BriefStore()
   }
 
   /**
@@ -559,6 +573,7 @@ export class AgentSession {
       mcpServers: {
         voyager: createVoyagerMcpServer({
           projectStore: this.deps.projectStore,
+          briefStore: this.briefStore,
           emit: (emission) => this.handleEmission(emission)
         })
       },
@@ -575,7 +590,8 @@ export class AgentSession {
         'TodoWrite',
         'mcp__voyager__display_model',
         'mcp__voyager__recommend_print_settings',
-        'mcp__voyager__set_status'
+        'mcp__voyager__set_status',
+        'mcp__voyager__update_brief'
       ],
       canUseTool: this.canUseTool,
       systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(dir) },
@@ -684,6 +700,9 @@ export class AgentSession {
         return
       case 'print-settings':
         this.deps.emitPrintSettings(emission.payload)
+        return
+      case 'brief-updated':
+        this.deps.emitBriefUpdated?.(emission.payload)
         return
     }
   }

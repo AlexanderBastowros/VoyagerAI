@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createDisplayModelTool } from './displayModel'
+import { BriefStore } from '../brief/store'
 import type { VoyagerMcpEmission, VoyagerMcpProjectStore } from './types'
 import { fakeStlBytes, makeDeps } from './testSupport'
 
@@ -117,5 +118,54 @@ describe('display_model tool', () => {
     if (emission.kind !== 'model-displayed') throw new Error('expected model-displayed')
     expect(emission.payload.iteration).toBe(1)
     expect(emission.payload.stlBuffer.byteLength).toBe(fakeStlBytes().byteLength)
+  })
+
+  it('stamps the locked brief version onto the iteration when a brief store is configured', async () => {
+    await writeFile(join(projectDir, 'outputs', 'part_v1.stl'), fakeStlBytes())
+    await writeFile(join(projectDir, 'outputs', 'part_v1.py'), '# script')
+
+    const briefStore = new BriefStore()
+    await briefStore.replace(projectDir, {
+      ...(await briefStore.get(projectDir)),
+      part: { name: 'Bracket', purpose: 'Mounts a sensor', referenceImages: [] },
+      envelope: {
+        x: { value: 40, unit: 'mm', provenance: 'user' },
+        y: { value: 30, unit: 'mm', provenance: 'user' },
+        z: { value: 10, unit: 'mm', provenance: 'user' }
+      },
+      materials: { requested: 'PLA', onHand: [] },
+      acceptance: ['Fits without wobble']
+    })
+    await briefStore.lock(projectDir)
+
+    const handler = createDisplayModelTool({ ...deps(), briefStore }).handler
+    await handler(
+      { stl_path: 'outputs/part_v1.stl', step_path: undefined, script_path: 'outputs/part_v1.py', summary: 's' },
+      {}
+    )
+
+    expect(recorded).toEqual([
+      {
+        stlPath: 'outputs/part_v1.stl',
+        stepPath: undefined,
+        scriptPath: 'outputs/part_v1.py',
+        summary: 's',
+        briefVersion: 1
+      }
+    ])
+  })
+
+  it('does not stamp a briefVersion when the brief has never been locked', async () => {
+    await writeFile(join(projectDir, 'outputs', 'part_v1.stl'), fakeStlBytes())
+    await writeFile(join(projectDir, 'outputs', 'part_v1.py'), '# script')
+
+    const briefStore = new BriefStore()
+    const handler = createDisplayModelTool({ ...deps(), briefStore }).handler
+    await handler(
+      { stl_path: 'outputs/part_v1.stl', step_path: undefined, script_path: 'outputs/part_v1.py', summary: 's' },
+      {}
+    )
+
+    expect(recorded[0]).not.toHaveProperty('briefVersion')
   })
 })

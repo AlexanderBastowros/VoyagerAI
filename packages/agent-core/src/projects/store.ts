@@ -24,6 +24,10 @@ export interface ProjectIteration {
   scriptSnapshotPath?: string
   summary: string
   at: string
+  /** The Design Brief version locked at the moment this iteration was recorded, if any (WS-A,
+   *  architecture doc §4.4: "the locked brief version is stamped onto every iteration it
+   *  produces"). Undefined for an iteration recorded before a brief was ever locked. */
+  briefVersion?: number
 }
 
 export interface ProjectRecord {
@@ -213,6 +217,7 @@ export class ProjectStore {
     stepPath?: string
     scriptPath: string
     summary: string
+    briefVersion?: number
   }): Promise<ProjectIteration> {
     const record = await this.requireRecord()
     const n = (record.iterations.at(-1)?.n ?? 0) + 1
