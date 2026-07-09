@@ -12,7 +12,19 @@
  *     `agent:sendMessage` / `agent:event` to the Claude Agent SDK, and emits
  *     `model:displayed` when the agent's `display_model` MCP tool runs.
  *   - M4 populates `SelectionSummary` from real viewport region selection.
+ *   - WS-0b (this pass) lands the `brief:*`, `param:*`, `verification:*`, `printerProfile:*`,
+ *     and `model:exportPackage` channels below with stub main-process handlers - WS-A/B/C/E/F
+ *     replace the stub behavior without touching this file (shared contracts are frozen once
+ *     WS-0b lands - see `agents/production-roadmap.md`'s Ground rules).
  */
+
+import type { DesignBrief, PrinterProfileRef } from './brief'
+import type { ScriptManifest } from './manifest'
+import type { VerificationReport } from './verification'
+
+export * from './brief'
+export * from './manifest'
+export * from './verification'
 
 // ---------------------------------------------------------------------------
 // Setup status (M2 python env, M3 claude cli / auth)
@@ -240,10 +252,12 @@ export interface PrintSettings {
 }
 
 // ---------------------------------------------------------------------------
-// Model export (M5 Export STL/STEP)
+// Model export (M5 Export STL/STEP; M1 graduation package export - WS-F)
 // ---------------------------------------------------------------------------
 
-export type ExportFormat = 'stl' | 'step'
+/** `'3mf'` and `'package'` are stubbed here for WS-F (architecture doc §12.1's graduation
+ *  bundle); `resolveExportSource`/`model:export` do not yet implement them. */
+export type ExportFormat = 'stl' | 'step' | '3mf' | 'package'
 
 export interface ExportModelRequest {
   format: ExportFormat
@@ -255,6 +269,93 @@ export interface ExportModelResponse {
   path?: string
   /** Human-readable reason the export could not be saved. Omitted on user-cancel. */
   reason?: string
+}
+
+/** WS-F's graduation package export (architecture doc §12.1) - zip of STEP + 3MF + STL + script
+ *  + locked brief JSON + manifest + generated README for the active (or a named) iteration. A
+ *  distinct request/response from `ExportModelRequest`/`Response` (single-file export) since the
+ *  package always bundles every artifact rather than picking one format. */
+export interface ExportPackageRequest {
+  /** Iteration to package; omit for the active iteration. */
+  iteration?: number
+}
+
+export interface ExportPackageResponse {
+  saved: boolean
+  path?: string
+  reason?: string
+}
+
+// ---------------------------------------------------------------------------
+// Design Brief (WS-A - architecture doc §6)
+// ---------------------------------------------------------------------------
+
+/** Renderer -> main: propose a full replacement brief (from panel edits). Stub handler in
+ *  WS-0b just persists-and-echoes; WS-A adds real merge/provenance semantics and the
+ *  `update_brief` MCP tool's agent-authored path. */
+export interface BriefUpdateRequest {
+  brief: DesignBrief
+}
+
+export interface BriefUpdateResponse {
+  brief: DesignBrief
+}
+
+/** Renderer -> main: lock the current brief version, stamping `lockedAt`. Locked briefs are
+ *  immutable - further edits create a new version (see `DesignBrief.version`). */
+export interface BriefLockResponse {
+  brief: DesignBrief
+}
+
+// ---------------------------------------------------------------------------
+// Parameter panel (WS-B - architecture doc §7, no-LLM re-run)
+// ---------------------------------------------------------------------------
+
+/** Renderer -> main: override one PARAMS constant and re-run the script (no agent turn). Stub
+ *  handler in WS-0b rejects with `accepted: false`; WS-B wires the real venv re-execution +
+ *  layers 1-3 verification + `recordIteration` path. */
+export interface ParamUpdateRequest {
+  name: string
+  value: number
+}
+
+export interface ParamUpdateResponse {
+  accepted: boolean
+  reason?: string
+  /** Set when `accepted` - the freshly re-run, re-recorded iteration's model payload, pushed the
+   *  same way `model:displayed` already is so the viewport updates identically either path. */
+  model?: ModelDisplayedPayload
+}
+
+/** Renderer -> main: fetch the active iteration's manifest (PARAMS entries), if any exists yet. */
+export interface ParamGetManifestResponse {
+  manifest: ScriptManifest | null
+}
+
+// ---------------------------------------------------------------------------
+// Verification (WS-C - architecture doc §5)
+// ---------------------------------------------------------------------------
+
+/** Renderer -> main: fetch the current iteration's report, if any has been computed yet. */
+export interface VerificationGetResponse {
+  report: VerificationReport | null
+}
+
+// ---------------------------------------------------------------------------
+// Printer profiles (WS-E - product doc §4.4)
+// ---------------------------------------------------------------------------
+
+export interface PrinterProfileSaveRequest {
+  profile: PrinterProfileRef
+}
+
+export interface PrinterProfileSetActiveRequest {
+  id: string
+}
+
+export interface PrinterProfileListResponse {
+  profiles: PrinterProfileRef[]
+  activeId: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -283,7 +384,20 @@ export const IPC = {
   projectRename: 'project:rename',
   projectGetState: 'project:getState',
   projectListIterations: 'project:listIterations',
-  projectRevertTo: 'project:revertTo'
+  projectRevertTo: 'project:revertTo',
+  modelExportPackage: 'model:exportPackage',
+  briefGet: 'brief:get',
+  briefUpdate: 'brief:update',
+  briefLock: 'brief:lock',
+  briefUpdated: 'brief:updated',
+  paramUpdate: 'param:update',
+  paramGetManifest: 'param:getManifest',
+  verificationGet: 'verification:get',
+  verificationUpdated: 'verification:updated',
+  printerProfileList: 'printerProfile:list',
+  printerProfileSave: 'printerProfile:save',
+  printerProfileSetActive: 'printerProfile:setActive',
+  printerProfileUpdated: 'printerProfile:updated'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

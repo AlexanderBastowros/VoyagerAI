@@ -1,17 +1,29 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { copyFile, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { IPC } from '../shared/ipc'
+import { IPC, emptyDesignBrief, emptyScriptManifest } from '../shared/ipc'
 import type {
   AgentEvent,
   AgentSettings,
+  BriefLockResponse,
+  BriefUpdateRequest,
+  BriefUpdateResponse,
   CreateProjectRequest,
+  DesignBrief,
   ExportModelRequest,
   ExportModelResponse,
+  ExportPackageRequest,
+  ExportPackageResponse,
   IterationInfo,
   ModelDisplayedPayload,
+  ParamGetManifestResponse,
+  ParamUpdateRequest,
+  ParamUpdateResponse,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrinterProfileListResponse,
+  PrinterProfileSaveRequest,
+  PrinterProfileSetActiveRequest,
   PrintSettings,
   ProjectStateSnapshot,
   ProjectSummary,
@@ -20,7 +32,8 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus,
-  SwitchProjectRequest
+  SwitchProjectRequest,
+  VerificationGetResponse
 } from '../shared/ipc'
 import { AgentSession, ClaudeChecker, EnvManager, ProjectStore, resolveExportSource, runPreflight } from '@voyager/agent-core'
 
@@ -120,6 +133,14 @@ async function buildProjectSnapshot(projectStore: ProjectStore): Promise<Project
     activeIteration: active?.n ?? null
   }
 }
+
+/**
+ * In-memory stubs for the WS-A/B/C/E/F contracts landed by WS-0b. None of this is persisted or
+ * per-project - each real work order (see `agents/production-roadmap.md`) replaces its stub with
+ * durable, project-scoped state without needing to touch this file again, since the IPC shapes
+ * are already final.
+ */
+let stubBrief: DesignBrief = emptyDesignBrief()
 
 /** Registers all main-process IPC handlers. */
 export function registerIpcHandlers(): void {
@@ -320,5 +341,76 @@ export function registerIpcHandlers(): void {
       // with this response, and there's exactly one active window's viewport to update.
       return buildProjectSnapshot(projectStore)
     }
+  )
+
+  // -- WS-A Design Brief (stub - see stubBrief above) --------------------
+
+  ipcMain.handle(IPC.briefGet, async (): Promise<DesignBrief> => stubBrief)
+
+  ipcMain.handle(
+    IPC.briefUpdate,
+    async (_event, request: BriefUpdateRequest): Promise<BriefUpdateResponse> => {
+      stubBrief = request.brief
+      broadcast(IPC.briefUpdated, stubBrief)
+      return { brief: stubBrief }
+    }
+  )
+
+  ipcMain.handle(IPC.briefLock, async (): Promise<BriefLockResponse> => {
+    stubBrief = { ...stubBrief, lockedAt: new Date().toISOString() }
+    broadcast(IPC.briefUpdated, stubBrief)
+    return { brief: stubBrief }
+  })
+
+  // -- WS-B Parameter panel (stub - no venv re-run wired up yet) ----------
+
+  ipcMain.handle(
+    IPC.paramUpdate,
+    async (_event, _request: ParamUpdateRequest): Promise<ParamUpdateResponse> => ({
+      accepted: false,
+      reason: 'Parameter re-run is not implemented yet.'
+    })
+  )
+
+  ipcMain.handle(
+    IPC.paramGetManifest,
+    async (): Promise<ParamGetManifestResponse> => ({ manifest: emptyScriptManifest() })
+  )
+
+  // -- WS-C Verification (stub - no verify pipeline wired up yet) ---------
+
+  ipcMain.handle(IPC.verificationGet, async (): Promise<VerificationGetResponse> => ({ report: null }))
+
+  // -- WS-E Printer profiles (stub - no persisted store yet) --------------
+
+  ipcMain.handle(
+    IPC.printerProfileList,
+    async (): Promise<PrinterProfileListResponse> => ({ profiles: [], activeId: null })
+  )
+
+  ipcMain.handle(
+    IPC.printerProfileSave,
+    async (_event, _request: PrinterProfileSaveRequest): Promise<PrinterProfileListResponse> => ({
+      profiles: [],
+      activeId: null
+    })
+  )
+
+  ipcMain.handle(
+    IPC.printerProfileSetActive,
+    async (_event, _request: PrinterProfileSetActiveRequest): Promise<PrinterProfileListResponse> => ({
+      profiles: [],
+      activeId: null
+    })
+  )
+
+  // -- WS-F Graduation package export (stub - no package builder yet) ----
+
+  ipcMain.handle(
+    IPC.modelExportPackage,
+    async (_event, _request: ExportPackageRequest): Promise<ExportPackageResponse> => ({
+      saved: false,
+      reason: 'Package export is not implemented yet.'
+    })
   )
 }

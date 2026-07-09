@@ -13,7 +13,7 @@ export interface ResolvedPath {
  * *content* but not for *paths*, so a hallucinated or malicious `../../`
  * must never let the app read/expose/write files outside the project.
  *
- * Shared by the in-process MCP tools (mcpTools.ts) and the `canUseTool`
+ * Shared by the in-process MCP tools (`packages/agent-core/tools/`) and the `canUseTool`
  * permission policy (permissions.ts) so both enforce the same containment
  * rule with a single implementation.
  */

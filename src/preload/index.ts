@@ -3,14 +3,26 @@ import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
   AgentSettings,
+  BriefLockResponse,
+  BriefUpdateRequest,
+  BriefUpdateResponse,
   CreateProjectRequest,
+  DesignBrief,
   ExportModelRequest,
   ExportModelResponse,
+  ExportPackageRequest,
+  ExportPackageResponse,
   IterationInfo,
   ModelDisplayedPayload,
+  ParamGetManifestResponse,
+  ParamUpdateRequest,
+  ParamUpdateResponse,
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrinterProfileListResponse,
+  PrinterProfileSaveRequest,
+  PrinterProfileSetActiveRequest,
   PrintSettings,
   ProjectStateSnapshot,
   ProjectSummary,
@@ -19,7 +31,9 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus,
-  SwitchProjectRequest
+  SwitchProjectRequest,
+  VerificationGetResponse,
+  VerificationReport
 } from '../shared/ipc'
 import type { VoyagerApi } from './api'
 
@@ -66,6 +80,34 @@ const api: VoyagerApi = {
     listIterations: (): Promise<IterationInfo[]> => ipcRenderer.invoke(IPC.projectListIterations),
     revertTo: (request: RevertToRequest): Promise<ProjectStateSnapshot> =>
       ipcRenderer.invoke(IPC.projectRevertTo, request)
+  },
+  brief: {
+    get: (): Promise<DesignBrief> => ipcRenderer.invoke(IPC.briefGet),
+    update: (request: BriefUpdateRequest): Promise<BriefUpdateResponse> =>
+      ipcRenderer.invoke(IPC.briefUpdate, request),
+    lock: (): Promise<BriefLockResponse> => ipcRenderer.invoke(IPC.briefLock),
+    onUpdated: (callback) => subscribe<DesignBrief>(IPC.briefUpdated, callback)
+  },
+  param: {
+    update: (request: ParamUpdateRequest): Promise<ParamUpdateResponse> =>
+      ipcRenderer.invoke(IPC.paramUpdate, request),
+    getManifest: (): Promise<ParamGetManifestResponse> => ipcRenderer.invoke(IPC.paramGetManifest)
+  },
+  verification: {
+    get: (): Promise<VerificationGetResponse> => ipcRenderer.invoke(IPC.verificationGet),
+    onUpdated: (callback) => subscribe<VerificationReport>(IPC.verificationUpdated, callback)
+  },
+  printerProfile: {
+    list: (): Promise<PrinterProfileListResponse> => ipcRenderer.invoke(IPC.printerProfileList),
+    save: (request: PrinterProfileSaveRequest): Promise<PrinterProfileListResponse> =>
+      ipcRenderer.invoke(IPC.printerProfileSave, request),
+    setActive: (request: PrinterProfileSetActiveRequest): Promise<PrinterProfileListResponse> =>
+      ipcRenderer.invoke(IPC.printerProfileSetActive, request),
+    onUpdated: (callback) => subscribe<PrinterProfileListResponse>(IPC.printerProfileUpdated, callback)
+  },
+  exportPackage: {
+    export: (request: ExportPackageRequest): Promise<ExportPackageResponse> =>
+      ipcRenderer.invoke(IPC.modelExportPackage, request)
   }
 }
 
