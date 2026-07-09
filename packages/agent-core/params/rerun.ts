@@ -120,6 +120,13 @@ export async function rerunWithParam(options: ParamRerunOptions, deps: ParamReru
 
   const runDir = join(options.projectDir, 'outputs', 'param-edits', randomUUID())
   await mkdir(runDir, { recursive: true })
+  // Mirrors `ProjectStore.materializeProject()`'s own `outputs/` creation at the real project
+  // root: the skill (SKILL.md Phase 4) tells the agent to write exports to a relative
+  // `./outputs/` it can assume already exists, so a re-run script never creates it itself. Some
+  // exporters (e.g. build123d's `export_stl`, backed by OCCT's `StlAPI_Writer.Write`) fail
+  // silently - return `False` rather than raising - when the parent directory is missing, so
+  // skipping this would corrupt the re-run without even a clear error for some exports.
+  await mkdir(join(runDir, 'outputs'), { recursive: true })
   const runScriptAbsPath = join(runDir, basename(options.scriptRelPath))
   await writeFile(runScriptAbsPath, substitution.text, 'utf-8')
 

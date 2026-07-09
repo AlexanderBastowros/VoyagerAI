@@ -71,8 +71,10 @@ describe('rerunWithParam', () => {
   it('substitutes the value, re-runs the script, and records the new artifacts + manifest', async () => {
     const { spawnFn, cwds } = makeFakeSpawn({
       code: 0,
+      // Deliberately does NOT mkdir "outputs" itself - a real script never does either (SKILL.md
+      // Phase 4 has the agent write to a relative ./outputs/ it assumes already exists), so this
+      // only succeeds if rerunWithParam creates it before spawning.
       sideEffect: async (cwd) => {
-        await mkdir(join(cwd, 'outputs'), { recursive: true })
         await writeFile(join(cwd, 'outputs', 'bracket_v4.stl'), 'stl-bytes')
         await writeFile(join(cwd, 'outputs', 'bracket_v4.step'), 'step-bytes')
       }
