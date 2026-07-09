@@ -22,6 +22,11 @@ Working conventions for any agent picking up an item:
 
 ## Current product roadmap (prioritized)
 
+> **This queue is complete.** The active program is now the productionization roadmap in
+> [`production-roadmap.md`](./production-roadmap.md) — start there for new work. This file
+> remains the unscheduled backlog (see **Possible ideas** below) and the historical record
+> of the R1–R9 MVP roadmap.
+
 The near-term priorities, in order. Each is a self-contained work order.
 
 > **Done:** R1 (markdown chat rendering — `Markdown.tsx` via `react-markdown` + `remark-gfm`,

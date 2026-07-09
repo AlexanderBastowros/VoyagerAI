@@ -313,6 +313,14 @@ cloud implementations.
 
 Each milestone ships something usable; the POC never stops working.
 
+**Backend sequencing (decided):** M0 and M1 run entirely on **Mode A** (Claude CLI, zero
+marginal inference cost). M2 is adopted **on trigger**, not on schedule — the hard trigger
+is the *first external user* (a personal Claude subscription cannot serve other people's
+inference); secondary triggers are the multi-model verification layers and a hosted web
+client. The API-key middle rung (below) can precede full AWS to measure per-design cost.
+The agent-facing work queue for the current phase lives in
+[`agents/production-roadmap.md`](../agents/production-roadmap.md).
+
 | # | Milestone | Contents | Done when |
 |---|---|---|---|
 | **M0** | Extract the core | `packages/agent-core` (session loop, prompts, MCP tools, skill, project semantics) + `packages/verify` (validator → library); Electron main becomes a thin host. Pure refactor | POC works exactly as before; existing vitest suites pass against the packages |
@@ -322,7 +330,10 @@ Each milestone ships something usable; the POC never stops working.
 | **M4** | Control & printability | Direct manipulation via manifest bindings; feature list; split planner + multi-piece verification | >X% of iterations are non-chat (product metric §7) |
 | **M5** | Productization | Web client GA, billing/tiers, cross_checker escalation tier, BYO-AWS deployment recipe; Onshape integrated app + Fusion 360 add-in (§12.2–12.3) | First paying cohort |
 
-**Decisions deliberately deferred:** Bedrock vs. Claude Platform on AWS for Claude roles
+**Decisions deliberately deferred:** whether to insert an **Anthropic API-key mode** as a
+pay-as-you-go middle rung before full AWS (decide pre-M2 from measured per-design token
+cost; already sketched in `agents/future-improvements.md`); Bedrock vs. Claude Platform on
+AWS for Claude roles
 (gateway config — decide at M2 with real feature/latency data); which non-Anthropic
 cross-checker (decide at M3 via the eval suite); web-client-first vs Electron-first for cloud
 mode (M2 spike: the renderer is already plain React+three.js — the preload/IPC layer is the
