@@ -1,14 +1,26 @@
 import type {
   AgentEvent,
   AgentSettings,
+  BriefLockResponse,
+  BriefUpdateRequest,
+  BriefUpdateResponse,
   CreateProjectRequest,
+  DesignBrief,
   ExportModelRequest,
   ExportModelResponse,
+  ExportPackageRequest,
+  ExportPackageResponse,
   IterationInfo,
   ModelDisplayedPayload,
+  ParamGetManifestResponse,
+  ParamUpdateRequest,
+  ParamUpdateResponse,
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrinterProfileListResponse,
+  PrinterProfileSaveRequest,
+  PrinterProfileSetActiveRequest,
   PrintSettings,
   ProjectStateSnapshot,
   ProjectSummary,
@@ -17,7 +29,9 @@ import type {
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus,
-  SwitchProjectRequest
+  SwitchProjectRequest,
+  VerificationGetResponse,
+  VerificationReport
 } from '../shared/ipc'
 
 /**
@@ -75,5 +89,37 @@ export interface VoyagerApi {
      *  resolves with its full hydrated state (same shape as switch/create) so the caller can
      *  `hydrateProject()` + re-sync the viewport. Rejects if Voyager is mid-turn. */
     revertTo: (request: RevertToRequest) => Promise<ProjectStateSnapshot>
+  }
+  /** WS-A Design Brief - stub behavior until WS-A lands (see `src/main/ipc.ts`). */
+  brief: {
+    get: () => Promise<DesignBrief>
+    update: (request: BriefUpdateRequest) => Promise<BriefUpdateResponse>
+    lock: () => Promise<BriefLockResponse>
+    /** Subscribe to brief changes (own edits and, later, agent-authored ones); returns an
+     *  unsubscribe function. */
+    onUpdated: (callback: (brief: DesignBrief) => void) => () => void
+  }
+  /** WS-B Parameter panel - stub behavior until WS-B lands (see `src/main/ipc.ts`). */
+  param: {
+    update: (request: ParamUpdateRequest) => Promise<ParamUpdateResponse>
+    getManifest: () => Promise<ParamGetManifestResponse>
+  }
+  /** WS-C Verification - stub behavior until WS-C lands (see `src/main/ipc.ts`). */
+  verification: {
+    get: () => Promise<VerificationGetResponse>
+    /** Subscribe to freshly-computed reports; returns an unsubscribe function. */
+    onUpdated: (callback: (report: VerificationReport) => void) => () => void
+  }
+  /** WS-E Printer profiles - stub behavior until WS-E lands (see `src/main/ipc.ts`). */
+  printerProfile: {
+    list: () => Promise<PrinterProfileListResponse>
+    save: (request: PrinterProfileSaveRequest) => Promise<PrinterProfileListResponse>
+    setActive: (request: PrinterProfileSetActiveRequest) => Promise<PrinterProfileListResponse>
+    /** Subscribe to profile-list changes; returns an unsubscribe function. */
+    onUpdated: (callback: (response: PrinterProfileListResponse) => void) => () => void
+  }
+  /** WS-F Graduation package export - stub behavior until WS-F lands (see `src/main/ipc.ts`). */
+  exportPackage: {
+    export: (request: ExportPackageRequest) => Promise<ExportPackageResponse>
   }
 }

@@ -109,24 +109,34 @@ Notes on the two gates:
   "Manual end-to-end test script"); all existing vitest suites pass from their new
   locations; `src/main/` contains only Electron-host code.
 
-### WS-0b — Shared contracts + integration stubs · **Status: TODO** · gate, single agent, after 0a
+### WS-0b — Shared contracts + integration stubs · **Status: DONE** · gate, single agent, after 0a
 
+- **Landed:** `src/shared/brief.ts` (`DesignBrief` zod schema per arch doc §6 - `Dim` with
+  `user`/`inferred` provenance, discriminated-union `Feature`, `PrinterProfileRef`,
+  `emptyDesignBrief()`), `src/shared/manifest.ts` (`ScriptManifest` - `ParamEntry` mirroring the
+  PARAMS convention, `FeatureBinding` for direct manipulation), `src/shared/verification.ts`
+  (`VerificationReport` - layered findings, conformance table, badge), each with its own
+  `*.test.ts`. `src/shared/ipc.ts` re-exports all three and adds `ExportFormat`'s `'3mf' |
+  'package'`, `ExportPackageRequest/Response`, `Brief{Update,Lock}{Request,Response}`,
+  `ParamUpdate{Request,Response}`, `ParamGetManifestResponse`, `VerificationGetResponse`,
+  `PrinterProfile{Save,SetActive}Request`/`ListResponse`, and matching `IPC` channel constants
+  (`brief:*`, `param:*`, `verification:*`, `printerProfile:*`, `model:exportPackage`).
+  `src/main/ipc.ts` wires every new channel to an in-memory stub (brief echoes/locks a
+  module-level `DesignBrief`; params/verification/profiles/package return "not implemented yet"
+  or empty defaults) with matching `src/preload/api.ts` (`VoyagerApi.brief/param/verification/
+  printerProfile/exportPackage`) and `src/preload/index.ts` bridges. `appStore.ts` gained
+  `brief`/`manifest`/`verificationReport`/`printerProfiles`/`activePrinterProfileId` slices
+  (empty defaults) and their setters. `App.tsx` mounts `BriefPanel`/`ParamPanel`/
+  `VerificationPanel` - new placeholder components rendering a single "not yet available" row -
+  above `PrintSettingsPanel`. The three existing MCP tools moved out of
+  `packages/agent-core/src/agent/mcpTools.ts` into `packages/agent-core/tools/` (one file per
+  tool - `displayModel.ts`, `recommendPrintSettings.ts`, `setStatus.ts` - plus shared
+  `types.ts`/`helpers.ts` and an `index.ts` registry `createVoyagerMcpServer()`); `session.ts`
+  imports from `../../tools`. Zero behavior change to any existing tool; tests split 1:1 into
+  per-tool `*.test.ts` alongside a `testSupport.ts` (not itself a test file). Full quality gate
+  green: 228 tests (219 prior + 9 new for the three brief/manifest/verification schema files),
+  build, typecheck.
 - **Why:** the coordination point that makes WS-A…WS-F conflict-free.
-- **Scope:** define and land, with types + zod schemas + tests but stub behavior:
-  - `src/shared/brief.ts` — `DesignBrief` (architecture doc §6, incl. `Dim` provenance).
-  - `src/shared/manifest.ts` — script `manifest.json` (PARAMS entries, feature→parameter
-    bindings; architecture doc §5, §7).
-  - `src/shared/verification.ts` — `VerificationReport` (layers, findings, badge).
-  - `src/shared/ipc.ts` — new channels/events: `brief:*`, `param:update`,
-    `verification-*`, `printerProfile:*`, `model:exportPackage`; extend
-    `ExportFormat` with `'3mf' | 'package'`.
-  - `src/preload/**` + `src/main/ipc.ts` — wire the new channels to stub handlers.
-  - `src/renderer/src/state/appStore.ts` — state slices for brief / params /
-    verification / profiles (empty defaults).
-  - `src/renderer/src/App.tsx` — mount points for `BriefPanel`, `ParamPanel`,
-    `VerificationPanel` (behind "not yet available" placeholders).
-  - `packages/agent-core/tools/` — tool registry: one file per MCP tool; existing three
-    tools migrated into it.
 - **Files owned:** all of the above.
 - **Done when:** quality gate green; each downstream work order can be started without
   editing any 0b-owned file.

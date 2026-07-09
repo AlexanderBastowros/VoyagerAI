@@ -2,48 +2,27 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createDisplayModelTool, createRecommendPrintSettingsTool, createSetStatusTool } from './mcpTools'
-import type { VoyagerMcpDeps, VoyagerMcpEmission, VoyagerMcpProjectStore } from './mcpTools'
-import type { ProjectIteration } from '../projects/store'
+import { createDisplayModelTool } from './displayModel'
+import type { VoyagerMcpEmission, VoyagerMcpProjectStore } from './types'
+import { fakeStlBytes, makeDeps } from './testSupport'
 
 let projectDir: string
 let emissions: VoyagerMcpEmission[]
 let recorded: Array<Parameters<VoyagerMcpProjectStore['recordIteration']>[0]>
-/** Settable by tests that need `activeIterationRecord()` to resolve to a specific iteration (or
- *  null, the "no model yet" case) independent of what `recordIteration` has produced so far. */
-let activeIteration: ProjectIteration | null
 
 beforeEach(async () => {
   projectDir = await mkdtemp(join(tmpdir(), 'voyager-mcp-'))
   await mkdir(join(projectDir, 'outputs'), { recursive: true })
   emissions = []
   recorded = []
-  activeIteration = null
 })
 
 afterEach(async () => {
   await rm(projectDir, { recursive: true, force: true })
 })
 
-function deps(): VoyagerMcpDeps {
-  let n = 0
-  return {
-    projectStore: {
-      getProjectDir: () => projectDir,
-      recordIteration: async (entry): Promise<ProjectIteration> => {
-        recorded.push(entry)
-        n += 1
-        return { ...entry, n, at: new Date().toISOString() }
-      },
-      activeIterationRecord: async (): Promise<ProjectIteration | null> => activeIteration
-    },
-    emit: (emission) => emissions.push(emission)
-  }
-}
-
-/** A structurally-plausible binary STL: 80-byte header + count + one triangle. */
-function fakeStlBytes(): Buffer {
-  return Buffer.alloc(84 + 50, 7)
+function deps() {
+  return makeDeps(projectDir, emissions, recorded, () => null)
 }
 
 describe('display_model tool', () => {
@@ -138,76 +117,5 @@ describe('display_model tool', () => {
     if (emission.kind !== 'model-displayed') throw new Error('expected model-displayed')
     expect(emission.payload.iteration).toBe(1)
     expect(emission.payload.stlBuffer.byteLength).toBe(fakeStlBytes().byteLength)
-  })
-})
-
-describe('set_status tool', () => {
-  it('emits the status detail', async () => {
-    const handler = createSetStatusTool(deps()).handler
-    const result = await handler({ message: 'Running the parametric script…' }, {})
-    expect(result.isError).toBeFalsy()
-    expect(emissions).toEqual([{ kind: 'status', detail: 'Running the parametric script…' }])
-  })
-})
-
-describe('recommend_print_settings tool', () => {
-  const args = {
-    material: 'PLA',
-    layer_height_mm: 0.2,
-    wall_count: 3,
-    top_bottom_layers: 4,
-    infill_percent: 20,
-    infill_pattern: 'gyroid',
-    supports: 'None',
-    adhesion: 'Brim',
-    nozzle_temp_c: 210,
-    bed_temp_c: 60,
-    print_speed_mm_s: 50,
-    orientation: 'Flat face down for maximum bed contact',
-    notes: 'Brim helps the small footprint stay put.'
-  }
-
-  it('emits print-settings tagged with the active iteration when a model exists', async () => {
-    activeIteration = {
-      n: 3,
-      stlPath: 'outputs/part_v3.stl',
-      scriptPath: 'outputs/part_v3.py',
-      summary: 'A bracket',
-      at: new Date().toISOString()
-    }
-
-    const handler = createRecommendPrintSettingsTool(deps()).handler
-    const result = await handler(args, {})
-
-    expect(result.isError).toBeFalsy()
-    expect(emissions).toHaveLength(1)
-    const emission = emissions[0]
-    if (emission.kind !== 'print-settings') throw new Error('expected print-settings')
-    expect(emission.payload).toEqual({
-      iteration: 3,
-      material: 'PLA',
-      layerHeightMm: 0.2,
-      wallCount: 3,
-      topBottomLayers: 4,
-      infillPercent: 20,
-      infillPattern: 'gyroid',
-      supports: 'None',
-      adhesion: 'Brim',
-      nozzleTempC: 210,
-      bedTempC: 60,
-      printSpeedMmS: 50,
-      orientation: 'Flat face down for maximum bed contact',
-      notes: 'Brim helps the small footprint stay put.'
-    })
-  })
-
-  it('errors and emits nothing when no model has been displayed yet', async () => {
-    activeIteration = null
-
-    const handler = createRecommendPrintSettingsTool(deps()).handler
-    const result = await handler(args, {})
-
-    expect(result.isError).toBe(true)
-    expect(emissions).toHaveLength(0)
   })
 })

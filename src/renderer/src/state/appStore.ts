@@ -3,16 +3,21 @@ import type {
   AgentEvent,
   AgentSettings,
   ChatAttachment,
+  DesignBrief,
   IterationInfo,
   ModelDisplayedPayload,
   PermissionRequestPayload,
+  PrinterProfileRef,
   PrintSettings,
   ProjectStateSnapshot,
   ProjectSummary,
+  ScriptManifest,
   SelectionSummary,
   SetupCheck,
-  SetupStatus
+  SetupStatus,
+  VerificationReport
 } from '../../../shared/ipc'
+import { emptyDesignBrief, emptyScriptManifest } from '../../../shared/ipc'
 
 export type ChatRole = 'user' | 'assistant' | 'system-status'
 
@@ -156,6 +161,18 @@ export interface AppState {
    */
   thinkingText: string
 
+  /** The active project's Design Brief (WS-A). Placeholder-panel-only until WS-A lands - starts
+   *  as an empty brief rather than null so `BriefPanel` never has to special-case "not fetched
+   *  yet" vs. "genuinely empty". */
+  brief: DesignBrief
+  /** The active iteration's PARAMS manifest (WS-B). Empty until WS-B lands. */
+  manifest: ScriptManifest
+  /** The active iteration's verification report (WS-C), or null before one has been computed. */
+  verificationReport: VerificationReport | null
+  /** Every saved printer profile (WS-E) and which one is active, or null if none is set yet. */
+  printerProfiles: PrinterProfileRef[]
+  activePrinterProfileId: string | null
+
   /** Appends a new message and returns its generated id (for later streaming updates). */
   addMessage: (message: Omit<ChatMessage, 'id' | 'createdAt'>) => string
   /** Appends `delta` to an existing message's text - used for streamed assistant replies. */
@@ -201,6 +218,17 @@ export interface AppState {
   setPendingPermission: (request: PermissionRequestPayload | null) => void
   /** Folds one streamed `agent:event` into the chat state. */
   applyAgentEvent: (event: AgentEvent) => void
+
+  /** Replaces the Design Brief - used after `brief.get`/`update`/`lock` and the `brief:updated` push. */
+  setBrief: (brief: DesignBrief) => void
+  /** Replaces the active iteration's PARAMS manifest - used after `param.getManifest`. */
+  setManifest: (manifest: ScriptManifest) => void
+  /** Sets or clears (pass `null`) the verification report - used after `verification.get` and the
+   *  `verification:updated` push. */
+  setVerificationReport: (report: VerificationReport | null) => void
+  /** Replaces the printer-profile list and active id - used after `printerProfile.list`/`save`/
+   *  `setActive` and the `printerProfile:updated` push. */
+  setPrinterProfiles: (profiles: PrinterProfileRef[], activeId: string | null) => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -224,6 +252,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   agentStreamIds: {},
   pendingPermission: null,
   thinkingText: '',
+  brief: emptyDesignBrief(),
+  manifest: emptyScriptManifest(),
+  verificationReport: null,
+  printerProfiles: [],
+  activePrinterProfileId: null,
 
   addMessage: (message) => {
     const id = createMessageId()
@@ -375,5 +408,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         return
       }
     }
-  }
+  },
+
+  setBrief: (brief) => set({ brief }),
+  setManifest: (manifest) => set({ manifest }),
+  setVerificationReport: (verificationReport) => set({ verificationReport }),
+  setPrinterProfiles: (printerProfiles, activePrinterProfileId) =>
+    set({ printerProfiles, activePrinterProfileId })
 }))

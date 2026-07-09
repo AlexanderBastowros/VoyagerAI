@@ -13,8 +13,8 @@ import type {
   SendMessageResponse
 } from '@shared/ipc'
 import type { ProjectStore } from '../projects/store'
-import { createVoyagerMcpServer } from './mcpTools'
-import type { VoyagerMcpEmission } from './mcpTools'
+import { createVoyagerMcpServer } from '../../tools'
+import type { VoyagerMcpEmission } from '../../tools'
 import { decideToolPermission } from './permissions'
 import { buildUserMessage, formatRevertContext, systemPromptAppend } from './prompts'
 

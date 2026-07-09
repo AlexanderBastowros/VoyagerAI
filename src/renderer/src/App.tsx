@@ -7,10 +7,13 @@ import Typography from '@mui/material/Typography'
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline'
 import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 import MenuIcon from '@mui/icons-material/Menu'
+import { BriefPanel } from './components/BriefPanel'
 import { ChatPanel } from './components/ChatPanel'
+import { ParamPanel } from './components/ParamPanel'
 import { PrintSettingsPanel } from './components/PrintSettingsPanel'
 import { ProjectsDrawer } from './components/ProjectsDrawer'
 import { SetupScreen } from './components/SetupScreen'
+import { VerificationPanel } from './components/VerificationPanel'
 import { ViewportControls } from './components/ViewportControls'
 import { Viewport } from './components/Viewport'
 import { toModelInfo, useAppStore } from './state/appStore'
@@ -121,6 +124,9 @@ export function App(): React.JSX.Element {
             minWidth: 0
           }}
         >
+          <BriefPanel />
+          <ParamPanel />
+          <VerificationPanel />
           <PrintSettingsPanel />
           <ChatPanel />
         </Box>
