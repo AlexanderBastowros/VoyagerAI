@@ -20,3 +20,8 @@ export { BriefStore } from '../brief/store'
 export type { DesignBriefVersionSummary } from '../brief/store'
 export { computeBriefCompleteness, isBriefComplete, missingBriefFields } from '../brief/completeness'
 export type { BriefCompleteness, BriefCompletenessCheck } from '../brief/completeness'
+
+export { rerunWithParam } from '../params/rerun'
+export type { ParamRerunOptions, ParamRerunDeps, ParamRerunResult, SpawnLike as ParamSpawnLike } from '../params/rerun'
+export { readManifestForIteration, manifestPathForStl } from '../params/manifestConvention'
+export { validateParamUpdate } from '../params/validate'

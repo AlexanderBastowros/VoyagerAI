@@ -105,6 +105,35 @@ Write a **single parametric script** with all dimensions as named constants at t
 grouped and commented, so the user can tweak and re-run. Follow the framework cookbook
 for idioms: `references/build123d.md` or `references/cadquery.md`.
 
+### The PARAMS block
+
+Every script's user-tunable dimensions go in one annotated block, delimited by exact
+marker comments, with one bare assignment per line:
+
+```python
+# --- PARAMS ---
+WIDTH = 40.0     # unit=mm min=10 max=200 label="Width" brief=envelope.x
+HEIGHT = 20.0    # unit=mm min=5 max=100 label="Height" brief=envelope.y
+HOLE_D = 3.4     # unit=mm min=2 max=10 label="Mounting hole diameter"
+# --- END PARAMS ---
+```
+
+Rules (a script that breaks these fails layer-1 verification and can't be extracted):
+- One `NAME = VALUE` per line — a bare numeric literal, never an expression
+  (`MIN_WALL = 3 * NOZZLE` stays *outside* the block, as an ordinary derived constant).
+- `NAME` is `UPPER_SNAKE_CASE`.
+- The trailing comment carries space-separated `key=value` annotations. `unit` and
+  `label` are required on every line; `min`/`max` are optional (include them whenever a
+  DFM rule or common sense bounds the value — e.g. a hole can't shrink to 0); `brief`
+  is an optional back-reference to a locked Design Brief field (e.g. `envelope.x`) once
+  one exists.
+- Only put dimensions a user would plausibly want to slide/type here — the part's real
+  shape-defining numbers (width, height, hole size, wall thickness, hardware clearances).
+  Printer constants from Phase 1 (`NOZZLE`, `BED_X/Y/Z`) don't need to be in the block.
+
+This block is what powers the parameter panel's sliders (instant, no-agent-turn
+re-generation) — nothing else about how you write the script changes.
+
 Apply these DFM rules automatically while modeling — they are the point of the skill.
 The full rationale and numbers are in `references/design-for-printing.md`; the
 essentials:
@@ -137,6 +166,19 @@ Save outputs to the project's `./outputs/` directory (relative to the working
 directory). Save the script there too. Version every artifact per iteration:
 `<part>_vN.py`, `<part>_vN.stl`, `<part>_vN.step` — N starts at 1 and increments on
 each refinement, so earlier iterations are never overwritten.
+
+Then extract the manifest — a trivial, deterministic parse of the PARAMS block, **no
+LLM involved**, which is exactly why it must run as a separate command rather than being
+hand-typed:
+
+```bash
+python scripts/extract_params.py <part>_vN.py --out <part>_vN.manifest.json
+```
+
+Save `<part>_vN.manifest.json` next to that version's STL, same basename as the
+script/STL/STEP so it's versioned identically. If it exits non-zero, the PARAMS block
+has a grammar error — fix the block (not the extractor) and re-run it before continuing;
+never write manifest.json by hand.
 
 ---
 
