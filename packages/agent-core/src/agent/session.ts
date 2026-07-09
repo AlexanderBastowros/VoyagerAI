@@ -11,7 +11,7 @@ import type {
   PrintSettings,
   SelectionSummary,
   SendMessageResponse
-} from '../../shared/ipc'
+} from '@shared/ipc'
 import type { ProjectStore } from '../projects/store'
 import { createVoyagerMcpServer } from './mcpTools'
 import type { VoyagerMcpEmission } from './mcpTools'

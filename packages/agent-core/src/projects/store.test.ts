@@ -6,13 +6,16 @@ import { ProjectStore } from './store'
 
 let scratch: string
 let skillSource: string
+let verifyScript: string
 
 beforeEach(async () => {
   scratch = await mkdtemp(join(tmpdir(), 'voyager-store-'))
   skillSource = join(scratch, 'skill-src')
   await mkdir(join(skillSource, 'scripts'), { recursive: true })
   await writeFile(join(skillSource, 'SKILL.md'), '# fake skill')
-  await writeFile(join(skillSource, 'scripts', 'validate_stl.py'), '# fake validator')
+  verifyScript = join(scratch, 'verify-src', 'validate_stl.py')
+  await mkdir(join(scratch, 'verify-src'), { recursive: true })
+  await writeFile(verifyScript, '# fake validator')
 })
 
 afterEach(async () => {
@@ -20,7 +23,11 @@ afterEach(async () => {
 })
 
 function makeStore(): ProjectStore {
-  return new ProjectStore({ baseDir: join(scratch, 'projects'), skillSourceDir: skillSource })
+  return new ProjectStore({
+    baseDir: join(scratch, 'projects'),
+    skillSourceDir: skillSource,
+    verifyScriptPath: verifyScript
+  })
 }
 
 /**

@@ -1,5 +1,5 @@
 import { basename, isAbsolute, relative, resolve } from 'node:path'
-import type { ExportFormat } from '../../shared/ipc'
+import type { ExportFormat } from '@shared/ipc'
 import type { ProjectIteration } from './store'
 
 /**

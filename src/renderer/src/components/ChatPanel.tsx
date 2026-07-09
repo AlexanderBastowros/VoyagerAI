@@ -43,8 +43,8 @@ const EFFORT_OPTIONS: Array<{ value: AgentEffort; label: string }> = [
 ]
 
 /** Haiku's API rejects the `effort` option outright - mirrors `EFFORT_UNSUPPORTED_MODELS` in
- *  `src/main/agent/session.ts`. The effort select is disabled for this model rather than sent
- *  a value the agent would have to silently drop. */
+ *  `packages/agent-core/src/agent/session.ts`. The effort select is disabled for this model
+ *  rather than sent a value the agent would have to silently drop. */
 const EFFORT_UNSUPPORTED_MODELS = new Set<AgentModel>(['claude-haiku-4-5'])
 
 const compactSelectSx = { fontSize: 11, minWidth: 0, maxWidth: 128, '& .MuiSelect-select': { py: 0.5 } }

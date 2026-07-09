@@ -2,7 +2,7 @@ import { spawn as nodeSpawn } from 'node:child_process'
 import type { ChildProcess, SpawnOptionsWithoutStdio } from 'node:child_process'
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { SetupCheck } from '../../shared/ipc'
+import type { SetupCheck } from '@shared/ipc'
 
 /**
  * Injectable subset of `child_process.spawn`'s signature. Production code

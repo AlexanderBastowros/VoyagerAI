@@ -75,7 +75,25 @@ Notes on the two gates:
 
 ## Work orders — CLI phase (M0–M1)
 
-### WS-0a — Extract `agent-core` and `verify` packages (M0) · **Status: TODO** · gate, single agent
+### WS-0a — Extract `agent-core` and `verify` packages (M0) · **Status: DONE** · gate, single agent
+
+- **Landed:** `packages/agent-core` (session/prompts/permissions/mcpTools/paths, projects, python,
+  setup - moved verbatim as an npm workspace, `@voyager/agent-core` barrel at `src/index.ts`) and
+  `packages/verify` (`python/validate_stl.py` + a thin injectable-exec TS wrapper,
+  `validateStl.ts`). `src/main/` now holds only `index.ts` (window/app lifecycle) and `ipc.ts` (IPC
+  glue) - no `electron` import anywhere under `packages/`. Cross-package access to
+  `src/shared/ipc.ts` (which stays put per the Ground rules) goes through a `@shared` alias
+  (`tsconfig.node.json`, `packages/agent-core/tsconfig.json`, `electron.vite.config.ts`,
+  `vitest.config.ts`) instead of a `../../..` chain. `ProjectStore` gained a `verifyScriptPath`
+  constructor option so each project's bundled skill copy still gets `scripts/validate_stl.py` at
+  the same relative path the skill's Phase 5 documents, even though the file's source of truth
+  moved out of `resources/skills/printable-cad/scripts/`; `electron-builder.yml` gained a matching
+  `extraResources` entry so packaged builds still ship it. Root `package.json` is now an npm
+  workspaces root (`workspaces: ["packages/*"]`) with per-package typecheck scripts folded into
+  `npm run typecheck`. Zero behavior change: all 219 pre-existing tests pass from their new
+  locations (+3 new ones for the verify wrapper), `npm run build` bundles `@voyager/agent-core`
+  straight into `out/main/index.js` (confirmed no leftover `require('@voyager/...')`), and the
+  full quality gate (`typecheck && build && test`) is green.
 
 - **Why:** the seam that keeps Mode A (CLI) vs Mode B (Bedrock) a configuration swap, and
   the precondition for parallel work. Architecture doc §1, §11-M0.

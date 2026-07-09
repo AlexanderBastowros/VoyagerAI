@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildUserMessage, formatRevertContext, formatSelectionContext, systemPromptAppend } from './prompts'
-import type { ChatAttachment, SelectionSummary } from '../../shared/ipc'
+import type { ChatAttachment, SelectionSummary } from '@shared/ipc'
 import type { ProjectIteration } from '../projects/store'
 
 const selection: SelectionSummary = {

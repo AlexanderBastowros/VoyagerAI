@@ -6,7 +6,7 @@ import type { CanUseTool, Options, Query, SDKMessage, SDKUserMessage } from '@an
 import { AgentSession, humanizeToolUse, translateSdkMessage, truncateArgs } from './session'
 import type { QueryFn } from './session'
 import { ProjectStore } from '../projects/store'
-import type { AgentEvent, ModelDisplayedPayload, PrintSettings } from '../../shared/ipc'
+import type { AgentEvent, ModelDisplayedPayload, PrintSettings } from '@shared/ipc'
 
 // ---------------------------------------------------------------------------
 // translateSdkMessage (pure)
@@ -241,6 +241,7 @@ beforeEach(async () => {
   scratch = await mkdtemp(join(tmpdir(), 'voyager-session-'))
   await mkdir(join(scratch, 'skill-src'), { recursive: true })
   await writeFile(join(scratch, 'skill-src', 'SKILL.md'), '# fake skill')
+  await writeFile(join(scratch, 'validate_stl.py'), '# fake validator')
 })
 
 afterEach(async () => {
@@ -286,7 +287,8 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     opts.store ??
     new ProjectStore({
       baseDir: join(scratch, 'projects'),
-      skillSourceDir: join(scratch, 'skill-src')
+      skillSourceDir: join(scratch, 'skill-src'),
+      verifyScriptPath: join(scratch, 'validate_stl.py')
     })
   const outputsHistory: PushStream<SDKMessage>[] = []
   const optionsHistory: Options[] = []
@@ -764,7 +766,8 @@ describe('AgentSession project switching', () => {
   it('does not let a failed resume on one project suppress a valid resume on another after switching back', async () => {
     const store = new ProjectStore({
       baseDir: join(scratch, 'projects'),
-      skillSourceDir: join(scratch, 'skill-src')
+      skillSourceDir: join(scratch, 'skill-src'),
+      verifyScriptPath: join(scratch, 'validate_stl.py')
     })
     const events: AgentEvent[] = []
     const optionsHistory: Options[] = []
@@ -853,7 +856,8 @@ describe('AgentSession busy-flag race', () => {
   it('resets busy if ensureStarted() fails, so the session is not permanently stuck', async () => {
     const brokenStore = new ProjectStore({
       baseDir: join(scratch, 'projects'),
-      skillSourceDir: join(scratch, 'does-not-exist')
+      skillSourceDir: join(scratch, 'does-not-exist'),
+      verifyScriptPath: join(scratch, 'validate_stl.py')
     })
     const h = makeHarness({ store: brokenStore })
 

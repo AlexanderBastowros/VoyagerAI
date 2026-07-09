@@ -1,7 +1,7 @@
 import { copyFile, cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import type { AgentSettings, PersistedMessage, ProjectSummary } from '../../shared/ipc'
+import type { AgentSettings, PersistedMessage, ProjectSummary } from '@shared/ipc'
 
 /**
  * One versioned export produced by the `display_model` MCP tool. Paths are
@@ -58,6 +58,10 @@ export interface ProjectStoreOptions {
   baseDir: string
   /** Absolute path to the bundled `resources/skills/printable-cad` directory. */
   skillSourceDir: string
+  /** Absolute path to the bundled `validate_stl.py` (owned by `packages/verify`) - copied into
+   *  every project's skill copy at `scripts/validate_stl.py` since it lives outside
+   *  `skillSourceDir` (see `packages/verify`'s single-source-of-truth ownership of the validator). */
+  verifyScriptPath: string
 }
 
 const SKILL_DIR_SEGMENTS = ['.claude', 'skills', 'printable-cad'] as const
@@ -98,6 +102,7 @@ async function pathExists(path: string): Promise<boolean> {
 export class ProjectStore {
   private readonly baseDir: string
   private readonly skillSourceDir: string
+  private readonly verifyScriptPath: string
 
   /** The currently-active project's loaded record, once `ensureProject()` (or `createProject()`/
    *  `switchProject()`) has resolved at least once. Cleared only by being replaced - there is
@@ -107,6 +112,7 @@ export class ProjectStore {
   constructor(options: ProjectStoreOptions) {
     this.baseDir = options.baseDir
     this.skillSourceDir = options.skillSourceDir
+    this.verifyScriptPath = options.verifyScriptPath
   }
 
   private dirFor(id: string): string {
@@ -404,6 +410,13 @@ export class ProjectStore {
     if (!(await pathExists(skillDestDir))) {
       await mkdir(join(dir, '.claude', 'skills'), { recursive: true })
       await cp(this.skillSourceDir, skillDestDir, { recursive: true })
+      // The validator lives in packages/verify (single source of truth for verification), not
+      // under skillSourceDir - copy it into the same scripts/ location the skill's Phase 5
+      // documents (`python scripts/validate_stl.py ...`) so the on-disk layout the agent sees is
+      // unchanged even though the file's real origin moved. mkdir first: skillSourceDir isn't
+      // guaranteed to already have a scripts/ subdirectory (e.g. a skill with no other scripts).
+      await mkdir(join(skillDestDir, 'scripts'), { recursive: true })
+      await copyFile(this.verifyScriptPath, join(skillDestDir, 'scripts', 'validate_stl.py'))
     }
 
     let record = await this.readRecord(dir)
