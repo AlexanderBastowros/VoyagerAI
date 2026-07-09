@@ -87,7 +87,17 @@ export interface AgentSettings {
 export type AgentEvent =
   | { type: 'text-delta'; messageId: string; delta: string }
   | { type: 'thinking-delta'; messageId: string; delta: string }
-  | { type: 'tool-activity'; messageId: string; toolName: string; detail: string }
+  | {
+      type: 'tool-activity'
+      messageId: string
+      toolName: string
+      /** Concise one-liner (e.g. "Editing bracket.py") — the only thing shown in normal mode. */
+      detail: string
+      /** Truncated, stringified tool input. Shown only when the "full stream" toggle is on. */
+      args?: string
+      /** Bookkeeping tools (e.g. TodoWrite) — emitted but hidden unless "full stream" is on. */
+      routine?: boolean
+    }
   | { type: 'message-complete'; messageId: string }
   /** Emitted when the user interrupts an in-flight turn. Exactly one terminal
    *  event fires per turn: `message-complete` | `error` | `stopped`. */

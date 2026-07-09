@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CanUseTool, Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
-import { AgentSession, humanizeToolUse, translateSdkMessage } from './session'
+import { AgentSession, humanizeToolUse, translateSdkMessage, truncateArgs } from './session'
 import type { QueryFn } from './session'
 import { ProjectStore } from '../projects/store'
 import type { AgentEvent, ModelDisplayedPayload, PrintSettings } from '../../shared/ipc'
@@ -91,7 +91,34 @@ describe('translateSdkMessage', () => {
     // set_status is skipped (its handler emits richer text); text blocks are
     // covered by streamed deltas.
     expect(t.events).toEqual([
-      { type: 'tool-activity', messageId: 'turn-2', toolName: 'Write', detail: 'Writing bracket_v1.py' }
+      {
+        type: 'tool-activity',
+        messageId: 'turn-2',
+        toolName: 'Write',
+        detail: 'Writing bracket_v1.py',
+        routine: false,
+        args: '{"file_path":"/proj/outputs/bracket_v1.py"}'
+      }
+    ])
+  })
+
+  it('emits a routine tool-activity event for bookkeeping tools like TodoWrite', () => {
+    const t = translateSdkMessage(
+      msg({
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', name: 'TodoWrite', input: { todos: [] } }] }
+      }),
+      'turn-2'
+    )
+    expect(t.events).toEqual([
+      {
+        type: 'tool-activity',
+        messageId: 'turn-2',
+        toolName: 'TodoWrite',
+        detail: 'Updating its task list',
+        routine: true,
+        args: '{"todos":[]}'
+      }
     ])
   })
 
@@ -129,17 +156,51 @@ describe('translateSdkMessage', () => {
 
 describe('humanizeToolUse', () => {
   it('prefers the Bash description over the raw command', () => {
-    expect(humanizeToolUse('Bash', { description: 'Run the validator', command: 'python x.py' })).toBe(
-      'Run the validator'
-    )
-    expect(humanizeToolUse('Bash', { command: 'python part.py' })).toBe('Running: python part.py')
+    expect(humanizeToolUse('Bash', { description: 'Run the validator', command: 'python x.py' })).toMatchObject({
+      detail: 'Run the validator',
+      routine: false
+    })
+    expect(humanizeToolUse('Bash', { command: 'python part.py' })).toMatchObject({
+      detail: 'Running: python part.py',
+      routine: false
+    })
   })
 
-  it('names files for Write/Edit/Read and skips chat-noise tools', () => {
-    expect(humanizeToolUse('Edit', { file_path: '/a/b/part_v2.py' })).toBe('Editing part_v2.py')
-    expect(humanizeToolUse('TodoWrite', {})).toBeNull()
+  it('names files for Write/Edit/Read, carrying truncated args', () => {
+    expect(humanizeToolUse('Edit', { file_path: '/a/b/part_v2.py' })).toEqual({
+      detail: 'Editing part_v2.py',
+      routine: false,
+      args: '{"file_path":"/a/b/part_v2.py"}'
+    })
+  })
+
+  it('marks bookkeeping tools routine (emitted) and keeps set_status suppressed (null)', () => {
+    expect(humanizeToolUse('TodoWrite', {})).toEqual({ detail: 'Updating its task list', routine: true })
     expect(humanizeToolUse('mcp__voyager__set_status', {})).toBeNull()
-    expect(humanizeToolUse('mcp__voyager__display_model', {})).toBe('Displaying the model in the viewport')
+    expect(humanizeToolUse('mcp__voyager__display_model', {})).toMatchObject({
+      detail: 'Displaying the model in the viewport',
+      routine: false
+    })
+  })
+
+  it('suppresses AskUserQuestion (denied by policy; Claude re-asks in prose)', () => {
+    expect(humanizeToolUse('AskUserQuestion', { questions: [] })).toBeNull()
+  })
+})
+
+describe('truncateArgs', () => {
+  it('returns undefined for empty input', () => {
+    expect(truncateArgs({})).toBeUndefined()
+  })
+
+  it('stringifies small input verbatim', () => {
+    expect(truncateArgs({ file_path: '/a/b.py' })).toBe('{"file_path":"/a/b.py"}')
+  })
+
+  it('clamps long input to the max length with an ellipsis', () => {
+    const result = truncateArgs({ command: 'x'.repeat(1000) }, 100)
+    expect(result).toHaveLength(101) // 100 chars + the … suffix
+    expect(result?.endsWith('…')).toBe(true)
   })
 })
 
@@ -367,6 +428,40 @@ describe('AgentSession', () => {
     expect(Array.isArray(content)).toBe(true)
     expect(content.map((b) => b.type)).toEqual(['image', 'text'])
     expect(content.at(-1)?.text).toBe('match this reference')
+  })
+
+  it('injects a "Reverted model" block when the active version is behind the latest', async () => {
+    const h = makeHarness()
+    const { dir } = await h.store.ensureProject()
+    // Two iterations (each needs its source script on disk for the snapshot copy).
+    await writeFile(join(dir, 'outputs', 'part_v1.py'), '# v1')
+    const first = await h.store.recordIteration({
+      stlPath: 'outputs/part_v1.stl',
+      scriptPath: 'outputs/part_v1.py',
+      summary: 'v1'
+    })
+    await writeFile(join(dir, 'outputs', 'part_v2.py'), '# v2')
+    await h.store.recordIteration({ stlPath: 'outputs/part_v2.stl', scriptPath: 'outputs/part_v2.py', summary: 'v2' })
+    await h.store.revertTo(first.n)
+
+    await h.session.sendMessage('make the base thicker')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    const content = h.inputs[0].message.content as string
+    expect(content.startsWith('make the base thicker')).toBe(true)
+    expect(content).toContain('Reverted model')
+    expect(content).toContain('outputs/versions/v1.py')
+  })
+
+  it('does not inject a revert block when the active version is already the latest', async () => {
+    const h = makeHarness()
+    const { dir } = await h.store.ensureProject()
+    await writeFile(join(dir, 'outputs', 'part_v1.py'), '# v1')
+    await h.store.recordIteration({ stlPath: 'outputs/part_v1.stl', scriptPath: 'outputs/part_v1.py', summary: 'v1' })
+
+    await h.session.sendMessage('keep going')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    const content = h.inputs[0].message.content as string
+    expect(content).toBe('keep going')
   })
 
   it('enables adaptive thinking with visible summaries on the query() options', async () => {
@@ -869,6 +964,33 @@ describe('canUseTool', () => {
     )
 
     expect(expectDenied(result).message).toContain('./outputs/')
+  })
+
+  it('denies AskUserQuestion without prompting the user (would otherwise hang the turn)', async () => {
+    const approvalCalls: unknown[] = []
+    const h = makeHarness({
+      requestUserApproval: async (request) => {
+        approvalCalls.push(request)
+        return true
+      }
+    })
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    const canUseTool = h.getCanUseTool()
+    const controller = new AbortController()
+    const result = await canUseTool(
+      'AskUserQuestion',
+      { questions: [{ question: 'Which?', header: 'X', options: [] }] },
+      { signal: controller.signal, toolUseID: 'tu-q', requestId: 'sdk-req-q' }
+    )
+
+    // Denied outright, no approval card, and the message steers Claude to prose.
+    expect(expectDenied(result).message).toContain('plain text')
+    expect(approvalCalls).toHaveLength(0)
+    expect(h.events.some((e) => e.type === 'tool-activity' && e.detail.includes('Waiting for your approval'))).toBe(
+      false
+    )
   })
 
   it('denies after the approval timeout elapses without a response', async () => {

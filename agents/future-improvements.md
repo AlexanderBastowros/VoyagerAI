@@ -57,7 +57,10 @@ The near-term priorities, in order. Each is a self-contained work order.
 > resolves the active iteration rather than always the latest. Print settings recommendation —
 > `recommend_print_settings` MCP tool in `mcpTools.ts`, `PrintSettings` + `printSettings:updated`
 > IPC, on-demand via a button in the new `PrintSettingsPanel.tsx` (collapsible, above the chat),
-> settings tagged to the active iteration and cleared on model change.
+> settings tagged to the active iteration and cleared on model change. ViewCube orientation
+> gizmo — `src/renderer/src/three/viewCube.ts` (pure `regionFromHitPoint`/`upForDirection` +
+> `ViewCubeGizmo` overlay), `ModelViewer.setViewDirection` animated snap, top-right corner of
+> the viewport; click faces/edges/corners to snap the camera, and it tracks orbit.
 
 ---
 

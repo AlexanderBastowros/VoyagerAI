@@ -2,12 +2,24 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import { colors } from '../colors'
+import { easeInOutCubic, upForDirection, ViewCubeGizmo, type ViewRegion } from './viewCube'
 
 const BACKGROUND_COLOR = colors.bgApp
 const MODEL_COLOR = colors.accent
 /** Length (mm) of each axis line drawn by the orientation gizmo - large enough to read against
  *  the 200mm grid without dwarfing small parts. */
 const AXES_SIZE = 35
+/** Duration of the camera-snap tween triggered by a ViewCube click. */
+const VIEW_TWEEN_MS = 350
+
+/** In-flight `setViewDirection` animation state, advanced by `animate()` each frame. */
+interface ViewTween {
+  fromPosition: THREE.Vector3
+  toPosition: THREE.Vector3
+  fromUp: THREE.Vector3
+  toUp: THREE.Vector3
+  startTime: number
+}
 
 /**
  * Thin wrapper around a three.js scene/camera/renderer set up for viewing a
@@ -22,12 +34,16 @@ export class ModelViewer {
   private readonly controls: OrbitControls
   private readonly resizeObserver: ResizeObserver
 
+  private readonly viewCube: ViewCubeGizmo
+  private readonly handleViewCubePointerDown: (event: PointerEvent) => void
+
   private mesh: THREE.Mesh | null = null
   private highlight: THREE.Object3D | null = null
   private measurementObject: THREE.Object3D | null = null
   private axesHelper: THREE.AxesHelper | null = null
   /** Applied to every material created by `loadSTL` so the mode survives a model swap. */
   private wireframe = false
+  private viewTween: ViewTween | null = null
   private rafHandle = 0
   private disposed = false
 
@@ -56,11 +72,33 @@ export class ModelViewer {
     this.scene.add(...this.createLights())
     this.scene.add(this.createGrid())
 
+    // Corner orientation gizmo - lives in its own scene/camera/renderer (see viewCube.ts) so it
+    // never touches the main render pipeline. It's always visible (independent of `showAxes`)
+    // and tracks the camera regardless of whether a model is loaded.
+    this.viewCube = new ViewCubeGizmo()
+    container.appendChild(this.viewCube.getDomElement())
+    this.handleViewCubePointerDown = (event) => this.onViewCubePointerDown(event)
+    this.viewCube.getDomElement().addEventListener('pointerdown', this.handleViewCubePointerDown)
+
     this.resizeObserver = new ResizeObserver(() => this.handleResize())
     this.resizeObserver.observe(container)
 
     this.animate = this.animate.bind(this)
     this.rafHandle = requestAnimationFrame(this.animate)
+  }
+
+  /** Converts a click on the ViewCube canvas to NDC, raycasts it against the cube, and snaps
+   *  the main camera to the resulting face/edge/corner direction (if the click hit the cube). */
+  private onViewCubePointerDown(event: PointerEvent): void {
+    const canvas = this.viewCube.getDomElement()
+    const rect = canvas.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return
+
+    const ndcX = ((event.clientX - rect.left) / rect.width) * 2 - 1
+    const ndcY = -(((event.clientY - rect.top) / rect.height) * 2 - 1)
+
+    const region = this.viewCube.raycast(ndcX, ndcY)
+    if (region) this.setViewDirection(region)
   }
 
   private createLights(): THREE.Light[] {
@@ -81,9 +119,34 @@ export class ModelViewer {
 
   private animate(): void {
     if (this.disposed) return
-    this.controls.update()
+    if (this.viewTween) this.advanceViewTween()
+    else this.controls.update()
     this.renderer.render(this.scene, this.camera)
+    // The gizmo mirrors whatever orientation the main camera ends up at this frame, whether
+    // that came from user orbit input or an in-progress/just-applied view-snap tween.
+    this.viewCube.syncOrientation(this.camera, this.controls.target)
+    this.viewCube.render()
     this.rafHandle = requestAnimationFrame(this.animate)
+  }
+
+  /** Advances the in-flight `setViewDirection` tween (if any) by one frame: lerps camera
+   *  position/up toward the target, re-derives the look-at, then lets OrbitControls resync its
+   *  internal spherical state from the position we just set so damping/orbit behave normally
+   *  once the tween finishes. Clears the tween once it reaches t=1. */
+  private advanceViewTween(): void {
+    const tween = this.viewTween
+    if (!tween) return
+
+    const elapsed = performance.now() - tween.startTime
+    const t = Math.min(elapsed / VIEW_TWEEN_MS, 1)
+    const eased = easeInOutCubic(t)
+
+    this.camera.position.lerpVectors(tween.fromPosition, tween.toPosition, eased)
+    this.camera.up.lerpVectors(tween.fromUp, tween.toUp, eased).normalize()
+    this.camera.lookAt(this.controls.target)
+    this.controls.update()
+
+    if (t >= 1) this.viewTween = null
   }
 
   private handleResize(): void {
@@ -103,8 +166,17 @@ export class ModelViewer {
     const loader = new STLLoader()
     const geometry = loader.parse(buffer)
     geometry.computeVertexNormals()
-    geometry.computeBoundingSphere()
     geometry.computeBoundingBox()
+
+    // Align the part's minimum corner with the XYZ origin so it rests on the grid and lines up
+    // with the axes gizmo, extending into the +X/+Y/+Z octant. Baked into the geometry (not the
+    // mesh transform) so world coords still equal geometry-local coords, which the selection and
+    // measurement tools assume. `translate` -> `applyMatrix4` recomputes the bounding box/sphere.
+    const bounds = geometry.boundingBox
+    if (bounds) {
+      geometry.translate(-bounds.min.x, -bounds.min.y, -bounds.min.z)
+    }
+    geometry.computeBoundingSphere()
 
     const material = new THREE.MeshStandardMaterial({
       color: MODEL_COLOR,
@@ -244,6 +316,35 @@ export class ModelViewer {
     if (this.mesh) (this.mesh.material as THREE.MeshStandardMaterial).wireframe = enabled
   }
 
+  /**
+   * Animates the main camera so its view direction becomes `dir`, as if orbited there by hand:
+   * `controls.target` and the current distance-to-target are both preserved, only the camera's
+   * position (and, for the straight-up/down cases, its up-vector) change. Driven by `animate()`
+   * over `VIEW_TWEEN_MS`; calling this again mid-tween replaces the in-flight one rather than
+   * stacking, so rapid ViewCube clicks always animate toward the latest click.
+   */
+  setViewDirection(dir: [number, number, number] | THREE.Vector3): void {
+    const raw: ViewRegion = dir instanceof THREE.Vector3 ? [dir.x, dir.y, dir.z] : dir
+    const direction = new THREE.Vector3(raw[0], raw[1], raw[2])
+    if (direction.lengthSq() === 0) return
+    direction.normalize()
+
+    const target = this.controls.target
+    const distance = this.camera.position.distanceTo(target)
+    const toPosition = target.clone().addScaledVector(direction, distance)
+
+    const axisSigns = raw.map((component) => Math.sign(component)) as ViewRegion
+    const [upX, upY, upZ] = upForDirection(axisSigns)
+
+    this.viewTween = {
+      fromPosition: this.camera.position.clone(),
+      toPosition,
+      fromUp: this.camera.up.clone(),
+      toUp: new THREE.Vector3(upX, upY, upZ),
+      startTime: performance.now()
+    }
+  }
+
   /** Tears down the renderer, controls, and observers. The instance is unusable after this. */
   dispose(): void {
     if (this.disposed) return
@@ -256,6 +357,8 @@ export class ModelViewer {
       this.axesHelper.geometry.dispose()
       ;(this.axesHelper.material as THREE.Material).dispose()
     }
+    this.viewCube.getDomElement().removeEventListener('pointerdown', this.handleViewCubePointerDown)
+    this.viewCube.dispose()
     this.controls.dispose()
     this.renderer.dispose()
 

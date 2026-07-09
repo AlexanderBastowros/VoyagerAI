@@ -105,6 +105,19 @@ export function createDisplayModelTool(
         )
       }
 
+      // The script must exist on disk: `recordIteration` snapshots it into a version-locked copy,
+      // so a missing script would fail the copy. Check here to give the agent a clear, actionable
+      // error rather than an opaque filesystem throw.
+      let scriptStat
+      try {
+        scriptStat = await stat(script.path.abs)
+      } catch {
+        return textResult(`script_path "${args.script_path}" does not exist.`, true)
+      }
+      if (!scriptStat.isFile()) {
+        return textResult(`script_path "${args.script_path}" is not a file.`, true)
+      }
+
       const buffer = await readFile(stl.path.abs)
       const iteration = await deps.projectStore.recordIteration({
         stlPath: stl.path.rel,

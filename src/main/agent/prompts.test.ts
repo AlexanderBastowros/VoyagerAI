@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { buildUserMessage, formatSelectionContext, systemPromptAppend } from './prompts'
+import { buildUserMessage, formatRevertContext, formatSelectionContext, systemPromptAppend } from './prompts'
 import type { ChatAttachment, SelectionSummary } from '../../shared/ipc'
+import type { ProjectIteration } from '../projects/store'
 
 const selection: SelectionSummary = {
   bboxMin: [1.234567, -2, 0],
@@ -22,6 +23,39 @@ describe('formatSelectionContext', () => {
 
   it('marks the block as machine-generated, not user-typed', () => {
     expect(formatSelectionContext(selection)).toMatch(/not typed by the user/i)
+  })
+})
+
+function iteration(overrides: Partial<ProjectIteration> = {}): ProjectIteration {
+  return {
+    n: 2,
+    stlPath: 'outputs/part_v2.stl',
+    scriptPath: 'outputs/part_v2.py',
+    scriptSnapshotPath: 'outputs/versions/v2.py',
+    summary: 'v2',
+    at: '2024-01-01T00:00:00.000Z',
+    ...overrides
+  }
+}
+
+describe('formatRevertContext', () => {
+  it('names the reverted version and its snapshot script, and marks the block machine-generated', () => {
+    const block = formatRevertContext(iteration(), 5)
+    expect(block).toContain('reverted to model v2')
+    expect(block).toContain('`outputs/versions/v2.py`')
+    expect(block).toMatch(/not typed by the user/i)
+  })
+
+  it('lists the superseded range of later versions', () => {
+    expect(formatRevertContext(iteration({ n: 2 }), 5)).toContain('v3-v5')
+    // A single superseding version reads as just that version, not a range.
+    expect(formatRevertContext(iteration({ n: 2 }), 3)).toContain('v3')
+    expect(formatRevertContext(iteration({ n: 2 }), 3)).not.toContain('v3-')
+  })
+
+  it('falls back to scriptPath when a pre-snapshot record has no scriptSnapshotPath', () => {
+    const block = formatRevertContext(iteration({ scriptSnapshotPath: undefined }), 3)
+    expect(block).toContain('`outputs/part_v2.py`')
   })
 })
 
@@ -66,6 +100,22 @@ describe('buildUserMessage', () => {
     expect(blocks.at(-1)?.type).toBe('text')
     expect(blocks.at(-1)?.text).toContain('Selected region')
   })
+
+  it('appends the revert context after the text', () => {
+    const revert = formatRevertContext(iteration(), 5)
+    const message = buildUserMessage('make the base thicker', null, undefined, revert) as string
+    expect(message.startsWith('make the base thicker\n\n')).toBe(true)
+    expect(message).toContain('Reverted model')
+  })
+
+  it('includes both selection and revert blocks when both are present', () => {
+    const revert = formatRevertContext(iteration(), 5)
+    const message = buildUserMessage('tweak this', selection, undefined, revert) as string
+    expect(message).toContain('Selected region')
+    expect(message).toContain('Reverted model')
+    // Selection block comes before revert block.
+    expect(message.indexOf('Selected region')).toBeLessThan(message.indexOf('Reverted model'))
+  })
 })
 
 describe('systemPromptAppend', () => {
@@ -81,5 +131,11 @@ describe('systemPromptAppend', () => {
   it('instructs the agent to call recommend_print_settings when the user asks for print settings', () => {
     const prompt = systemPromptAppend('/tmp/project')
     expect(prompt).toContain('recommend_print_settings')
+  })
+
+  it('documents the per-version script snapshots and the reverted-model rebase behavior', () => {
+    const prompt = systemPromptAppend('/tmp/project')
+    expect(prompt).toContain('outputs/versions/vN.py')
+    expect(prompt).toContain('Reverted model')
   })
 })

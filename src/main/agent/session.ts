@@ -16,7 +16,7 @@ import type { ProjectStore } from '../projects/store'
 import { createVoyagerMcpServer } from './mcpTools'
 import type { VoyagerMcpEmission } from './mcpTools'
 import { decideToolPermission } from './permissions'
-import { buildUserMessage, systemPromptAppend } from './prompts'
+import { buildUserMessage, formatRevertContext, systemPromptAppend } from './prompts'
 
 /** Denial message returned to Claude on a declined/timed-out/aborted approval request - steers it
  *  toward the always-allowed path (./outputs/ inside the project dir) instead of retrying blindly. */
@@ -149,47 +149,86 @@ export interface Translation {
   turnComplete?: boolean
 }
 
-/** Human-readable one-liner for a tool_use block, shown as chat activity. */
-export function humanizeToolUse(name: string, input: Record<string, unknown>): string | null {
+/** Structured description of a tool_use block for the chat activity stream. */
+export interface ToolActivity {
+  /** Concise one-liner shown in normal mode. */
+  detail: string
+  /** True for bookkeeping tools that are emitted but hidden unless "full stream" is on. */
+  routine: boolean
+  /** Truncated, stringified tool input — shown only in "full stream" mode. */
+  args?: string
+}
+
+/** Stringified tool input, clamped so a single activity payload stays small. Returns `undefined`
+ *  for empty input so callers can omit the field entirely. */
+export function truncateArgs(input: Record<string, unknown>, max = 500): string | undefined {
+  if (!input || Object.keys(input).length === 0) return undefined
+  let json: string
+  try {
+    json = JSON.stringify(input)
+  } catch {
+    return undefined // circular / non-serializable input - nothing useful to show
+  }
+  return json.length > max ? `${json.slice(0, max)}…` : json
+}
+
+/**
+ * Human-readable description of a tool_use block, shown as chat activity.
+ * Returns `null` only for tools that should never produce a line (their own
+ * handler emits better text); `routine: true` marks lines hidden unless the
+ * user has turned on the "full stream" toggle.
+ */
+export function humanizeToolUse(name: string, input: Record<string, unknown>): ToolActivity | null {
   const str = (key: string): string | null => (typeof input[key] === 'string' ? (input[key] as string) : null)
   const base = (path: string): string => path.split('/').pop() ?? path
+  const activity = (detail: string, routine = false): ToolActivity => ({
+    detail,
+    routine,
+    args: truncateArgs(input)
+  })
 
   switch (name) {
     case 'Bash': {
       const description = str('description')
-      if (description) return description
+      if (description) return activity(description)
       const command = str('command')
-      return command ? `Running: ${command.length > 60 ? `${command.slice(0, 60)}…` : command}` : 'Running a command'
+      return activity(
+        command ? `Running: ${command.length > 60 ? `${command.slice(0, 60)}…` : command}` : 'Running a command'
+      )
     }
     case 'Write': {
       const file = str('file_path')
-      return file ? `Writing ${base(file)}` : 'Writing a file'
+      return activity(file ? `Writing ${base(file)}` : 'Writing a file')
     }
     case 'Edit': {
       const file = str('file_path')
-      return file ? `Editing ${base(file)}` : 'Editing a file'
+      return activity(file ? `Editing ${base(file)}` : 'Editing a file')
     }
     case 'Read': {
       const file = str('file_path')
-      return file ? `Reading ${base(file)}` : 'Reading a file'
+      return activity(file ? `Reading ${base(file)}` : 'Reading a file')
     }
     case 'Skill': {
       const skill = str('skill')
-      return skill ? `Using the ${skill} skill` : 'Loading a skill'
+      return activity(skill ? `Using the ${skill} skill` : 'Loading a skill')
     }
     case 'Glob':
     case 'Grep':
-      return 'Searching project files'
+      return activity('Searching project files')
     case 'TodoWrite':
-      return null // internal bookkeeping - not worth a chat line
+      return activity('Updating its task list', true) // bookkeeping - hidden unless full stream
     case 'mcp__voyager__display_model':
-      return 'Displaying the model in the viewport'
+      return activity('Displaying the model in the viewport')
     case 'mcp__voyager__recommend_print_settings':
-      return 'Recommending print settings'
+      return activity('Recommending print settings')
     case 'mcp__voyager__set_status':
       return null // the tool handler itself emits the (better) status text
+    case 'AskUserQuestion':
+      // Denied by policy (see decideToolPermission); Claude re-asks in prose,
+      // so a "Using AskUserQuestion" line would just be confusing noise.
+      return null
     default:
-      return `Using ${name}`
+      return activity(`Using ${name}`)
   }
 }
 
@@ -232,9 +271,16 @@ export function translateSdkMessage(
       const events: AgentEvent[] = []
       for (const block of message.message.content) {
         if (block.type === 'tool_use') {
-          const detail = humanizeToolUse(block.name, (block.input ?? {}) as Record<string, unknown>)
-          if (detail) {
-            events.push({ type: 'tool-activity', messageId, toolName: block.name, detail })
+          const activity = humanizeToolUse(block.name, (block.input ?? {}) as Record<string, unknown>)
+          if (activity) {
+            events.push({
+              type: 'tool-activity',
+              messageId,
+              toolName: block.name,
+              detail: activity.detail,
+              routine: activity.routine,
+              args: activity.args
+            })
           }
         }
       }
@@ -324,6 +370,10 @@ export class AgentSession {
       // echo the input back.
       if (decision.kind === 'allow') return { behavior: 'allow', updatedInput: input }
 
+      // Denied outright (e.g. AskUserQuestion) - block without an approval card;
+      // the message steers Claude toward a supported path instead of stalling.
+      if (decision.kind === 'deny') return { behavior: 'deny', message: decision.message }
+
       this.approvalSeq += 1
       const requestId = `perm-${this.turn}-${this.approvalSeq}`
 
@@ -396,9 +446,23 @@ export class AgentSession {
       })
       .catch(() => {})
 
+    // If the user is sitting on a reverted (older) version - active pointer behind the latest
+    // recorded iteration - inject a "Reverted model" block so the agent branches from that
+    // version's snapshotted script rather than the later versions it produced. Stateless: once the
+    // agent regenerates, `recordIteration` sets activeIteration == latest and this stops injecting.
+    const [active, latest] = await Promise.all([
+      this.deps.projectStore.activeIterationRecord(),
+      this.deps.projectStore.latestIteration()
+    ])
+    const revertContext =
+      active && latest && active.n < latest.n ? formatRevertContext(active, latest.n) : null
+
     this.queue?.push({
       type: 'user',
-      message: { role: 'user', content: buildUserMessage(text, selectionContext, attachments) },
+      message: {
+        role: 'user',
+        content: buildUserMessage(text, selectionContext, attachments, revertContext)
+      },
       parent_tool_use_id: null
     })
 

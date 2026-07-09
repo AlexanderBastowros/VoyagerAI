@@ -1,6 +1,31 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import { useAppStore } from './appStore'
 import type { PrintSettings, SelectionSummary } from '../../../shared/ipc'
+
+// The renderer tests run under vitest's `node` environment, which has no DOM/localStorage.
+// Install a tiny in-memory stand-in before importing the store so its persisted `fullStream`
+// preference (read on module load, written on toggle) has something to talk to.
+const localStorageMock = ((): Storage => {
+  let store: Record<string, string> = {}
+  return {
+    getItem: (key) => (key in store ? store[key] : null),
+    setItem: (key, value) => {
+      store[key] = String(value)
+    },
+    removeItem: (key) => {
+      delete store[key]
+    },
+    clear: () => {
+      store = {}
+    },
+    key: () => null,
+    get length() {
+      return Object.keys(store).length
+    }
+  } as Storage
+})()
+globalThis.localStorage = localStorageMock
+
+const { useAppStore } = await import('./appStore')
 
 function resetStore(): void {
   useAppStore.setState({
@@ -18,6 +43,7 @@ function resetStore(): void {
     measurement: null,
     showAxes: true,
     wireframe: false,
+    fullStream: false,
     pendingPermission: null,
     thinkingText: '',
     setupStatus: {
@@ -211,6 +237,51 @@ describe('appStore', () => {
 
     expect(useAppStore.getState().showAxes).toBe(false)
     expect(useAppStore.getState().wireframe).toBe(true)
+  })
+
+  it('toggles fullStream and persists it to localStorage', () => {
+    expect(useAppStore.getState().fullStream).toBe(false)
+
+    useAppStore.getState().setFullStream(true)
+    expect(useAppStore.getState().fullStream).toBe(true)
+    expect(localStorage.getItem('voyager.fullStream')).toBe('true')
+
+    useAppStore.getState().setFullStream(false)
+    expect(useAppStore.getState().fullStream).toBe(false)
+    expect(localStorage.getItem('voyager.fullStream')).toBe('false')
+  })
+
+  it('records tool-activity as a system-status row carrying tool metadata', () => {
+    useAppStore.getState().applyAgentEvent({
+      type: 'tool-activity',
+      messageId: 'turn-1',
+      toolName: 'TodoWrite',
+      detail: 'Updating its task list',
+      routine: true,
+      args: '{"todos":[]}'
+    })
+
+    const row = useAppStore.getState().messages.at(-1)
+    expect(row).toMatchObject({
+      role: 'system-status',
+      text: 'Updating its task list',
+      toolName: 'TodoWrite',
+      routine: true,
+      args: '{"todos":[]}'
+    })
+  })
+
+  it('collapses consecutive duplicate tool-activity lines', () => {
+    const activity = {
+      type: 'tool-activity' as const,
+      messageId: 'turn-1',
+      toolName: 'Bash',
+      detail: 'Running the parametric script'
+    }
+    useAppStore.getState().applyAgentEvent(activity)
+    useAppStore.getState().applyAgentEvent(activity)
+
+    expect(useAppStore.getState().messages).toHaveLength(1)
   })
 
   it('sets and clears the pending permission request', () => {

@@ -11,12 +11,14 @@ import Paper from '@mui/material/Paper'
 import Select from '@mui/material/Select'
 import Stack from '@mui/material/Stack'
 import TextField from '@mui/material/TextField'
+import ToggleButton from '@mui/material/ToggleButton'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import AttachFileIcon from '@mui/icons-material/AttachFile'
 import HighlightAltIcon from '@mui/icons-material/HighlightAlt'
 import SendIcon from '@mui/icons-material/Send'
 import StopIcon from '@mui/icons-material/Stop'
+import ViewStreamIcon from '@mui/icons-material/ViewStream'
 import { useAppStore } from '../state/appStore'
 import type { ChatMessage } from '../state/appStore'
 import type { AgentEffort, AgentModel, AgentSettings, ChatAttachment } from '../../../shared/ipc'
@@ -45,7 +47,7 @@ const EFFORT_OPTIONS: Array<{ value: AgentEffort; label: string }> = [
  *  a value the agent would have to silently drop. */
 const EFFORT_UNSUPPORTED_MODELS = new Set<AgentModel>(['claude-haiku-4-5'])
 
-const compactSelectSx = { fontSize: 11, maxWidth: 140, '& .MuiSelect-select': { py: 0.5 } }
+const compactSelectSx = { fontSize: 11, minWidth: 0, maxWidth: 128, '& .MuiSelect-select': { py: 0.5 } }
 
 /** Reads an image `File` into a `ChatAttachment` (base64, no `data:` prefix). Resolves `null`
  *  for a file type the Anthropic API doesn't accept as an image block, so callers can filter it out. */
@@ -84,8 +86,14 @@ const ChatMessageRow = memo(function ChatMessageRow({
   message
 }: {
   message: ChatMessage
-}): React.JSX.Element {
+}): React.JSX.Element | null {
+  // Subscribed here (not passed as a prop) so flipping the toggle re-renders
+  // existing rows past the `memo(message)` guard.
+  const fullStream = useAppStore((state) => state.fullStream)
+  // Bookkeeping activity (e.g. task-list updates) is only shown in full-stream mode.
+  if (message.role === 'system-status' && message.routine && !fullStream) return null
   const textClassName = message.streaming ? 'chat-message-text streaming' : 'chat-message-text'
+  const showArgs = fullStream && message.role === 'system-status' && Boolean(message.args)
   return (
     <Paper
       variant="outlined"
@@ -117,6 +125,21 @@ const ChatMessageRow = memo(function ChatMessageRow({
           {message.streaming && <span className="chat-message-cursor">|</span>}
         </Box>
       )}
+      {showArgs && (
+        <Box
+          sx={{
+            mt: 0.5,
+            fontFamily: 'monospace',
+            fontSize: 10.5,
+            color: 'text.disabled',
+            fontStyle: 'normal',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-all'
+          }}
+        >
+          {message.args}
+        </Box>
+      )}
     </Paper>
   )
 })
@@ -134,6 +157,8 @@ export function ChatPanel(): React.JSX.Element {
   const thinkingText = useAppStore((state) => state.thinkingText)
   const agentSettings = useAppStore((state) => state.agentSettings)
   const setAgentSettings = useAppStore((state) => state.setAgentSettings)
+  const fullStream = useAppStore((state) => state.fullStream)
+  const setFullStream = useAppStore((state) => state.setFullStream)
   const activeProjectId = useAppStore((state) => state.activeProjectId)
   const projects = useAppStore((state) => state.projects)
   const [draft, setDraft] = useState('')
@@ -155,10 +180,12 @@ export function ChatPanel(): React.JSX.Element {
     }
   }
 
-  // Rolling last-5-lines window of the current turn's thinking text. Trim
-  // trailing whitespace first so a trailing newline doesn't count as a blank
-  // 6th line and push a real line off the top.
-  const thinkingLines = thinkingText.trimEnd().split('\n').slice(-5).join('\n')
+  // In full-stream mode show the complete thinking text (in a scrollable box);
+  // otherwise a rolling last-5-lines window. Trim trailing whitespace first so
+  // a trailing newline doesn't count as a blank 6th line and push a real line
+  // off the top of the window.
+  const trimmedThinking = thinkingText.trimEnd()
+  const thinkingDisplay = fullStream ? trimmedThinking : trimmedThinking.split('\n').slice(-5).join('\n')
 
   // Input unlocks once all three setup checks (CLI, sign-in, Python env) are
   // ready, and re-locks while Claude is working on a turn.
@@ -329,6 +356,30 @@ export function ChatPanel(): React.JSX.Element {
               </Select>
             </span>
           </Tooltip>
+          <Tooltip title={`Full stream: ${fullStream ? 'on' : 'off'} — show all of Voyager's background activity (tool calls, inputs, and full thinking)`}>
+            <ToggleButton
+              value="fullStream"
+              size="small"
+              selected={fullStream}
+              onChange={() => setFullStream(!fullStream)}
+              aria-label="Full stream"
+              sx={{
+                flexShrink: 0,
+                p: 0.5,
+                color: 'text.secondary',
+                borderColor: colors.borderStrong,
+                '& .MuiSvgIcon-root': { fontSize: 18 },
+                '&.Mui-selected': {
+                  color: colors.onAccent,
+                  bgcolor: colors.accent,
+                  borderColor: colors.accent,
+                  '&:hover': { bgcolor: colors.accent }
+                }
+              }}
+            >
+              <ViewStreamIcon />
+            </ToggleButton>
+          </Tooltip>
         </Stack>
       </Stack>
       <Stack spacing={1.25} sx={{ flex: 1, overflowY: 'auto', p: 1.5 }}>
@@ -341,7 +392,7 @@ export function ChatPanel(): React.JSX.Element {
         {messages.map((message) => (
           <ChatMessageRow key={message.id} message={message} />
         ))}
-        {thinkingLines.length > 0 && (
+        {thinkingDisplay.length > 0 && (
           <Box
             sx={{
               color: 'text.disabled',
@@ -351,13 +402,19 @@ export function ChatPanel(): React.JSX.Element {
               px: 1,
               whiteSpace: 'pre-wrap',
               fontStyle: 'italic',
-              maxHeight: 'calc(1.4em * 5)',
-              overflow: 'hidden',
-              maskImage: 'linear-gradient(to bottom, transparent, #000 1.4em)',
-              WebkitMaskImage: 'linear-gradient(to bottom, transparent, #000 1.4em)'
+              // Full-stream: the whole thinking transcript in a scrollable box.
+              // Otherwise: the last-5-lines window, faded in at the top.
+              ...(fullStream
+                ? { maxHeight: 240, overflowY: 'auto' }
+                : {
+                    maxHeight: 'calc(1.4em * 5)',
+                    overflow: 'hidden',
+                    maskImage: 'linear-gradient(to bottom, transparent, #000 1.4em)',
+                    WebkitMaskImage: 'linear-gradient(to bottom, transparent, #000 1.4em)'
+                  })
             }}
           >
-            {thinkingLines}
+            {thinkingDisplay}
           </Box>
         )}
         {agentBusy && (

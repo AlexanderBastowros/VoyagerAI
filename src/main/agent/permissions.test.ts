@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { decideToolPermission } from './permissions'
+import { ASK_USER_QUESTION_STEER, decideToolPermission } from './permissions'
 
 const PROJECT_DIR = '/home/voyager/projects/current'
 
@@ -65,6 +65,13 @@ describe('decideToolPermission', () => {
     expect(decideToolPermission('mcp__voyager__display_model', {}, PROJECT_DIR)).toEqual({ kind: 'allow' })
     expect(decideToolPermission('mcp__voyager__set_status', {}, PROJECT_DIR)).toEqual({ kind: 'allow' })
     expect(decideToolPermission('mcp__voyager__anything_future', {}, PROJECT_DIR)).toEqual({ kind: 'allow' })
+  })
+
+  it('denies AskUserQuestion outright with the prose steer message', () => {
+    // Allowing it would hang the turn: the built-in picker has no answer
+    // channel in this headless SDK setup (see ASK_USER_QUESTION_STEER).
+    const decision = decideToolPermission('AskUserQuestion', { questions: [] }, PROJECT_DIR)
+    expect(decision).toEqual({ kind: 'deny', message: ASK_USER_QUESTION_STEER })
   })
 
   it('asks for an unrecognized tool name', () => {

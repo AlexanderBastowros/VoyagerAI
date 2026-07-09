@@ -23,6 +23,20 @@ function makeStore(): ProjectStore {
   return new ProjectStore({ baseDir: join(scratch, 'projects'), skillSourceDir: skillSource })
 }
 
+/**
+ * `recordIteration` now snapshots the generating script, so the source `.py` must exist on disk.
+ * This writes it (with distinctive contents, so snapshot fidelity can be asserted) into the active
+ * project's outputs dir before recording. Mirrors what the agent + `display_model` guarantee in
+ * production.
+ */
+async function recordScript(
+  store: ProjectStore,
+  entry: { stlPath: string; stepPath?: string; scriptPath: string; summary: string }
+): Promise<ReturnType<ProjectStore['recordIteration']>> {
+  await writeFile(join(store.getProjectDir(), entry.scriptPath), `# source of ${entry.scriptPath}`)
+  return store.recordIteration(entry)
+}
+
 describe('ProjectStore.ensureProject', () => {
   it('creates the project dir, outputs/, a full skill copy, and project.json', async () => {
     const store = makeStore()
@@ -57,12 +71,12 @@ describe('ProjectStore.recordIteration', () => {
     const store = makeStore()
     await store.ensureProject()
 
-    const first = await store.recordIteration({
+    const first = await recordScript(store, {
       stlPath: 'outputs/part_v1.stl',
       scriptPath: 'outputs/part_v1.py',
       summary: 'first'
     })
-    const second = await store.recordIteration({
+    const second = await recordScript(store, {
       stlPath: 'outputs/part_v2.stl',
       stepPath: 'outputs/part_v2.step',
       scriptPath: 'outputs/part_v2.py',
@@ -84,14 +98,14 @@ describe('ProjectStore R4 version history', () => {
     const store = makeStore()
     await store.ensureProject()
 
-    const first = await store.recordIteration({
+    const first = await recordScript(store, {
       stlPath: 'outputs/part_v1.stl',
       scriptPath: 'outputs/part_v1.py',
       summary: 'first'
     })
     expect((await store.activeIterationRecord())?.n).toBe(first.n)
 
-    const second = await store.recordIteration({
+    const second = await recordScript(store, {
       stlPath: 'outputs/part_v2.stl',
       scriptPath: 'outputs/part_v2.py',
       summary: 'second'
@@ -104,8 +118,8 @@ describe('ProjectStore R4 version history', () => {
     await store.ensureProject()
     expect(await store.activeIterationRecord()).toBeNull()
 
-    await store.recordIteration({ stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
-    const second = await store.recordIteration({ stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
+    await recordScript(store, { stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    const second = await recordScript(store, { stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
 
     expect((await store.activeIterationRecord())?.n).toBe(second.n)
   })
@@ -113,8 +127,8 @@ describe('ProjectStore R4 version history', () => {
   it('listIterations returns every recorded iteration, oldest first, as a copy', async () => {
     const store = makeStore()
     await store.ensureProject()
-    await store.recordIteration({ stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
-    await store.recordIteration({ stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
+    await recordScript(store, { stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    await recordScript(store, { stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
 
     const listed = await store.listIterations()
     expect(listed.map((it) => it.n)).toEqual([1, 2])
@@ -126,8 +140,8 @@ describe('ProjectStore R4 version history', () => {
   it('revertTo points activeIteration at an earlier version without touching the iterations array', async () => {
     const store = makeStore()
     await store.ensureProject()
-    const first = await store.recordIteration({ stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
-    await store.recordIteration({ stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
+    const first = await recordScript(store, { stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    await recordScript(store, { stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
 
     const reverted = await store.revertTo(first.n)
     expect(reverted.n).toBe(first.n)
@@ -140,14 +154,14 @@ describe('ProjectStore R4 version history', () => {
     expect((await reloaded.activeIterationRecord())?.n).toBe(first.n)
 
     // A further generation supersedes the reverted-to version and becomes active again.
-    const third = await store.recordIteration({ stlPath: 'outputs/a_v3.stl', scriptPath: 'outputs/a_v3.py', summary: 'v3' })
+    const third = await recordScript(store, { stlPath: 'outputs/a_v3.stl', scriptPath: 'outputs/a_v3.py', summary: 'v3' })
     expect((await store.activeIterationRecord())?.n).toBe(third.n)
   })
 
   it('revertTo throws for an unknown iteration number', async () => {
     const store = makeStore()
     await store.ensureProject()
-    await store.recordIteration({ stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    await recordScript(store, { stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
 
     await expect(store.revertTo(99)).rejects.toThrow(/Unknown iteration/)
   })
@@ -173,6 +187,60 @@ describe('ProjectStore R4 version history', () => {
     const store = makeStore()
     await store.ensureProject()
     expect((await store.activeIterationRecord())?.n).toBe(2)
+  })
+})
+
+describe('ProjectStore per-version script snapshots', () => {
+  it('snapshots the generating script to outputs/versions/vN.py and records its path', async () => {
+    const store = makeStore()
+    const { dir } = await store.ensureProject()
+
+    const first = await recordScript(store, {
+      stlPath: 'outputs/part_v1.stl',
+      scriptPath: 'outputs/part_v1.py',
+      summary: 'v1'
+    })
+
+    expect(first.scriptSnapshotPath).toBe('outputs/versions/v1.py')
+    // The snapshot is a faithful copy of the source script the agent wrote.
+    expect(await readFile(join(dir, 'outputs', 'versions', 'v1.py'), 'utf-8')).toBe(
+      '# source of outputs/part_v1.py'
+    )
+    // Persisted on the iteration record across reloads.
+    const reloaded = makeStore()
+    expect((await reloaded.latestIteration())?.scriptSnapshotPath).toBe('outputs/versions/v1.py')
+  })
+
+  it('gives each iteration its own snapshot without overwriting earlier ones', async () => {
+    const store = makeStore()
+    const { dir } = await store.ensureProject()
+
+    await recordScript(store, { stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    await recordScript(store, { stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
+
+    expect(await readFile(join(dir, 'outputs', 'versions', 'v1.py'), 'utf-8')).toBe('# source of outputs/a_v1.py')
+    expect(await readFile(join(dir, 'outputs', 'versions', 'v2.py'), 'utf-8')).toBe('# source of outputs/a_v2.py')
+  })
+
+  it('leaves earlier snapshots intact after a revert', async () => {
+    const store = makeStore()
+    const { dir } = await store.ensureProject()
+
+    const first = await recordScript(store, { stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    await recordScript(store, { stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
+    await store.revertTo(first.n)
+
+    expect(await readFile(join(dir, 'outputs', 'versions', 'v1.py'), 'utf-8')).toBe('# source of outputs/a_v1.py')
+    expect(await readFile(join(dir, 'outputs', 'versions', 'v2.py'), 'utf-8')).toBe('# source of outputs/a_v2.py')
+  })
+
+  it('throws if the source script is missing, so display_model surfaces the error', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    // Call recordIteration directly (bypassing the recordScript helper) with no source file on disk.
+    await expect(
+      store.recordIteration({ stlPath: 'outputs/x_v1.stl', scriptPath: 'outputs/missing.py', summary: 'x' })
+    ).rejects.toThrow()
   })
 })
 
@@ -278,7 +346,7 @@ describe('ProjectStore.getChatHistory', () => {
     await store.ensureProject()
 
     await store.appendMessage({ id: 'm1', role: 'user', text: 'hello', createdAt: '2024-01-01T00:00:00.000Z' })
-    await store.recordIteration({ stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'first' })
+    await recordScript(store, { stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'first' })
     // recordIteration timestamps with the real current time internally - placing this second
     // message far in the future keeps the expected sort order deterministic either way.
     await store.appendMessage({ id: 'm2', role: 'assistant', text: 'done', createdAt: '2999-01-01T00:00:00.000Z' })

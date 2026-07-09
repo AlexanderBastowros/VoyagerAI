@@ -90,6 +90,21 @@ describe('display_model tool', () => {
     expect(emissions).toHaveLength(0)
   })
 
+  it('errors when the STL is valid but the script is missing, without recording', async () => {
+    await writeFile(join(projectDir, 'outputs', 'part_v1.stl'), fakeStlBytes())
+    // No part_v1.py written.
+
+    const handler = createDisplayModelTool(deps()).handler
+    const result = await handler(
+      { stl_path: 'outputs/part_v1.stl', step_path: undefined, script_path: 'outputs/part_v1.py', summary: 's' },
+      {}
+    )
+
+    expect(result.isError).toBe(true)
+    expect(recorded).toHaveLength(0)
+    expect(emissions).toHaveLength(0)
+  })
+
   it('records the iteration and emits the STL bytes for a valid export', async () => {
     await writeFile(join(projectDir, 'outputs', 'part_v1.stl'), fakeStlBytes())
     await writeFile(join(projectDir, 'outputs', 'part_v1.py'), '# script')

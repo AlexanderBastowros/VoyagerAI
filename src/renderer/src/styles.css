@@ -33,6 +33,18 @@
   -webkit-app-region: no-drag;
 }
 
+/* ViewCube orientation gizmo canvas (three/viewCube.ts), appended directly into the Viewport
+   container by ModelViewer - top-right corner, clear of the top-left ViewportControls toolbar. */
+.view-cube {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 96px;
+  height: 96px;
+  cursor: pointer;
+  z-index: 6;
+}
+
 /* ---------------------------------------------------------------------- */
 /* Rendered markdown (assistant messages)                                 */
 /* ---------------------------------------------------------------------- */

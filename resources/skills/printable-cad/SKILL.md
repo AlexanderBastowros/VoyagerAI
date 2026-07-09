@@ -181,6 +181,13 @@ box, centroid, and size in model coordinates (mm). Use it together with your par
 script to identify which feature they mean, and confirm your interpretation ("that's
 the left mounting hole — correct?") before regenerating if there's any ambiguity.
 
+Every displayed version is also snapshotted by Voyager to `./outputs/versions/vN.py` (an
+exact copy of the script that produced version N). If the user reverts to an earlier
+version, their next message will include a machine-generated "Reverted model" context
+block naming that version and its snapshot script. Treat that script as the current
+source of truth — copy it forward to the next `<part>_vN.py` and modify that, rather than
+continuing from a later version you generated earlier.
+
 Print settings (below) are an optional follow-up step once the user is happy with the model —
 don't volunteer them unasked.
 

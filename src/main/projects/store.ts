@@ -1,4 +1,4 @@
-import { cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { copyFile, cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import type { AgentSettings, PersistedMessage, ProjectSummary } from '../../shared/ipc'
@@ -13,6 +13,15 @@ export interface ProjectIteration {
   stlPath: string
   stepPath?: string
   scriptPath: string
+  /**
+   * App-controlled, version-locked copy of the generating script (e.g. `outputs/versions/v3.py`),
+   * made by `recordIteration()` at the moment the STL is displayed. Unlike `scriptPath` (the
+   * agent-written `<part>_vN.py`, which the agent could in principle reuse or edit in place), this
+   * snapshot is guaranteed to correspond to this iteration's STL - so reverting can rebase the
+   * agent onto the exact script that produced the model. Optional so `project.json` files written
+   * before this field existed still parse; readers fall back to `scriptPath`.
+   */
+  scriptSnapshotPath?: string
   summary: string
   at: string
 }
@@ -201,7 +210,15 @@ export class ProjectStore {
   }): Promise<ProjectIteration> {
     const record = await this.requireRecord()
     const n = (record.iterations.at(-1)?.n ?? 0) + 1
-    const iteration: ProjectIteration = { ...entry, n, at: new Date().toISOString() }
+    const dir = this.dirFor(record.id)
+    // Snapshot the generating script into an app-controlled, version-locked file so this
+    // iteration's `.py` can never drift from its STL (the agent's own `<part>_vN.py` is only
+    // convention). Forward-slash relative path to match how every other path in project.json is
+    // stored. Throwing on a failed copy surfaces a clear error to the agent via `display_model`.
+    const scriptSnapshotPath = `outputs/versions/v${n}.py`
+    await mkdir(join(dir, 'outputs', 'versions'), { recursive: true })
+    await copyFile(join(dir, entry.scriptPath), join(dir, scriptSnapshotPath))
+    const iteration: ProjectIteration = { ...entry, scriptSnapshotPath, n, at: new Date().toISOString() }
     record.iterations.push(iteration)
     // A freshly-generated iteration always becomes the active/current one - if the user had
     // reverted to an older version and then asked Voyager to refine further, the new generation

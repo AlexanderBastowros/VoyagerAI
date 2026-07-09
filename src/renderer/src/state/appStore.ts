@@ -25,6 +25,12 @@ export interface ChatMessage {
   streaming?: boolean
   /** Images the user attached when sending this message, if any. */
   attachments?: ChatAttachment[]
+  /** For `system-status` tool-activity rows: the underlying tool name. */
+  toolName?: string
+  /** For `system-status` tool-activity rows: truncated tool input, shown only in full-stream mode. */
+  args?: string
+  /** For `system-status` tool-activity rows: bookkeeping activity, hidden unless full-stream is on. */
+  routine?: boolean
 }
 
 export interface ModelInfo {
@@ -73,6 +79,29 @@ function createMessageId(): string {
   return `msg-${Date.now()}-${messageSequence}`
 }
 
+/** Key for the "full stream" display preference in the renderer's localStorage. This preference
+ *  is global (not per-project) and purely a display concern, so it lives in localStorage rather
+ *  than in `project.json`. */
+const FULL_STREAM_KEY = 'voyager.fullStream'
+
+/** Reads the persisted "full stream" preference. Guarded so the node/jsdom test env (where
+ *  `localStorage` may be absent or throw) falls back to the default rather than crashing. */
+function readFullStream(): boolean {
+  try {
+    return typeof localStorage !== 'undefined' && localStorage.getItem(FULL_STREAM_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+function writeFullStream(value: boolean): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(FULL_STREAM_KEY, String(value))
+  } catch {
+    // Best-effort persistence - a private-mode/quota failure just means the toggle is session-only.
+  }
+}
+
 export interface AppState {
   messages: ChatMessage[]
   model: ModelInfo | null
@@ -107,6 +136,10 @@ export interface AppState {
   showAxes: boolean
   /** True while the displayed model is rendered in wireframe rather than shaded. */
   wireframe: boolean
+  /** When on, the chat streams a fuller view of the agent's background work: bookkeeping
+   *  (`routine`) tool-activity rows, each tool's inputs, and the complete thinking stream.
+   *  Global display preference persisted in localStorage (survives restarts, not per-project). */
+  fullStream: boolean
   /** True from an accepted send until the agent's message-complete/error event. */
   agentBusy: boolean
   /**
@@ -161,6 +194,8 @@ export interface AppState {
   setMeasurement: (measurement: number | null) => void
   setShowAxes: (showAxes: boolean) => void
   setWireframe: (wireframe: boolean) => void
+  /** Toggles the "full stream" display preference and persists it to localStorage. */
+  setFullStream: (fullStream: boolean) => void
   setAgentBusy: (busy: boolean) => void
   /** Sets or clears (pass `null`) the pending approval card. */
   setPendingPermission: (request: PermissionRequestPayload | null) => void
@@ -184,6 +219,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   measurement: null,
   showAxes: true,
   wireframe: false,
+  fullStream: readFullStream(),
   agentBusy: false,
   agentStreamIds: {},
   pendingPermission: null,
@@ -274,6 +310,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   setMeasurement: (measurement) => set({ measurement }),
   setShowAxes: (showAxes) => set({ showAxes }),
   setWireframe: (wireframe) => set({ wireframe }),
+  setFullStream: (fullStream) => {
+    writeFullStream(fullStream)
+    set({ fullStream })
+  },
   setAgentBusy: (agentBusy) => set({ agentBusy }),
   setPendingPermission: (pendingPermission) => set({ pendingPermission }),
 
@@ -296,10 +336,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       case 'tool-activity': {
         // Collapse consecutive duplicates (e.g. repeated Bash "Running the
-        // parametric script" activity) into a single status line.
+        // parametric script" activity) into a single status line. The row
+        // always records the tool metadata; whether `routine` rows show and
+        // `args` expand is decided at render time by the full-stream toggle,
+        // so flipping it re-renders the whole existing transcript live.
         const last = state.messages.at(-1)
         if (last?.role === 'system-status' && last.text === event.detail) return
-        state.addMessage({ role: 'system-status', text: event.detail })
+        state.addMessage({
+          role: 'system-status',
+          text: event.detail,
+          toolName: event.toolName,
+          args: event.args,
+          routine: event.routine
+        })
         return
       }
       case 'message-complete': {
