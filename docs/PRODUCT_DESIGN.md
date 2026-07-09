@@ -253,8 +253,10 @@ script is a trap for the user.
 7. **Make it printable:** bed-fit check against the *user's* profile; if oversized, the
    split-planner proposes cut planes + joint features (dowels/dovetail/screw bosses), each
    piece re-verified for bed fit; print settings on demand (existing tool, kept).
-8. **Export:** STL/STEP/3MF one-offs, or the **graduation package** (§5.5) — geometry +
-   script + brief + parameter manifest in one bundle. The user owns the full stack.
+8. **Export:** per-part STL/STEP/3MF (parts are never silently merged into one file —
+   §5.3), an explicit arranged-plate export, or the **graduation package** (§5.5) —
+   geometry + script + brief + parameter manifest in one bundle. The user owns the full
+   stack.
 
 ### 5.2 The Design Brief panel
 
@@ -263,12 +265,33 @@ AI-inferred — inferred fields render in a distinct style until confirmed), loc
 history, and diffing between brief versions. The brief is exportable/importable (JSON +
 human-readable render) — this is also the B2B seed: a team lead writes briefs, others run them.
 
-### 5.3 Multi-part / split plans
+### 5.3 Multi-part projects, arrangement & split plans
 
-First-class object, not a chat suggestion: a split plan names pieces, cut planes, joint types
-and clearances; each piece gets its own bed-fit validation and appears in the viewport as an
-exploded/assembled toggle. Deterministic checks own "does each piece fit"; the AI owns "where
-should the seams go" (visible surfaces, strength across layer lines).
+Real projects are rarely one body: a box *and* its lid, a gear *pair*, a bracket set. The
+POC's model — a project is one part with one iteration history — merges everything a script
+produces into a single exported file. Production makes **parts first-class**:
+
+- **A project holds parts; each part has its own script lineage, version history, and
+  active iteration.** Everything that works per-project today (immutable iterations,
+  revert, parameter panel) works per-part. Gear pairs (§5.7), split-plan pieces, and
+  imported bases (§5.6) all land naturally as sibling parts. A parts panel lists them with
+  visibility toggles and select/focus.
+- **Arrangement: move parts around the viewport — as layout, never as geometry.** A
+  move/rotate gizmo with ground-snap positions parts relative to each other; placements
+  persist with the project. They're deliberately *not* baked into any script or mesh — the
+  part's geometry stays pristine — but they're more than cosmetic: the AI receives the
+  current arrangement as spatial context ("the lid is sitting 2mm above the box"), and
+  verification runs **cross-part interference/clearance checks on the placed arrangement**.
+  The boundary from §4.5 holds: this is snap-and-transform, not an assembly-constraint
+  solver — no mates, no kinematics, and we say so.
+- **Per-part export — parts are never silently merged.** Each part downloads individually
+  (its active iteration's STL/STEP); "export all" produces *separate files* in one zip; and
+  an explicit **plate export** exists for the one case where merging is the point — baking
+  the current arrangement into a single STL as an arranged build plate.
+- **Split plans** stay first-class objects (pieces, cut planes, joint types/clearances) and
+  now simply *produce parts*: each piece gets its own bed-fit validation, placement, and
+  export. Deterministic checks own "does each piece fit"; the AI owns "where should the
+  seams go" (visible surfaces, strength across layer lines).
 
 ### 5.4 The Verification Report
 

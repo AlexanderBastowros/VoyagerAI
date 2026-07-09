@@ -58,9 +58,10 @@ WS-0a (extract agent-core)          ── single agent, everything else waits
           ├─► WS-C  Verification layers 1–3    ├─ parallel, disjoint file footprints
           ├─► WS-D  Render rig + self-inspect  │
           ├─► WS-E  Printer profiles           │
-          ├─► WS-F  Graduation package export  │
           ├─► WS-G  External model import/remix│
-          └─► WS-H  Gear generation            ┘  (its verify checks land after WS-C)
+          ├─► WS-H  Gear generation            │  (its verify checks land after WS-C)
+          └─► WS-I  Multi-part & placement     ┘
+                     ├─► WS-F  Graduation package + per-part export (needs WS-I's parts model)
                      └─► M1 integration pass (dispatcher-led)
 M2+ (Bedrock, multi-model, plugins) — sketched only; decomposed when a trigger fires.
 ```
@@ -95,7 +96,7 @@ Notes on the two gates:
 
 ### WS-0b — Shared contracts + integration stubs · **Status: TODO** · gate, single agent, after 0a
 
-- **Why:** the coordination point that makes WS-A…WS-F conflict-free.
+- **Why:** the coordination point that makes WS-A…WS-I conflict-free.
 - **Scope:** define and land, with types + zod schemas + tests but stub behavior:
   - `src/shared/brief.ts` — `DesignBrief` (architecture doc §6, incl. `Dim` provenance and
     the `gear` feature type with its `meshesWith` pair reference).
@@ -103,15 +104,20 @@ Notes on the two gates:
     bindings, `importedBase` marker for remix projects; architecture doc §5, §7, §12.5).
   - `src/shared/verification.ts` — `VerificationReport` (layers, findings, badge).
   - `src/shared/ipc.ts` — new channels/events: `brief:*`, `param:update`,
-    `verification-*`, `printerProfile:*`, `model:exportPackage`, `model:import`; extend
-    `ExportFormat` with `'3mf' | 'package'`; iteration `createdBy:
+    `verification-*`, `printerProfile:*`, `model:exportPackage`, `model:import`, and the
+    part-scoped surface (`part:*` list/setPlacement/setVisibility; export requests gain
+    `partId`; `ModelDisplayedPayload` gains part identity); extend `ExportFormat` with
+    `'3mf' | 'package' | 'plate'`; iteration `createdBy:
     'agent' | 'param' | 'revert' | 'import'`.
+  - `src/shared/parts.ts` — `PartRecord` + `Placement` types (architecture doc §14):
+    per-part iteration histories, persisted layout transforms.
   - `src/preload/**` + `src/main/ipc.ts` — wire the new channels to stub handlers.
   - `src/renderer/src/state/appStore.ts` — state slices for brief / params /
     verification / profiles (empty defaults).
   - `src/renderer/src/App.tsx` — mount points for `BriefPanel`, `ParamPanel`,
-    `VerificationPanel`, and the import affordance (`ImportDialog`) — all behind
-    "not yet available" placeholders.
+    `VerificationPanel`, `PartsPanel`, and the import affordance (`ImportDialog`) — all
+    behind "not yet available" placeholders. `appStore` gains a parts/placements slice
+    alongside the others.
   - `packages/agent-core/tools/` — tool registry: one file per MCP tool; existing three
     tools migrated into it.
 - **Files owned:** all of the above.
@@ -194,18 +200,23 @@ Notes on the two gates:
   nozzle/bed questions and the generated script's `BED_X/BED_Y/BED_Z/NOZZLE` constants
   match the profile.
 
-### WS-F — Graduation package export · **Status: TODO** · depends: 0a, 0b
+### WS-F — Graduation package + per-part export · **Status: TODO** · depends: 0a, 0b, **WS-I** (parts model)
 
-- **Why:** architecture doc §12.1 / product doc §5.5 — anti-lock-in bundle; only packages
-  artifacts every iteration already produces.
-- **Scope:** package builder (zip: STEP + 3MF + STL + script + locked brief JSON +
-  manifest + generated README); extend the export flow (`exportResolver` generalized to an
-  artifact set — keep its path-containment guard); "Export package" in `ViewportControls`'
-  export menu; skill note ensuring 3MF is always produced.
+- **Why:** architecture doc §12.1, §14 / product doc §5.3, §5.5 — anti-lock-in bundle,
+  plus the fix for "everything merges into one file": exports resolve **per part**.
+- **Scope:** part-scoped export resolution (`exportResolver` generalized to an artifact
+  set per part — keep its path-containment guard): individual STL/STEP/3MF per part;
+  "export all parts" = separate files in one zip, never silently merged; explicit
+  **plate export** baking current placements into one merged STL; package builder (zip:
+  per-part sections of STEP + 3MF + STL + script + manifest, plus locked brief JSON +
+  generated README); "Export…" menu in `ViewportControls` (per part / all / plate /
+  package); skill note ensuring 3MF is always produced.
 - **Files owned:** `packages/agent-core/projects/exportResolver.ts`,
   `packages/agent-core/projects/exportPackage.ts`,
   `src/renderer/src/components/ViewportControls.tsx` (export menu only).
-- **Done when:** exported zip opens: STEP imports into Fusion/Onshape, script re-runs with
+- **Done when:** a two-part project exports each part as its own file, "all parts" as a
+  zip of separate files, and a plate STL matching the viewport arrangement; the exported
+  package opens: STEP imports into Fusion/Onshape, script re-runs with
   `pip install build123d`, README renders.
 
 ### WS-G — External model import & remix · **Status: TODO** · depends: 0a, 0b
@@ -264,12 +275,46 @@ Notes on the two gates:
   list), `packages/verify/**/gears*` (new files, land after WS-C).
 - **Coordination (contract-change requests, don't edit):** gear DFM numbers into
   `references/design-for-printing.md` and a pointer line in `SKILL.md` (both WS-B-owned).
+- **Coordination:** once WS-I lands, gear pairs generate as **sibling parts** (one per
+  gear), not a multi-body single file — if both are in flight, agree the `display_model`
+  part-arg convention via the contracts section.
 - **Done when:** "a 20-tooth and 40-tooth meshing pair, module 1.5, 20° PA, 6mm bores,
   herringbone" yields two gears whose verification passes the pair checks (center
   distance 45mm, matched module/PA), whose profiles are library-generated involutes (not
   freehand), and whose module/teeth appear as sliders in the parameter panel; a bare
   "make me a gear" prompt triggers the skill's gear clarify questions instead of
   generating an unmated guess.
+
+### WS-I — Multi-part projects: parts, placement, parts panel · **Status: TODO** · depends: 0a, 0b
+
+- **Why:** product doc §5.3 / architecture doc §14 — real projects are a box *and* its
+  lid, a gear *pair*, a bracket set; the single-part data model is why everything merges
+  into one exported file. Gear pairs (WS-H), split-plan pieces, and imports (WS-G) all
+  need parts to land in their natural shape. WS-F builds on this.
+- **Scope:** parts data model in `ProjectStore` — per-part iteration histories,
+  active-iteration pointers, and revert (existing semantics preserved, scoped per part);
+  migration: existing projects discover a single `main` part (discover-don't-recreate,
+  like the pre-R3 project migration); `display_model` gains the `part` slug argument
+  (default `main`, part created on first use); **placements** — persisted per-part
+  position + orientation, a viewport move/rotate gizmo with ground-snap
+  (`TransformControls`-class, alongside the existing selection/measurement controllers),
+  layout-only (never rewrites script or mesh); `PartsPanel.tsx` (list, visibility
+  toggles, select/focus, per-part version history); selection context and the
+  user-message envelope gain part identity + current arrangement so the agent has spatial
+  context. Explicitly out of scope: assembly constraints/mates (product doc §4.5
+  non-goal).
+- **Files owned:** `packages/agent-core/projects/store.ts`,
+  `packages/agent-core/tools/displayModel.ts`,
+  `src/renderer/src/three/placementController.ts` (new) + part-related changes in
+  `src/renderer/src/three/viewer.ts`, `src/renderer/src/components/PartsPanel.tsx`.
+- **Coordination (contract-change requests, don't edit):** parts-vocabulary prompt
+  additions (`prompts.ts` is WS-A-owned); cross-part interference check lands in
+  WS-C's layer 2 (file a request naming the placement input it should consume).
+- **Done when:** a project holds a box and a lid as separate parts with independent
+  version histories and revert; the lid moves/rotates with the gizmo and its placement
+  survives an app restart; region-select reports which part was selected; the agent
+  regenerates the lid without touching the box's history; verification (if WS-C has
+  landed) flags an interpenetrating arrangement.
 
 ---
 

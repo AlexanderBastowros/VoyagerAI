@@ -212,7 +212,9 @@ planner (constraints).
 interface DesignBrief {
   version: number                     // brief versions are immutable once locked
   lockedAt?: string                   // generation stamps briefVersion on each iteration
-  part: { name: string; purpose: string; referenceImages: ImageRef[] }  // images carry ≥1 user-scaled dimension
+  parts: Array<{ id: string; name: string; purpose: string; referenceImages: ImageRef[] }>
+                                      // ≥1 part (§14); images carry ≥1 user-scaled dimension;
+                                      // every Feature below carries a `partId`
   printer: PrinterProfileRef          // bed XYZ, nozzle Ø, materials — reusable, per-user settings
   envelope: { x: Dim; y: Dim; z: Dim }       // Dim = { value, unit, tolerance?, provenance: 'user'|'inferred' }
   features: Feature[]                 // discriminated union: hole {Ø, purpose: clearance|tapped|press_fit,
@@ -262,15 +264,16 @@ enforceable.
 ```
 s3://voyager-{env}/projects/{projectId}/
   brief/v{N}.json
-  iterations/{n}/ script.py · manifest.json · part.stl · part.step · part.3mf
-                 · renders/{front,back,left,right,top,bottom,iso1,iso2}.png
-                 · report.json
+  parts/{partId}/iterations/{n}/ script.py · manifest.json · part.stl · part.step · part.3mf
+                                · renders/{front,back,left,right,top,bottom,iso1,iso2}.png
+                                · report.json
   attachments/{uploadId}
   imports/{importId}.{step|stl|3mf|obj}   # externally sourced base models (§12.5)
 ```
 
 Postgres: `users`, `printer_profiles`, `projects`, `briefs(project, version, json, locked_at)`,
-`iterations(project, n, brief_version, s3_prefix, badge, created_by: agent|param|revert|import)`,
+`parts(project, part_id, name, placement, visible)` (§14),
+`iterations(project, part_id, n, brief_version, s3_prefix, badge, created_by: agent|param|revert|import)`,
 `transcripts` (chat persistence — replaces `appendMessage` into `project.json`),
 `usage_events` (per-turn tokens by role/model — metering + the eval feedback loop).
 
@@ -501,3 +504,40 @@ verification pyramid keeps away from LLMs.
 
 **Brief:** the `gear` feature type (§6) makes pairs first-class via `meshesWith`, which is
 what turns "generate a gear" into a checkable spec instead of a shape request.
+
+---
+
+## 14. Multi-part projects & placement
+
+Product framing: product doc §5.3. Contract-level change — it reshapes `ProjectStore`, the
+`display_model` tool, the brief, and export, so it lands in the WS-0b contracts before the
+parallel streams build against single-part assumptions.
+
+**Data model.** A project holds **parts**; each part carries its own script lineage,
+iteration history, and active-iteration pointer. All existing single-part semantics —
+immutable iterations, revert, the parameter panel's re-run path — apply *per part*. A
+pre-existing project migrates to one part (`main`), the same discover-don't-recreate
+migration style the POC used for pre-R3 single-project installs. `display_model` gains a
+`part` argument (slug, created on first use, default `main`), so the agent declares which
+part an export belongs to; region-select context gains part identity. Storage becomes
+part-scoped (§8): `parts/{partId}/iterations/{n}/`.
+
+**Placement is layout, not geometry.** Each part has a persisted placement (position +
+orientation) edited with a viewport gizmo (three.js `TransformControls`-class, with
+ground-snap). Placements never modify a part's script or mesh — no invisible geometry
+drift. They still do real work: (1) the agent receives the current arrangement as spatial
+context in the user-message envelope (alongside the existing selection summary), and
+(2) verification layer 2 runs **cross-part interference/clearance** on the placed
+arrangement. Explicitly not an assembly-constraint solver (product doc §4.5 non-goal): no
+mates, no kinematics.
+
+**Per-part export.** Export resolution (`resolveExportSource`) becomes part-scoped: an
+individual part's active iteration exports as its own STL/STEP/3MF; "export all parts"
+produces separate files in one zip — never a silent merge; an explicit **plate export**
+bakes current placements into one merged STL when an arranged build plate is actually what
+the user wants. The graduation package (§12.1) gains per-part sections under one bundle.
+
+**Agent semantics.** Still one session per project. Prompts/skill teach the parts
+vocabulary (name the part on `display_model`; ask which part a change targets when
+ambiguous). Gear pairs (§13) and split-plan pieces generate as sibling parts rather than
+multi-body single files — which is precisely the bug this section exists to fix.
