@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   AgentSettings,
+  BriefListVersionsResponse,
   BriefLockResponse,
   BriefUpdateRequest,
   BriefUpdateResponse,
@@ -10,11 +11,18 @@ import type {
   ExportModelResponse,
   ExportPackageRequest,
   ExportPackageResponse,
+  ImportModelRequest,
+  ImportModelResponse,
   IterationInfo,
   ModelDisplayedPayload,
   ParamGetManifestResponse,
   ParamUpdateRequest,
   ParamUpdateResponse,
+  PartGetModelRequest,
+  PartListResponse,
+  PartSetActiveRequest,
+  PartSetPlacementRequest,
+  PartSetVisibilityRequest,
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
@@ -70,6 +78,8 @@ export interface VoyagerApi {
     onPrintSettings: (callback: (payload: PrintSettings) => void) => () => void
     /** Prompts a native save dialog and copies the latest iteration's STL/STEP there. */
     export: (request: ExportModelRequest) => Promise<ExportModelResponse>
+    /** WS-G External model import/remix - stub behavior until WS-G lands (see `src/main/ipc.ts`). */
+    import: (request: ImportModelRequest) => Promise<ImportModelResponse>
   }
   project: {
     /** Every known project, in stable creation/discovery order. */
@@ -95,9 +105,27 @@ export interface VoyagerApi {
     get: () => Promise<DesignBrief>
     update: (request: BriefUpdateRequest) => Promise<BriefUpdateResponse>
     lock: () => Promise<BriefLockResponse>
+    /** Every locked brief version, oldest first (WS-0c) - for the panel's history browser. */
+    listVersions: () => Promise<BriefListVersionsResponse>
     /** Subscribe to brief changes (own edits and, later, agent-authored ones); returns an
      *  unsubscribe function. */
     onUpdated: (callback: (brief: DesignBrief) => void) => () => void
+  }
+  /** WS-I Multi-part projects - stub behavior until WS-I lands (see `src/main/ipc.ts`). */
+  part: {
+    /** Every part in the active project. */
+    list: () => Promise<PartListResponse>
+    /** One part's active-iteration model (with STL bytes) for the viewer, or null if it has none. */
+    getModel: (request: PartGetModelRequest) => Promise<ModelDisplayedPayload | null>
+    /** Persists a part's placement (layout only); resolves with the refreshed list. */
+    setPlacement: (request: PartSetPlacementRequest) => Promise<PartListResponse>
+    /** Shows/hides a part in the viewport; resolves with the refreshed list. */
+    setVisibility: (request: PartSetVisibilityRequest) => Promise<PartListResponse>
+    /** Makes a part the active one (the user focused it); resolves with the refreshed list. */
+    setActive: (request: PartSetActiveRequest) => Promise<PartListResponse>
+    /** Subscribe to parts-list changes (e.g. the agent creating a new part); returns an
+     *  unsubscribe function. */
+    onUpdated: (callback: (response: PartListResponse) => void) => () => void
   }
   /** WS-B Parameter panel - stub behavior until WS-B lands (see `src/main/ipc.ts`). */
   param: {

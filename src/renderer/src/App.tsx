@@ -9,7 +9,9 @@ import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 import MenuIcon from '@mui/icons-material/Menu'
 import { BriefPanel } from './components/BriefPanel'
 import { ChatPanel } from './components/ChatPanel'
+import { ImportDialog } from './components/ImportDialog'
 import { ParamPanel } from './components/ParamPanel'
+import { PartsPanel } from './components/PartsPanel'
 import { PrintSettingsPanel } from './components/PrintSettingsPanel'
 import { ProjectsDrawer } from './components/ProjectsDrawer'
 import { SetupScreen } from './components/SetupScreen'
@@ -125,6 +127,7 @@ export function App(): React.JSX.Element {
           }}
         >
           <BriefPanel />
+          <PartsPanel />
           <ParamPanel />
           <VerificationPanel />
           <PrintSettingsPanel />
@@ -132,6 +135,8 @@ export function App(): React.JSX.Element {
         </Box>
       </Box>
       <ProjectsDrawer open={projectsOpen} onClose={() => setProjectsOpen(false)} viewerRef={viewerRef} />
+      {/* WS-G import flow; renders a closed dialog until opened via the store's importDialogOpen. */}
+      <ImportDialog />
       {/* Full-viewport overlay; renders null once setup is complete (see SetupScreen). */}
       <SetupScreen />
     </Box>

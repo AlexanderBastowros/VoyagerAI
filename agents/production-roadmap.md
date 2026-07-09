@@ -59,7 +59,7 @@ WS-0a (extract agent-core) ── DONE
           ├─► WS-C  Verification layers 1–3    ┐
           ├─► WS-D  Render rig + self-inspect  ├─ parallel, disjoint file footprints
           ├─► WS-E  Printer profiles           ┘
-          └─► WS-0c (contract addendum: import/parts/gears) ── single agent, quick
+          └─► WS-0c (contract addendum: import/parts/gears) ── DONE
                  ├─► WS-G  External model import/remix  ┐
                  ├─► WS-H  Gear generation              ├─ parallel (H's verify checks after WS-C)
                  └─► WS-I  Multi-part & placement       ┘
@@ -146,8 +146,41 @@ Notes on the gates:
 - **Done when:** quality gate green; each downstream work order can be started without
   editing any 0b-owned file.
 
-### WS-0c — Contract addendum: import / parts / gears · **Status: TODO** · gate for WS-G/H/I, single agent, quick
+### WS-0c — Contract addendum: import / parts / gears · **Status: DONE** · gate for WS-G/H/I, single agent, quick
 
+- **Landed:** `src/shared/brief.ts` gained the `gear` feature variant (`module`/`teeth`/
+  `pressureAngle` as positive numbers, `helix?`, `bore`/`hub?` as `Dim`s, `meshesWith?`);
+  `src/shared/manifest.ts` gained the optional `importedBase` marker (`path` + `step`|`mesh`
+  `lineage`) for remix projects; new `src/shared/parts.ts` defines `Placement` (position mm +
+  XYZ-degrees Euler rotation, `identityPlacement()`), `PartRecord` (id/name/placement/visible/
+  `activeIteration`), `MAIN_PART_ID`, and guards. `src/shared/ipc.ts` re-exports `parts`, adds the
+  `IterationCreatedBy` union (`agent`|`param`|`revert`|`import`) surfaced on `IterationInfo` and
+  `ModelDisplayedPayload`, part identity (`ModelDisplayedPayload.partId`, `SelectionSummary.partId`,
+  `SendMessageRequest.focusedPartId`, `ExportModelRequest`/`ExportPackageRequest.partId`),
+  `ExportFormat`'s `'plate'`, `ImportModelRequest`/`Response` (two-phase unit confirmation),
+  `PartListResponse` (`parts` + the project-level `activePartId` pointer),
+  `PartGetModelRequest`/`PartSetPlacementRequest`/`PartSetVisibilityRequest`/`PartSetActiveRequest`
+  (`part:getModel` returns one part's active model with STL bytes, on-demand, so the viewer can
+  render every visible part without bloating the light `part:list`; `part:setActive` lets focusing a
+  part in the panel redirect the param/verification/history panels to it - keeping those WS-B/WS-C
+  panels unchanged, since they already follow the active iteration), `BriefListVersionsResponse`, and
+  the `model:import`/`part:{list,getModel,setPlacement,setVisibility,setActive,updated}`/
+  `brief:listVersions` channel constants. `src/main/ipc.ts` wires `brief:listVersions` to the **real** `BriefStore.
+  listVersions` (draining WS-A's queued request) and stubs `model:import` + the three `part:*`
+  channels (empty results; WS-I/WS-G replace the bodies at these designated points, the same pattern
+  WS-B/WS-C used). `src/preload/**` bridge `model.import`, `brief.listVersions`, and a `part.*`
+  group. `appStore.ts` gained `parts`/`selectedPartId`/`importDialogOpen` slices + setters (reset on
+  project switch; `addIteration` now carries `createdBy`); `App.tsx` mounts the new placeholder
+  `PartsPanel` (below `BriefPanel`) and `ImportDialog` (store-opened overlay). `store.ts`'s
+  `ProjectIteration`/`recordIteration` gained the optional `createdBy` pass-through (widening only,
+  zero behavior change). **Mechanical consequence of the mandated gear union member:** the two
+  exhaustive `Feature` consumers - `packages/agent-core/brief/completeness.ts` and the renderer's
+  `briefSelectors.ts` - were minimally updated (gears have no free-text locator, so their
+  completeness reduces to a real bore; `featureSummary` gained a `gear` case). Quality gate green:
+  362 tests (352 prior + 10 new for gear/importedBase/parts), build, typecheck.
+- **Note for WS-A:** the `brief:listVersions` plumbing (channel + real handler + preload) is landed,
+  so `BriefPanel` *can* fetch history; wiring the actual version-list UI into `BriefPanel.tsx`
+  (WS-A-owned) is a small remaining WS-A follow-up.
 - **Why:** WS-G/WS-H/WS-I were added to the roadmap after WS-0b shipped, so the contract
   surface they consume doesn't exist yet. Same rules as 0b: one owner lands the frozen
   shared files; the streams then build against them without touching them. Also drains the
@@ -531,4 +564,7 @@ Notes on the gates:
   currently shows only the current draft/locked version (no history list) as a result. Proposed
   shape: `BriefListVersionsResponse { versions: Array<{ version: number; lockedAt: string; brief:
   DesignBrief }> }` on a `brief:listVersions` channel, wired the same way `brief:get` is today.
-  **→ Scheduled: folded into WS-0c's scope.**
+  **→ LANDED in WS-0c:** the `brief:listVersions` channel, the exact response shape above, the real
+  main handler (`BriefStore.listVersions`), and the `window.voyager.brief.listVersions()` preload
+  method all shipped. Remaining: the version-list UI inside `BriefPanel.tsx` (WS-A-owned) - a small
+  WS-A follow-up, not a contract change.

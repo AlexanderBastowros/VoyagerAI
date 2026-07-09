@@ -41,9 +41,25 @@ export const FeatureBindingSchema = z.object({
 })
 export type FeatureBinding = z.infer<typeof FeatureBindingSchema>
 
+/**
+ * Marks a script as built on top of an externally-imported base model (WS-G remix, architecture
+ * doc §12.5). When present, the parameter panel scopes itself to Voyager-*added* features - the
+ * imported base geometry has no editable PARAMS - and verification layer 3 asserts only what
+ * Voyager added. Absent for a from-scratch generated script. `lineage` is set by the base's
+ * format and decides what downstream is possible: a `step` base supports full parametric remix and
+ * STEP export; a `mesh` base (STL/3MF/OBJ) supports boolean surgery and STL/3MF export only.
+ */
+export const ImportedBaseSchema = z.object({
+  /** Import id / path under the project's `imports/` directory (architecture doc §8). */
+  path: z.string(),
+  lineage: z.enum(['step', 'mesh'])
+})
+export type ImportedBase = z.infer<typeof ImportedBaseSchema>
+
 export const ScriptManifestSchema = z.object({
   params: z.array(ParamEntrySchema),
-  featureBindings: z.array(FeatureBindingSchema)
+  featureBindings: z.array(FeatureBindingSchema),
+  importedBase: ImportedBaseSchema.optional()
 })
 export type ScriptManifest = z.infer<typeof ScriptManifestSchema>
 

@@ -16,14 +16,20 @@
  *     and `model:exportPackage` channels below with stub main-process handlers - WS-A/B/C/E/F
  *     replace the stub behavior without touching this file (shared contracts are frozen once
  *     WS-0b lands - see `agents/production-roadmap.md`'s Ground rules).
+ *   - WS-0c (contract addendum) adds the `model:import`, `part:*`, and `brief:listVersions`
+ *     channels, `createdBy` iteration provenance, part identity on `ModelDisplayedPayload`, and the
+ *     `'plate'` export format - the surface WS-G (import/remix), WS-H (gears), and WS-I (multi-part)
+ *     consume without editing this file.
  */
 
 import type { DesignBrief, PrinterProfileRef } from './brief'
 import type { ScriptManifest } from './manifest'
+import type { PartRecord, Placement } from './parts'
 import type { VerificationReport } from './verification'
 
 export * from './brief'
 export * from './manifest'
+export * from './parts'
 export * from './verification'
 
 // ---------------------------------------------------------------------------
@@ -53,6 +59,9 @@ export interface SelectionSummary {
   centroid: [number, number, number]
   dims: [number, number, number]
   triCount: number
+  /** Which part the selected region belongs to (WS-I multi-part, §14) - lets the agent know which
+   *  part a "make this hole bigger" refers to. Absent for a single-part project / the `main` part. */
+  partId?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +80,10 @@ export interface SendMessageRequest {
   text: string
   selectionContext?: SelectionSummary | null
   attachments?: ChatAttachment[]
+  /** The part the user has focused in the parts panel/viewport when sending (WS-I multi-part, §14),
+   *  so the agent knows which part an otherwise-ambiguous change targets. Absent = no explicit
+   *  focus (the agent asks, or assumes the sole/`main` part). */
+  focusedPartId?: string
 }
 
 export interface SendMessageResponse {
@@ -146,6 +159,14 @@ export interface PersistedMessage {
 }
 
 /**
+ * How an iteration came to exist (architecture doc §8's `created_by` column). `agent` = a
+ * `display_model` turn; `param` = a no-LLM parameter-panel re-run (WS-B); `revert` = a reverted
+ * generation re-recorded as current; `import` = an externally-sourced base model (WS-G, §12.5).
+ * Optional wherever it appears, so records/payloads written before this field existed still parse.
+ */
+export type IterationCreatedBy = 'agent' | 'param' | 'revert' | 'import'
+
+/**
  * One row of the version-history list (R4). A trimmed, renderer-safe view of `ProjectIteration`
  * (which lives in `packages/agent-core/src/projects/store.ts` and isn't imported here to keep
  * this module free of main-only types) - `hasStep` replaces the raw `stepPath` since the
@@ -156,6 +177,9 @@ export interface IterationInfo {
   summary: string
   at: string
   hasStep: boolean
+  /** Provenance of this iteration (WS-0c), if recorded - lets the version history label param
+   *  edits / imports distinctly from agent turns. */
+  createdBy?: IterationCreatedBy
 }
 
 /** Hydrates the renderer on mount and on every project switch/create/revert. */
@@ -222,6 +246,12 @@ export interface ModelDisplayedPayload {
   iteration: number
   /** Raw STL bytes, transferred so the renderer can hand them straight to STLLoader. */
   stlBuffer: ArrayBuffer
+  /** Which part this display belongs to (WS-0c/WS-I multi-part, §14). Absent = the default `main`
+   *  part - so single-part callers (and payloads written before multi-part) need no change; the
+   *  viewer keys its per-part mesh map on `partId ?? MAIN_PART_ID`. */
+  partId?: string
+  /** Provenance of the iteration being displayed (WS-0c) - see `IterationCreatedBy`. */
+  createdBy?: IterationCreatedBy
 }
 
 // ---------------------------------------------------------------------------
@@ -255,12 +285,17 @@ export interface PrintSettings {
 // Model export (M5 Export STL/STEP; M1 graduation package export - WS-F)
 // ---------------------------------------------------------------------------
 
-/** `'3mf'` and `'package'` are stubbed here for WS-F (architecture doc §12.1's graduation
- *  bundle); `resolveExportSource`/`model:export` do not yet implement them. */
-export type ExportFormat = 'stl' | 'step' | '3mf' | 'package'
+/** `'3mf'`, `'plate'`, and `'package'` are stubbed here for WS-F (architecture doc §12.1's
+ *  graduation bundle + §14's per-part/plate export); `resolveExportSource`/`model:export` do not
+ *  yet implement them. `'plate'` bakes the current part placements into one merged STL (WS-I/WS-F);
+ *  the others resolve per part. */
+export type ExportFormat = 'stl' | 'step' | '3mf' | 'plate' | 'package'
 
 export interface ExportModelRequest {
   format: ExportFormat
+  /** Which part to export (WS-0c/WS-I multi-part, §14); omit for the active/`main` part. Ignored
+   *  by `'plate'` (which spans all parts) and `'package'` (which bundles every part). */
+  partId?: string
 }
 
 export interface ExportModelResponse {
@@ -278,12 +313,91 @@ export interface ExportModelResponse {
 export interface ExportPackageRequest {
   /** Iteration to package; omit for the active iteration. */
   iteration?: number
+  /** Restrict the package to one part (WS-0c/WS-I multi-part, §14); omit to bundle every part. */
+  partId?: string
 }
 
 export interface ExportPackageResponse {
   saved: boolean
   path?: string
   reason?: string
+}
+
+// ---------------------------------------------------------------------------
+// External model import & remix (WS-G - architecture doc §12.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Renderer -> main: import an external model (Thingiverse STL, a colleague's STEP, a scan) as a
+ * project's base, recorded as an iteration with `createdBy: 'import'`. Two-phase for unitless
+ * formats (STL/OBJ carry no units): the first call measures and, if a scale hasn't been confirmed,
+ * returns `needsUnitConfirmation`; the renderer shows the `ImportDialog` with that measured
+ * dimension and re-calls with `unitScaleMm`. Stub handler in WS-0c; WS-G wires the real
+ * copy/measure/repair/display path.
+ */
+export interface ImportModelRequest {
+  /** Absolute path to the source file (from a native picker or a drag-drop). Omit to have the main
+   *  process open a picker. */
+  filePath?: string
+  /** User-confirmed real length (mm) of the dimension `needsUnitConfirmation` reported, supplied on
+   *  the second call to resolve a unitless mesh's scale. */
+  unitScaleMm?: number
+  /** Target part slug (WS-I multi-part); omit for a new/`main` part. */
+  partId?: string
+}
+
+export interface ImportModelResponse {
+  /** False on cancel, unsupported format, or when `needsUnitConfirmation` is set. */
+  imported: boolean
+  reason?: string
+  /** Set when `imported` - the recorded iteration's payload, also pushed via `model:displayed`. */
+  model?: ModelDisplayedPayload
+  /** Set for a unitless format with no `unitScaleMm` yet: the renderer confirms/corrects this one
+   *  measured dimension, then re-calls `import` with `unitScaleMm`. */
+  needsUnitConfirmation?: { measuredMm: number; axis: 'x' | 'y' | 'z' }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-part projects & placement (WS-I - architecture doc §14)
+// ---------------------------------------------------------------------------
+
+/** Every part in the active project (WS-I), plus which one is *active*: the part unscoped
+ *  operations target (the model shown as "current", the part `param:*`/`verification:get`/export/
+ *  revert resolve against, and the default for a new `display_model`). It's a project-level pointer
+ *  (like `activeIteration`), set by the last `display_model` and by `part:setActive` when the user
+ *  focuses a part in the panel; null before any part exists. */
+export interface PartListResponse {
+  parts: PartRecord[]
+  activePartId: string | null
+}
+
+/** Renderer -> main: persist a part's placement (layout only - never touches its script/mesh, §14).
+ *  Resolves with the refreshed list (mirrors the printer-profile ops). */
+export interface PartSetPlacementRequest {
+  partId: string
+  placement: Placement
+}
+
+/** Renderer -> main: show/hide a part in the viewport. */
+export interface PartSetVisibilityRequest {
+  partId: string
+  visible: boolean
+}
+
+/** Renderer -> main: make `partId` the active part (the user focused it in the panel), so the
+ *  param/verification/history panels, export, and the next unscoped change all follow it. Resolves
+ *  with the refreshed list. */
+export interface PartSetActiveRequest {
+  partId: string
+}
+
+/** Renderer -> main: fetch one part's active-iteration model (with STL bytes) so the viewer can
+ *  render every visible part, each at its placement. On-demand rather than bundled into
+ *  `PartListResponse` so a light metadata list (and the `part:updated` push) never re-ships
+ *  megabytes of geometry; mirrors `model:loadSample`/`param:getManifest`'s fetch-when-needed shape.
+ *  Resolves null if the part has no iterations yet. */
+export interface PartGetModelRequest {
+  partId: string
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +419,12 @@ export interface BriefUpdateResponse {
  *  immutable - further edits create a new version (see `DesignBrief.version`). */
 export interface BriefLockResponse {
   brief: DesignBrief
+}
+
+/** Renderer -> main: read back every locked brief version (WS-A's `BriefStore.listVersions`), so
+ *  `BriefPanel` can browse history. Newest last, matching the on-disk `versions/v{n}.json` order. */
+export interface BriefListVersionsResponse {
+  versions: Array<{ version: number; lockedAt: string; brief: DesignBrief }>
 }
 
 // ---------------------------------------------------------------------------
@@ -386,10 +506,18 @@ export const IPC = {
   projectListIterations: 'project:listIterations',
   projectRevertTo: 'project:revertTo',
   modelExportPackage: 'model:exportPackage',
+  modelImport: 'model:import',
+  partList: 'part:list',
+  partGetModel: 'part:getModel',
+  partSetPlacement: 'part:setPlacement',
+  partSetVisibility: 'part:setVisibility',
+  partSetActive: 'part:setActive',
+  partUpdated: 'part:updated',
   briefGet: 'brief:get',
   briefUpdate: 'brief:update',
   briefLock: 'brief:lock',
   briefUpdated: 'brief:updated',
+  briefListVersions: 'brief:listVersions',
   paramUpdate: 'param:update',
   paramGetManifest: 'param:getManifest',
   verificationGet: 'verification:get',

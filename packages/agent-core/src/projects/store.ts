@@ -1,7 +1,7 @@
 import { copyFile, cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import type { AgentSettings, PersistedMessage, ProjectSummary } from '@shared/ipc'
+import type { AgentSettings, IterationCreatedBy, PersistedMessage, ProjectSummary } from '@shared/ipc'
 
 /**
  * One versioned export produced by the `display_model` MCP tool. Paths are
@@ -28,6 +28,10 @@ export interface ProjectIteration {
    *  architecture doc §4.4: "the locked brief version is stamped onto every iteration it
    *  produces"). Undefined for an iteration recorded before a brief was ever locked. */
   briefVersion?: number
+  /** How this iteration came to exist (WS-0c, architecture doc §8). WS-G stamps `'import'`, WS-I
+   *  stamps `'param'`/`'revert'` where those paths record an iteration; a plain agent
+   *  `display_model` leaves it undefined. Optional so records written before this field parse. */
+  createdBy?: IterationCreatedBy
 }
 
 export interface ProjectRecord {
@@ -236,6 +240,9 @@ export class ProjectStore {
     scriptPath: string
     summary: string
     briefVersion?: number
+    /** Provenance of this iteration (WS-0c) - passed through onto the recorded `ProjectIteration`.
+     *  Undefined for a plain agent `display_model` call. */
+    createdBy?: IterationCreatedBy
   }): Promise<ProjectIteration> {
     const record = await this.requireRecord()
     const n = (record.iterations.at(-1)?.n ?? 0) + 1

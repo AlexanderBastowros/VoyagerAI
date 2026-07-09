@@ -20,4 +20,22 @@ describe('isScriptManifest', () => {
     expect(isScriptManifest(null)).toBe(false)
     expect(isScriptManifest({ params: [{ name: 'WIDTH' }], featureBindings: [] })).toBe(false)
   })
+
+  it('accepts an importedBase marker (WS-G remix, §12.5)', () => {
+    const manifest = {
+      params: [],
+      featureBindings: [],
+      importedBase: { path: 'imports/thingiverse-bracket.step', lineage: 'step' }
+    }
+    expect(isScriptManifest(manifest)).toBe(true)
+  })
+
+  it('rejects an importedBase with an unknown lineage', () => {
+    const manifest = {
+      params: [],
+      featureBindings: [],
+      importedBase: { path: 'imports/scan.obj', lineage: 'brep' }
+    }
+    expect(isScriptManifest(manifest)).toBe(false)
+  })
 })

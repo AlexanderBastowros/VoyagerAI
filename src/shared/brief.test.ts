@@ -48,4 +48,40 @@ describe('isDesignBrief', () => {
     const brief = { ...emptyDesignBrief(), features: [{ id: 'f1', kind: 'gadget' }] }
     expect(isDesignBrief(brief)).toBe(false)
   })
+
+  it('accepts a gear feature (WS-H, §13)', () => {
+    const brief = {
+      ...emptyDesignBrief(),
+      features: [
+        {
+          id: 'g1',
+          kind: 'gear',
+          module: 1.5,
+          teeth: 20,
+          pressureAngle: 20,
+          helix: 15,
+          bore: { value: 6, unit: 'mm', provenance: 'user' },
+          hub: {
+            diameter: { value: 12, unit: 'mm', provenance: 'inferred' },
+            height: { value: 4, unit: 'mm', provenance: 'inferred' }
+          },
+          meshesWith: 'g2'
+        }
+      ]
+    }
+    expect(isDesignBrief(brief)).toBe(true)
+  })
+
+  it('rejects a gear with non-integer teeth or non-positive module', () => {
+    const base = {
+      id: 'g1',
+      kind: 'gear',
+      module: 1.5,
+      teeth: 20,
+      pressureAngle: 20,
+      bore: { value: 6, unit: 'mm', provenance: 'user' }
+    }
+    expect(isDesignBrief({ ...emptyDesignBrief(), features: [{ ...base, teeth: 20.5 }] })).toBe(false)
+    expect(isDesignBrief({ ...emptyDesignBrief(), features: [{ ...base, module: 0 }] })).toBe(false)
+  })
 })

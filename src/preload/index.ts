@@ -3,6 +3,7 @@ import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
   AgentSettings,
+  BriefListVersionsResponse,
   BriefLockResponse,
   BriefUpdateRequest,
   BriefUpdateResponse,
@@ -12,11 +13,18 @@ import type {
   ExportModelResponse,
   ExportPackageRequest,
   ExportPackageResponse,
+  ImportModelRequest,
+  ImportModelResponse,
   IterationInfo,
   ModelDisplayedPayload,
   ParamGetManifestResponse,
   ParamUpdateRequest,
   ParamUpdateResponse,
+  PartGetModelRequest,
+  PartListResponse,
+  PartSetActiveRequest,
+  PartSetPlacementRequest,
+  PartSetVisibilityRequest,
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
@@ -66,7 +74,9 @@ const api: VoyagerApi = {
     onDisplayed: (callback) => subscribe<ModelDisplayedPayload>(IPC.modelDisplayed, callback),
     onPrintSettings: (callback) => subscribe<PrintSettings>(IPC.printSettingsUpdated, callback),
     export: (request: ExportModelRequest): Promise<ExportModelResponse> =>
-      ipcRenderer.invoke(IPC.modelExport, request)
+      ipcRenderer.invoke(IPC.modelExport, request),
+    import: (request: ImportModelRequest): Promise<ImportModelResponse> =>
+      ipcRenderer.invoke(IPC.modelImport, request)
   },
   project: {
     list: (): Promise<ProjectSummary[]> => ipcRenderer.invoke(IPC.projectList),
@@ -86,7 +96,20 @@ const api: VoyagerApi = {
     update: (request: BriefUpdateRequest): Promise<BriefUpdateResponse> =>
       ipcRenderer.invoke(IPC.briefUpdate, request),
     lock: (): Promise<BriefLockResponse> => ipcRenderer.invoke(IPC.briefLock),
+    listVersions: (): Promise<BriefListVersionsResponse> => ipcRenderer.invoke(IPC.briefListVersions),
     onUpdated: (callback) => subscribe<DesignBrief>(IPC.briefUpdated, callback)
+  },
+  part: {
+    list: (): Promise<PartListResponse> => ipcRenderer.invoke(IPC.partList),
+    getModel: (request: PartGetModelRequest): Promise<ModelDisplayedPayload | null> =>
+      ipcRenderer.invoke(IPC.partGetModel, request),
+    setPlacement: (request: PartSetPlacementRequest): Promise<PartListResponse> =>
+      ipcRenderer.invoke(IPC.partSetPlacement, request),
+    setVisibility: (request: PartSetVisibilityRequest): Promise<PartListResponse> =>
+      ipcRenderer.invoke(IPC.partSetVisibility, request),
+    setActive: (request: PartSetActiveRequest): Promise<PartListResponse> =>
+      ipcRenderer.invoke(IPC.partSetActive, request),
+    onUpdated: (callback) => subscribe<PartListResponse>(IPC.partUpdated, callback)
   },
   param: {
     update: (request: ParamUpdateRequest): Promise<ParamUpdateResponse> =>

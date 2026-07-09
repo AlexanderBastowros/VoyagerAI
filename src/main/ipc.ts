@@ -5,6 +5,7 @@ import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
   AgentSettings,
+  BriefListVersionsResponse,
   BriefLockResponse,
   BriefUpdateRequest,
   BriefUpdateResponse,
@@ -14,11 +15,18 @@ import type {
   ExportModelResponse,
   ExportPackageRequest,
   ExportPackageResponse,
+  ImportModelRequest,
+  ImportModelResponse,
   IterationInfo,
   ModelDisplayedPayload,
   ParamGetManifestResponse,
   ParamUpdateRequest,
   ParamUpdateResponse,
+  PartGetModelRequest,
+  PartListResponse,
+  PartSetActiveRequest,
+  PartSetPlacementRequest,
+  PartSetVisibilityRequest,
   PermissionRespondRequest,
   PermissionRespondResponse,
   PrinterProfileListResponse,
@@ -134,8 +142,14 @@ function askUser(request: { requestId: string; toolName: string; summary: string
 }
 
 /** Maps a main-only `ProjectIteration` to the renderer-safe `IterationInfo` (R4). */
-function toIterationInfo(iteration: { n: number; summary: string; at: string; stepPath?: string }): IterationInfo {
-  return { n: iteration.n, summary: iteration.summary, at: iteration.at, hasStep: Boolean(iteration.stepPath) }
+function toIterationInfo(iteration: ProjectIteration): IterationInfo {
+  return {
+    n: iteration.n,
+    summary: iteration.summary,
+    at: iteration.at,
+    hasStep: Boolean(iteration.stepPath),
+    createdBy: iteration.createdBy
+  }
 }
 
 /**
@@ -458,6 +472,13 @@ export function registerIpcHandlers(): void {
     return { brief }
   })
 
+  // WS-0c: satisfies WS-A's queued `brief:listVersions` request - `BriefStore.listVersions`
+  // already reads every locked snapshot; this exposes it so `BriefPanel` can browse history.
+  ipcMain.handle(IPC.briefListVersions, async (): Promise<BriefListVersionsResponse> => {
+    await projectStore.ensureProject()
+    return { versions: await briefStore.listVersions(projectStore.getProjectDir()) }
+  })
+
   // -- WS-B Parameter panel (venv re-run, no agent turn) ------------------
 
   ipcMain.handle(
@@ -565,6 +586,52 @@ export function registerIpcHandlers(): void {
     async (_event, _request: ExportPackageRequest): Promise<ExportPackageResponse> => ({
       saved: false,
       reason: 'Package export is not implemented yet.'
+    })
+  )
+
+  // -- WS-G External model import (stub - no import pipeline yet) ---------
+
+  ipcMain.handle(
+    IPC.modelImport,
+    async (_event, _request: ImportModelRequest): Promise<ImportModelResponse> => ({
+      imported: false,
+      reason: 'Model import is not implemented yet.'
+    })
+  )
+
+  // -- WS-I Multi-part projects (stubs - single `main` part until WS-I) ---
+  // WS-I replaces these three stub bodies with real `ProjectStore`-backed parts logic (the same
+  // designated-stub-replacement pattern WS-B/WS-C used for their handlers), without touching the
+  // frozen channel wiring above.
+
+  ipcMain.handle(IPC.partList, async (): Promise<PartListResponse> => ({ parts: [], activePartId: null }))
+
+  ipcMain.handle(
+    IPC.partGetModel,
+    async (_event, _request: PartGetModelRequest): Promise<ModelDisplayedPayload | null> => null
+  )
+
+  ipcMain.handle(
+    IPC.partSetPlacement,
+    async (_event, _request: PartSetPlacementRequest): Promise<PartListResponse> => ({
+      parts: [],
+      activePartId: null
+    })
+  )
+
+  ipcMain.handle(
+    IPC.partSetVisibility,
+    async (_event, _request: PartSetVisibilityRequest): Promise<PartListResponse> => ({
+      parts: [],
+      activePartId: null
+    })
+  )
+
+  ipcMain.handle(
+    IPC.partSetActive,
+    async (_event, _request: PartSetActiveRequest): Promise<PartListResponse> => ({
+      parts: [],
+      activePartId: null
     })
   )
 }
