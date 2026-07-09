@@ -71,8 +71,8 @@ export interface SendMessageResponse {
 // ---------------------------------------------------------------------------
 
 /** Mirrors the Claude Agent SDK's `Options['effort']`. Some models reject this option outright
- *  (see `EFFORT_UNSUPPORTED_MODELS` in `src/main/agent/session.ts`), in which case it's omitted
- *  from the request regardless of the user's choice here. */
+ *  (see `EFFORT_UNSUPPORTED_MODELS` in `packages/agent-core/src/agent/session.ts`), in which case
+ *  it's omitted from the request regardless of the user's choice here. */
 export type AgentEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 /** The models surfaced in the UI's model picker - a curated subset of what the SDK accepts,
@@ -135,9 +135,9 @@ export interface PersistedMessage {
 
 /**
  * One row of the version-history list (R4). A trimmed, renderer-safe view of `ProjectIteration`
- * (which lives in `src/main/projects/store.ts` and isn't imported here to keep this module free
- * of main-only types) - `hasStep` replaces the raw `stepPath` since the renderer only ever needs
- * to know whether a STEP export exists, not its on-disk path.
+ * (which lives in `packages/agent-core/src/projects/store.ts` and isn't imported here to keep
+ * this module free of main-only types) - `hasStep` replaces the raw `stepPath` since the
+ * renderer only ever needs to know whether a STEP export exists, not its on-disk path.
  */
 export interface IterationInfo {
   n: number

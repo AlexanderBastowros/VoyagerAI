@@ -1,4 +1,4 @@
-import type { SetupCheck, SetupStatus } from '../../shared/ipc'
+import type { SetupCheck, SetupStatus } from '@shared/ipc'
 import type { EnvManager } from '../python/envManager'
 import type { ClaudeChecker } from './claudeChecks'
 

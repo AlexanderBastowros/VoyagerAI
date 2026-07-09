@@ -1,5 +1,5 @@
 import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources'
-import type { ChatAttachment, SelectionSummary } from '../../shared/ipc'
+import type { ChatAttachment, SelectionSummary } from '@shared/ipc'
 import type { ProjectIteration } from '../projects/store'
 
 /**

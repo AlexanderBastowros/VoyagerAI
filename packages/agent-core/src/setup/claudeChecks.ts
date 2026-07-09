@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { access, constants } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import type { SetupCheck } from '../../shared/ipc'
+import type { SetupCheck } from '@shared/ipc'
 
 /**
  * Locates and probes the Claude Code CLI for the claudeCli / claudeAuth

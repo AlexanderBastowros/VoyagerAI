@@ -22,12 +22,7 @@ import type {
   SetupStatus,
   SwitchProjectRequest
 } from '../shared/ipc'
-import { AgentSession } from './agent/session'
-import { resolveExportSource } from './projects/exportResolver'
-import { ProjectStore } from './projects/store'
-import { EnvManager } from './python/envManager'
-import { ClaudeChecker } from './setup/claudeChecks'
-import { runPreflight } from './setup/preflight'
+import { AgentSession, ClaudeChecker, EnvManager, ProjectStore, resolveExportSource, runPreflight } from '@voyager/agent-core'
 
 /**
  * Resolves a path under the app's `resources/` directory, in both dev (where
@@ -37,6 +32,17 @@ import { runPreflight } from './setup/preflight'
 function resourcePath(...segments: string[]): string {
   const base = app.isPackaged ? process.resourcesPath : join(__dirname, '../../resources')
   return join(base, ...segments)
+}
+
+/**
+ * Absolute path to `packages/verify`'s bundled `validate_stl.py`. Not under `resources/` (it's
+ * package source, not an app resource), so it gets its own dev/packaged resolution mirroring
+ * `resourcePath` - packaged builds copy it via electron-builder's `extraResources` `verify` entry.
+ */
+function verifyScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'verify', 'validate_stl.py')
+    : join(__dirname, '../../packages/verify/python/validate_stl.py')
 }
 
 function broadcast(channel: string, payload: unknown): void {
@@ -127,7 +133,8 @@ export function registerIpcHandlers(): void {
 
   const projectStore = new ProjectStore({
     baseDir: join(app.getPath('userData'), 'projects'),
-    skillSourceDir: resourcePath('skills', 'printable-cad')
+    skillSourceDir: resourcePath('skills', 'printable-cad'),
+    verifyScriptPath: verifyScriptPath()
   })
 
   const agentSession = new AgentSession({

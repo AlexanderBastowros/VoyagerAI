@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { EnvManager, parseProgressLine } from './envManager'
 import type { SpawnLike } from './envManager'
-import type { SetupCheck } from '../../shared/ipc'
+import type { SetupCheck } from '@shared/ipc'
 
 interface FakeOutcome {
   code?: number

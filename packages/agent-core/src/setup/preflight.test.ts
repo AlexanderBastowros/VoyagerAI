@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { createPreflightChecks, runPreflight } from './preflight'
 import type { PreflightDeps } from './preflight'
-import type { SetupCheck, SetupStatus } from '../../shared/ipc'
+import type { SetupCheck, SetupStatus } from '@shared/ipc'
 
 function fakeEnvManager(result: SetupCheck, progressEvents: SetupCheck[] = []): PreflightDeps['envManager'] {
   return {
