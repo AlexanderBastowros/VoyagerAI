@@ -58,7 +58,8 @@ WS-0a (extract agent-core)          ── single agent, everything else waits
           ├─► WS-C  Verification layers 1–3    ├─ parallel, disjoint file footprints
           ├─► WS-D  Render rig + self-inspect  │
           ├─► WS-E  Printer profiles           │
-          └─► WS-F  Graduation package export  ┘
+          ├─► WS-F  Graduation package export  │
+          └─► WS-G  External model import/remix┘
                      └─► M1 integration pass (dispatcher-led)
 M2+ (Bedrock, multi-model, plugins) — sketched only; decomposed when a trigger fires.
 ```
@@ -97,16 +98,18 @@ Notes on the two gates:
 - **Scope:** define and land, with types + zod schemas + tests but stub behavior:
   - `src/shared/brief.ts` — `DesignBrief` (architecture doc §6, incl. `Dim` provenance).
   - `src/shared/manifest.ts` — script `manifest.json` (PARAMS entries, feature→parameter
-    bindings; architecture doc §5, §7).
+    bindings, `importedBase` marker for remix projects; architecture doc §5, §7, §12.5).
   - `src/shared/verification.ts` — `VerificationReport` (layers, findings, badge).
   - `src/shared/ipc.ts` — new channels/events: `brief:*`, `param:update`,
-    `verification-*`, `printerProfile:*`, `model:exportPackage`; extend
-    `ExportFormat` with `'3mf' | 'package'`.
+    `verification-*`, `printerProfile:*`, `model:exportPackage`, `model:import`; extend
+    `ExportFormat` with `'3mf' | 'package'`; iteration `createdBy:
+    'agent' | 'param' | 'revert' | 'import'`.
   - `src/preload/**` + `src/main/ipc.ts` — wire the new channels to stub handlers.
   - `src/renderer/src/state/appStore.ts` — state slices for brief / params /
     verification / profiles (empty defaults).
   - `src/renderer/src/App.tsx` — mount points for `BriefPanel`, `ParamPanel`,
-    `VerificationPanel` (behind "not yet available" placeholders).
+    `VerificationPanel`, and the import affordance (`ImportDialog`) — all behind
+    "not yet available" placeholders.
   - `packages/agent-core/tools/` — tool registry: one file per MCP tool; existing three
     tools migrated into it.
 - **Files owned:** all of the above.
@@ -202,6 +205,36 @@ Notes on the two gates:
   `src/renderer/src/components/ViewportControls.tsx` (export menu only).
 - **Done when:** exported zip opens: STEP imports into Fusion/Onshape, script re-runs with
   `pip install build123d`, README renders.
+
+### WS-G — External model import & remix · **Status: TODO** · depends: 0a, 0b
+
+- **Why:** product doc §5.6 / architecture doc §12.5 — most hobbyist projects start from an
+  existing file (a Thingiverse/Printables STL, a colleague's STEP, a scan), and
+  import → repair → verify → split → print settings is a complete zero-generation use case
+  on its own. Capability is format-honest: STEP = full parametric remix; mesh = boolean
+  surgery/repair/split, never sliders on geometry we didn't create.
+- **Scope:** import flow (picker/drag-drop → copy to project `imports/`, measure, **unit
+  confirmation for unitless STL/OBJ** — show one measured dimension, user confirms or
+  corrects; record as iteration with `createdBy: 'import'`, display + verify like any
+  iteration). STEP lineage: scripts reference the base via `import_step` and model on top.
+  Mesh lineage: trimesh load; robust (manifold3d-class) booleans; parametric features
+  built in build123d, meshed, then fused/subtracted; repair pass (fill holes, drop
+  degenerate faces) that reports what it changed; mesh-lineage iterations record no STEP
+  (`resolveExportSource` already degrades gracefully). Skill guidance in a **new**
+  reference file `references/remix.md` (boolean-surgery patterns like plug-and-recut,
+  unit-confirmation rule, mesh-vs-STEP capability rules). `ImportDialog.tsx` UI on the 0b
+  mount point.
+- **Files owned:** `packages/agent-core/projects/importModel.ts`,
+  `packages/agent-core/remix/**`,
+  `resources/skills/printable-cad/references/remix.md` (new file — disjoint from WS-B's
+  skill edits), `src/renderer/src/components/ImportDialog.tsx`.
+- **Coordination:** the one-line pointer to `references/remix.md` in `SKILL.md` is a
+  contract-change request (WS-B owns `SKILL.md`) — file it rather than editing.
+- **Done when:** a downloaded STL imports with confirmed scale, displays, gets a layer-2
+  verification result, and accepts "add a 5mm hole through the base" (boolean surgery →
+  new iteration); an imported STEP accepts a parametric added feature and still exports
+  STEP; an import that fails watertightness gets a repair pass with a report of what
+  changed.
 
 ---
 

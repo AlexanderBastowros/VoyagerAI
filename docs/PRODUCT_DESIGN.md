@@ -238,7 +238,8 @@ script is a trap for the user.
 ### 5.1 The core journey
 
 1. **Set up once:** account, printer profile(s) (bed, nozzle, materials), units.
-2. **Start a design:** chat, brief panel, or template. Attach reference photos/sketches.
+2. **Start a design:** chat, brief panel, or template — or **import an existing model**
+   (STEP/STL/3MF/OBJ, from anywhere — §5.6) and remix it. Attach reference photos/sketches.
 3. **Clarify:** the agent asks only what the brief is missing; the brief panel fills in live
    on the side. User can type answers or edit fields directly — same thing.
 4. **Lock the brief:** review the compact contract (today's Phase 3, now a real artifact with
@@ -320,7 +321,38 @@ Graduation events are tracked as a *healthy* signal, not churn — a user who gr
 part trusts the tool enough to build on it, and the brief/script they leave with carries the
 Voyager format with them.
 
-### 5.6 What stays from the POC (deliberately)
+### 5.6 Start from an existing model (import & remix)
+
+Most real hobbyist projects don't start from zero — they start from a Thingiverse/Printables
+download, a STEP file from a colleague, or a scan. A Voyager session can start from an
+**imported model** that was never created by this app, and the capability is honest about
+what each format allows instead of pretending all imports are equal:
+
+- **STEP import → full remix.** OCCT/build123d reads STEP as a true solid. The script
+  references it as the base and adds or cuts features parametrically — holes, bosses,
+  fillets on new geometry — with the parameter panel working on everything Voyager added.
+- **Mesh import (STL/3MF/OBJ) → mesh remix.** A triangle mesh is not a feature model, and
+  converting one back into features is research-grade — we say so rather than fake it. What
+  works, and works well: measure, orient, scale, **repair** (holes, degenerate faces),
+  **split for the bed**, and **boolean surgery** — parametric features are modeled fresh
+  and fused/subtracted into the mesh. "Fill this hole and re-drill it at 5mm" is a
+  plug-and-recut boolean, so even existing-geometry edits are possible; what's *not*
+  possible is a slider on geometry we didn't create.
+- **Import-only is a complete use case.** Repair + verification (watertight, bed fit,
+  overhangs) + split plan + print settings on a downloaded file involves zero generation —
+  a cheap, high-frequency reason to open the app.
+- **Scale is never assumed.** STL/OBJ are unitless; import asks the user to confirm one
+  measured dimension ("this reads as 120mm wide — correct?") — the same never-guess-scale
+  rule the skill applies to photos.
+- **The representation stays unified** (§4.5's argument extended): the imported file
+  becomes a base solid *referenced by the script*, so human and AI keep editing one
+  artifact. The brief tracks the features Voyager adds; verification asserts only those;
+  region-select works on imports for "this hole/this face" conversations.
+- Mesh-lineage iterations export STL/3MF (no STEP — there's no B-rep to export);
+  STEP-lineage keeps the full export set. Respecting the source model's license when
+  remixing is the user's responsibility.
+
+### 5.7 What stays from the POC (deliberately)
 
 Chat-first interaction; versioned never-overwrite iterations with revert; region-select →
 agent context; viewport toolset (measure, wireframe, view cube, dimensions); print settings

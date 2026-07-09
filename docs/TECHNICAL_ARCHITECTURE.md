@@ -264,10 +264,11 @@ s3://voyager-{env}/projects/{projectId}/
                  · renders/{front,back,left,right,top,bottom,iso1,iso2}.png
                  · report.json
   attachments/{uploadId}
+  imports/{importId}.{step|stl|3mf|obj}   # externally sourced base models (§12.5)
 ```
 
 Postgres: `users`, `printer_profiles`, `projects`, `briefs(project, version, json, locked_at)`,
-`iterations(project, n, brief_version, s3_prefix, badge, created_by: agent|param|revert)`,
+`iterations(project, n, brief_version, s3_prefix, badge, created_by: agent|param|revert|import)`,
 `transcripts` (chat persistence — replaces `appendMessage` into `project.json`),
 `usage_events` (per-turn tokens by role/model — metering + the eval feedback loop).
 
@@ -426,11 +427,34 @@ geometric selectors (face normals + centroids) rather than OCCT topology ids pre
 rebuilt-in-Fusion solid can re-find them. Gated on Tier 1/2 telemetry (§11 deferred
 decisions).
 
-### 12.5 Return path (import, not sync)
+### 12.5 Import & remix (the return path, generalized)
 
-An externally edited STEP can be attached back onto a Voyager project: the script imports it
-as a base solid (OCCT/build123d STEP reader) and models on top ("add the mounting holes to
-this"). It enters as reference geometry — the brief records the import, verification layers
-1–2 still run, but brief-conformance (layer 3) only asserts features Voyager added. One-way
-in each direction; there is deliberately no state that must be kept consistent between
-Voyager and the external tool.
+Any external model — a Voyager part edited elsewhere, or a file that never touched Voyager
+(Thingiverse STL, a colleague's STEP, a scan) — can start or continue a project. One-way in
+each direction; there is deliberately no state kept consistent between Voyager and the
+external tool. Product framing: product doc §5.6.
+
+**Import flow:** file picker / drag-drop → copied into the project (`imports/`), measured
+(bbox, watertight, triangle/face count) → **unit confirmation** for unitless formats
+(STL/OBJ carry no units; the dialog shows one measured dimension and asks the user to
+confirm or correct it — the skill's never-guess-scale rule, enforced at the door) →
+recorded as iteration v1 with `createdBy: 'import'`, displayed and verified like any other
+iteration.
+
+**Two lineages, set by format:**
+
+- **STEP lineage** — OCCT/build123d imports a true B-rep solid. Generated scripts reference
+  it (`base = import_step("imports/…")`) and model on top; everything downstream (params on
+  added features, fillets touching new geometry, full STEP export) works.
+- **Mesh lineage** (STL/3MF/OBJ via trimesh) — booleans run on the mesh (manifold3d-class
+  robust booleans); parametric features are built in build123d, meshed, then fused or
+  subtracted. A **repair pass** (fill holes, drop degenerate faces) runs on request and
+  reports exactly what it changed. Explicitly out of scope: mesh→B-rep conversion —
+  feature recognition on triangle soup is research-grade, and naive triangle→face
+  conversion blows up OCCT on real files. Mesh-lineage iterations export STL/3MF only;
+  `resolveExportSource` already degrades gracefully when an iteration has no STEP.
+
+**Semantics downstream:** the manifest marks the base as `imported`, so the parameter panel
+scopes itself to Voyager-added features; the brief records the import and tracks added
+features only; verification layers 1–2 run unchanged on any lineage, layer 3 asserts only
+what Voyager added; the render rig and region-select need no changes at all.
