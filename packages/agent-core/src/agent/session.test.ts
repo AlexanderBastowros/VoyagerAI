@@ -458,7 +458,7 @@ describe('AgentSession', () => {
     const content = h.inputs[0].message.content as string
     expect(content.startsWith('make the base thicker')).toBe(true)
     expect(content).toContain('Reverted model')
-    expect(content).toContain('outputs/versions/v1.py')
+    expect(content).toContain('outputs/versions/main/v1.py')
   })
 
   it('does not inject a revert block when the active version is already the latest', async () => {

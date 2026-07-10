@@ -38,7 +38,15 @@ function makeStore(): ProjectStore {
  */
 async function recordScript(
   store: ProjectStore,
-  entry: { stlPath: string; stepPath?: string; scriptPath: string; summary: string; briefVersion?: number }
+  entry: {
+    stlPath: string
+    stepPath?: string
+    scriptPath: string
+    summary: string
+    briefVersion?: number
+    partId?: string
+    partName?: string
+  }
 ): Promise<ReturnType<ProjectStore['recordIteration']>> {
   await writeFile(join(store.getProjectDir(), entry.scriptPath), `# source of ${entry.scriptPath}`)
   return store.recordIteration(entry)
@@ -59,7 +67,10 @@ describe('ProjectStore.ensureProject', () => {
 
     const record = JSON.parse(await readFile(join(dir, 'project.json'), 'utf-8'))
     expect(record.id).toBe('default')
-    expect(record.iterations).toEqual([])
+    // WS-I: a fresh project has a single `main` part (no top-level iterations).
+    expect(record.parts).toHaveLength(1)
+    expect(record.parts[0]).toMatchObject({ id: 'main', name: 'Main', iterations: [], visible: true })
+    expect(record.activePartId).toBe('main')
   })
 
   it('copies extract_params.py into the skill scripts/ dir when extractParamsScriptPath is given', async () => {
@@ -294,7 +305,7 @@ describe('ProjectStore R4 version history', () => {
 })
 
 describe('ProjectStore per-version script snapshots', () => {
-  it('snapshots the generating script to outputs/versions/vN.py and records its path', async () => {
+  it('snapshots the generating script to outputs/versions/<part>/vN.py and records its path', async () => {
     const store = makeStore()
     const { dir } = await store.ensureProject()
 
@@ -304,14 +315,14 @@ describe('ProjectStore per-version script snapshots', () => {
       summary: 'v1'
     })
 
-    expect(first.scriptSnapshotPath).toBe('outputs/versions/v1.py')
+    expect(first.scriptSnapshotPath).toBe('outputs/versions/main/v1.py')
     // The snapshot is a faithful copy of the source script the agent wrote.
-    expect(await readFile(join(dir, 'outputs', 'versions', 'v1.py'), 'utf-8')).toBe(
+    expect(await readFile(join(dir, 'outputs', 'versions', 'main', 'v1.py'), 'utf-8')).toBe(
       '# source of outputs/part_v1.py'
     )
     // Persisted on the iteration record across reloads.
     const reloaded = makeStore()
-    expect((await reloaded.latestIteration())?.scriptSnapshotPath).toBe('outputs/versions/v1.py')
+    expect((await reloaded.latestIteration())?.scriptSnapshotPath).toBe('outputs/versions/main/v1.py')
   })
 
   it('gives each iteration its own snapshot without overwriting earlier ones', async () => {
@@ -321,8 +332,8 @@ describe('ProjectStore per-version script snapshots', () => {
     await recordScript(store, { stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
     await recordScript(store, { stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
 
-    expect(await readFile(join(dir, 'outputs', 'versions', 'v1.py'), 'utf-8')).toBe('# source of outputs/a_v1.py')
-    expect(await readFile(join(dir, 'outputs', 'versions', 'v2.py'), 'utf-8')).toBe('# source of outputs/a_v2.py')
+    expect(await readFile(join(dir, 'outputs', 'versions', 'main', 'v1.py'), 'utf-8')).toBe('# source of outputs/a_v1.py')
+    expect(await readFile(join(dir, 'outputs', 'versions', 'main', 'v2.py'), 'utf-8')).toBe('# source of outputs/a_v2.py')
   })
 
   it('leaves earlier snapshots intact after a revert', async () => {
@@ -333,8 +344,8 @@ describe('ProjectStore per-version script snapshots', () => {
     await recordScript(store, { stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2' })
     await store.revertTo(first.n)
 
-    expect(await readFile(join(dir, 'outputs', 'versions', 'v1.py'), 'utf-8')).toBe('# source of outputs/a_v1.py')
-    expect(await readFile(join(dir, 'outputs', 'versions', 'v2.py'), 'utf-8')).toBe('# source of outputs/a_v2.py')
+    expect(await readFile(join(dir, 'outputs', 'versions', 'main', 'v1.py'), 'utf-8')).toBe('# source of outputs/a_v1.py')
+    expect(await readFile(join(dir, 'outputs', 'versions', 'main', 'v2.py'), 'utf-8')).toBe('# source of outputs/a_v2.py')
   })
 
   it('throws if the source script is missing, so display_model surfaces the error', async () => {
@@ -455,7 +466,7 @@ describe('ProjectStore.getChatHistory', () => {
     await store.appendMessage({ id: 'm2', role: 'assistant', text: 'done', createdAt: '2999-01-01T00:00:00.000Z' })
 
     const history = await store.getChatHistory()
-    expect(history.map((m) => m.id)).toEqual(['m1', 'iteration-1', 'm2'])
+    expect(history.map((m) => m.id)).toEqual(['m1', 'iteration-main-1', 'm2'])
     expect(history[1]).toMatchObject({ role: 'system-status', text: 'Model v1 displayed: first' })
   })
 
@@ -463,6 +474,246 @@ describe('ProjectStore.getChatHistory', () => {
     const store = makeStore()
     await store.ensureProject()
     expect(await store.getChatHistory()).toEqual([])
+  })
+})
+
+describe('ProjectStore parts (WS-I)', () => {
+  it('starts a fresh project with a single visible `main` part at the origin', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+
+    const parts = await store.listParts()
+    expect(parts).toEqual([
+      { id: 'main', name: 'Main', placement: { position: [0, 0, 0], rotation: [0, 0, 0] }, visible: true, activeIteration: null }
+    ])
+    expect(await store.getActivePartId()).toBe('main')
+  })
+
+  it('creates a part on first display_model and numbers iterations per part', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+
+    // The main part gets v1; a new `lid` part starts its own numbering at v1.
+    const boxV1 = await recordScript(store, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'box' })
+    const lidV1 = await recordScript(store, {
+      stlPath: 'outputs/lid_v1.stl',
+      scriptPath: 'outputs/lid_v1.py',
+      summary: 'lid',
+      partId: 'lid',
+      partName: 'Lid'
+    })
+    const boxV2 = await recordScript(store, { stlPath: 'outputs/box_v2.stl', scriptPath: 'outputs/box_v2.py', summary: 'box2', partId: 'main' })
+
+    expect(boxV1.n).toBe(1)
+    expect(lidV1.n).toBe(1) // per-part numbering, not global
+    expect(boxV2.n).toBe(2)
+
+    const parts = await store.listParts()
+    expect(parts.map((p) => p.id)).toEqual(['main', 'lid'])
+    expect(parts.find((p) => p.id === 'lid')?.name).toBe('Lid')
+  })
+
+  it('scopes the script snapshot path per part so two parts\' v1 never collide', async () => {
+    const store = makeStore()
+    const { dir } = await store.ensureProject()
+
+    const boxV1 = await recordScript(store, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'box' })
+    const lidV1 = await recordScript(store, {
+      stlPath: 'outputs/lid_v1.stl',
+      scriptPath: 'outputs/lid_v1.py',
+      summary: 'lid',
+      partId: 'lid'
+    })
+
+    expect(boxV1.scriptSnapshotPath).toBe('outputs/versions/main/v1.py')
+    expect(lidV1.scriptSnapshotPath).toBe('outputs/versions/lid/v1.py')
+    expect(await readFile(join(dir, 'outputs', 'versions', 'lid', 'v1.py'), 'utf-8')).toBe('# source of outputs/lid_v1.py')
+  })
+
+  it('displaying a part makes it the active part', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+
+    await recordScript(store, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'box' })
+    expect(await store.getActivePartId()).toBe('main')
+
+    await recordScript(store, { stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'lid', partId: 'lid' })
+    expect(await store.getActivePartId()).toBe('lid')
+    // Unscoped activeIterationRecord now follows the active (lid) part.
+    expect((await store.activeIterationRecord())?.summary).toBe('lid')
+    // ...but an explicit partId still targets the box.
+    expect((await store.activeIterationRecord('main'))?.summary).toBe('box')
+  })
+
+  it('reverts one part without touching another part\'s history or pointer', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+
+    const boxV1 = await recordScript(store, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'box1' })
+    await recordScript(store, { stlPath: 'outputs/box_v2.stl', scriptPath: 'outputs/box_v2.py', summary: 'box2' })
+    await recordScript(store, { stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'lid1', partId: 'lid' })
+
+    // Revert the box to v1; the lid is untouched.
+    await store.revertTo(boxV1.n, 'main')
+    expect((await store.activeIterationRecord('main'))?.n).toBe(1)
+    expect((await store.listIterations('main')).map((it) => it.n)).toEqual([1, 2])
+    expect((await store.activeIterationRecord('lid'))?.n).toBe(1)
+    expect((await store.listIterations('lid')).map((it) => it.n)).toEqual([1])
+
+    // Reverting focuses that part.
+    expect(await store.getActivePartId()).toBe('main')
+
+    // Persists across reloads.
+    const reloaded = makeStore()
+    await reloaded.ensureProject()
+    expect((await reloaded.activeIterationRecord('main'))?.n).toBe(1)
+    expect((await reloaded.activeIterationRecord('lid'))?.n).toBe(1)
+  })
+
+  it('revertTo throws for an iteration number not in the target part', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await recordScript(store, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'box' })
+    await recordScript(store, { stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'lid', partId: 'lid' })
+
+    // The lid only has v1, so reverting the lid to v2 fails even though the box has a v2 next.
+    await expect(store.revertTo(2, 'lid')).rejects.toThrow(/Unknown iteration/)
+  })
+
+  it('persists placement and visibility per part and returns the refreshed list', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await recordScript(store, { stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'lid', partId: 'lid', partName: 'Lid' })
+
+    const placed = await store.setPlacement('lid', { position: [10, 0, 5], rotation: [0, 90, 0] })
+    expect(placed.find((p) => p.id === 'lid')?.placement).toEqual({ position: [10, 0, 5], rotation: [0, 90, 0] })
+
+    await store.setVisibility('lid', false)
+
+    const reloaded = makeStore()
+    await reloaded.ensureProject()
+    const lid = (await reloaded.listParts()).find((p) => p.id === 'lid')
+    expect(lid?.placement).toEqual({ position: [10, 0, 5], rotation: [0, 90, 0] })
+    expect(lid?.visible).toBe(false)
+  })
+
+  it('setActivePart redirects unscoped operations and persists', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await recordScript(store, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'box' })
+    await recordScript(store, { stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'lid', partId: 'lid' })
+
+    await store.setActivePart('main')
+    expect(await store.getActivePartId()).toBe('main')
+    expect((await store.activeIterationRecord())?.summary).toBe('box')
+
+    const reloaded = makeStore()
+    await reloaded.ensureProject()
+    expect(await reloaded.getActivePartId()).toBe('main')
+  })
+
+  it('setPlacement / setVisibility / setActivePart throw for an unknown part', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await expect(store.setPlacement('nope', { position: [0, 0, 0], rotation: [0, 0, 0] })).rejects.toThrow(/Unknown part/)
+    await expect(store.setVisibility('nope', false)).rejects.toThrow(/Unknown part/)
+    await expect(store.setActivePart('nope')).rejects.toThrow(/Unknown part/)
+  })
+
+  it('migrates a pre-WS-I flat project.json into a single `main` part', async () => {
+    const legacyDir = join(scratch, 'projects', 'default')
+    await mkdir(join(legacyDir, 'outputs'), { recursive: true })
+    await writeFile(
+      join(legacyDir, 'project.json'),
+      JSON.stringify({
+        id: 'default',
+        name: 'Pre-WS-I project',
+        createdAt: '2023-01-01T00:00:00.000Z',
+        activeIteration: 1,
+        iterations: [
+          { n: 1, stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1', at: '2023-01-01T00:00:00.000Z' },
+          { n: 2, stlPath: 'outputs/a_v2.stl', scriptPath: 'outputs/a_v2.py', summary: 'v2', at: '2023-01-02T00:00:00.000Z' }
+        ]
+        // no `parts` field - this is the pre-WS-I schema.
+      }),
+      'utf-8'
+    )
+
+    const store = makeStore()
+    await store.ensureProject()
+
+    const parts = await store.listParts()
+    expect(parts).toHaveLength(1)
+    expect(parts[0]).toMatchObject({ id: 'main', name: 'Main', visible: true })
+    expect(await store.getActivePartId()).toBe('main')
+    // The old flat iterations became the main part's history, active pointer preserved.
+    expect((await store.listIterations()).map((it) => it.n)).toEqual([1, 2])
+    expect((await store.activeIterationRecord())?.n).toBe(1)
+  })
+
+  it('tags synthesized chat lines with the part name once a project has more than one part', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await recordScript(store, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'the box' })
+    await recordScript(store, { stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'the lid', partId: 'lid', partName: 'Lid' })
+
+    const history = await store.getChatHistory()
+    const ids = history.map((m) => m.id)
+    // Part-scoped, unique ids (box v1 and lid v1 would collide under a global `iteration-1`).
+    expect(ids).toContain('iteration-main-1')
+    expect(ids).toContain('iteration-lid-1')
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(history.find((m) => m.id === 'iteration-lid-1')?.text).toBe('Model v1 displayed (Lid): the lid')
+  })
+
+  it('does not leave a phantom part when the snapshot copy fails for a new part', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    // No source script on disk -> the copyFile in recordIteration throws before any record mutation.
+    await expect(
+      store.recordIteration({
+        stlPath: 'outputs/lid_v1.stl',
+        scriptPath: 'outputs/missing.py',
+        summary: 'lid',
+        partId: 'lid'
+      })
+    ).rejects.toThrow()
+    // The 'lid' part must NOT have been added to the in-memory record (no ghost part).
+    expect((await store.listParts()).map((p) => p.id)).toEqual(['main'])
+  })
+
+  it('migrates a parts[] record whose part lacks an iterations array without throwing or data loss', async () => {
+    const legacyDir = join(scratch, 'projects', 'default')
+    await mkdir(join(legacyDir, 'outputs'), { recursive: true })
+    await writeFile(
+      join(legacyDir, 'project.json'),
+      JSON.stringify({
+        id: 'default',
+        name: 'Malformed',
+        createdAt: '2023-01-01T00:00:00.000Z',
+        activePartId: 'main',
+        // A part object with no `iterations` field - a bare deref would throw, which readRecord's
+        // catch would turn into a destructive fresh-record overwrite. Migration must coerce instead.
+        parts: [
+          {
+            id: 'main',
+            name: 'Main',
+            createdAt: '2023-01-01T00:00:00.000Z',
+            placement: { position: [0, 0, 0], rotation: [0, 0, 0] },
+            visible: true
+          }
+        ],
+        messages: []
+      }),
+      'utf-8'
+    )
+
+    const store = makeStore()
+    await store.ensureProject()
+    expect((await store.listParts()).map((p) => p.id)).toEqual(['main'])
+    expect(await store.listIterations('main')).toEqual([])
+    // The original name survived (no fresh-record overwrite).
+    expect((await store.listProjects())[0].name).toBe('Malformed')
   })
 })
 

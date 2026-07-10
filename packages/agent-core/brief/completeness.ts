@@ -12,17 +12,21 @@ export interface BriefCompleteness {
   percent: number
 }
 
-/** The feature's "where"/"which edges" free-text field - every kind has exactly one such field,
- *  just under a different name (`position` vs. `fillet_chamfer`'s `edges`). */
-function featureLocator(feature: Feature): string {
+/** The feature's "where"/"which edges" free-text field - every kind *except* `gear` has exactly one
+ *  such field, just under a different name (`position` vs. `fillet_chamfer`'s `edges`). Gears have
+ *  no free-text locator (their placement is the part they belong to / `meshesWith`), so `gear` is
+ *  excluded here and handled separately in `featureCheck`. */
+function featureLocator(feature: Exclude<Feature, { kind: 'gear' }>): string {
   return feature.kind === 'fillet_chamfer' ? feature.edges : feature.position
 }
 
 function featureCheck(feature: Feature, index: number): BriefCompletenessCheck {
-  return {
-    label: `Feature ${index + 1} (${feature.kind})`,
-    done: featureLocator(feature).trim().length > 0
-  }
+  // A gear that parsed already carries module/teeth/pressureAngle (schema-required positives), so
+  // its completeness reduces to a real bore diameter rather than a free-text locator. WS-H may
+  // layer on gear-specific completeness (matched module/PA across a `meshesWith` pair).
+  const done =
+    feature.kind === 'gear' ? feature.bore.value > 0 : featureLocator(feature).trim().length > 0
+  return { label: `Feature ${index + 1} (${feature.kind})`, done }
 }
 
 /** Required top-level fields per architecture doc §4.4 ("required fields per feature type;

@@ -4,6 +4,7 @@ import type { SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
 import { resolveWithinProject } from '../src/agent/paths'
 import type { ResolvedPath } from '../src/agent/paths'
+import { slugifyPartId } from '../src/projects/store'
 import { MIN_STL_BYTES, textResult, toArrayBuffer } from './helpers'
 import type { VoyagerMcpDeps } from './types'
 
@@ -21,17 +22,31 @@ export function createDisplayModelTool(
   step_path: z.ZodOptional<z.ZodString>
   script_path: z.ZodString
   summary: z.ZodString
+  part: z.ZodOptional<z.ZodString>
+  part_name: z.ZodOptional<z.ZodString>
 }> {
   return tool(
     'display_model',
     'Display a validated STL export in Voyager AI\'s 3D viewport. Call this after every ' +
       'successful export + validation (printable-cad skill Phase 5/6). Paths must be inside the ' +
-      'project working directory.',
+      'project working directory. For a multi-part project (a box AND its lid, a gear pair), pass ' +
+      '`part` so each part keeps its own version history and placement.',
     {
       stl_path: z.string().describe('Path to the exported STL, relative to the project directory.'),
       step_path: z.string().optional().describe('Path to the exported STEP file, if produced.'),
       script_path: z.string().describe('Path to the parametric Python script that generated the model.'),
-      summary: z.string().describe('One or two sentences: what the part is, key dimensions, DFM rules applied.')
+      summary: z.string().describe('One or two sentences: what the part is, key dimensions, DFM rules applied.'),
+      part: z
+        .string()
+        .optional()
+        .describe(
+          'Slug of the part this model is (e.g. "lid", "gear_small"). Omit for a single-part ' +
+            'project or to keep refining the part currently in focus. A new slug creates a new part.'
+        ),
+      part_name: z
+        .string()
+        .optional()
+        .describe('Human-readable name shown in the parts panel when the part is first created (e.g. "Lid").')
     },
     async (args) => {
       const projectDir = deps.projectStore.getProjectDir()
@@ -81,12 +96,19 @@ export function createDisplayModelTool(
       const brief = deps.briefStore ? await deps.briefStore.get(projectDir) : null
       const briefVersion = brief?.lockedAt ? brief.version : undefined
 
+      // Resolve the part this display records into: an explicit slug (created on first use), or the
+      // part currently in focus. Resolving it here (rather than only inside recordIteration) lets us
+      // tag the emission with the part so the viewer keys its per-part mesh map correctly.
+      const partId = args.part ? slugifyPartId(args.part) : await deps.projectStore.getActivePartId()
+
       const buffer = await readFile(stl.path.abs)
       const iteration = await deps.projectStore.recordIteration({
         stlPath: stl.path.rel,
         stepPath: step?.rel,
         scriptPath: script.path.rel,
         summary: args.summary,
+        partId,
+        ...(args.part_name ? { partName: args.part_name } : {}),
         ...(briefVersion !== undefined ? { briefVersion } : {})
       })
 
@@ -98,7 +120,8 @@ export function createDisplayModelTool(
           scriptPath: iteration.scriptPath,
           summary: iteration.summary,
           iteration: iteration.n,
-          stlBuffer: toArrayBuffer(buffer)
+          stlBuffer: toArrayBuffer(buffer),
+          partId
         }
       })
 

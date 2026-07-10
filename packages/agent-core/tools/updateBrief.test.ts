@@ -13,7 +13,14 @@ let briefStore: BriefStore
 
 function deps(): VoyagerMcpDeps {
   return {
-    projectStore: { getProjectDir: () => projectDir, recordIteration: async () => { throw new Error('not used') }, activeIterationRecord: async () => null },
+    projectStore: {
+      getProjectDir: () => projectDir,
+      recordIteration: async () => {
+        throw new Error('not used')
+      },
+      activeIterationRecord: async () => null,
+      getActivePartId: async () => 'main'
+    },
     briefStore,
     emit: (e) => emissions.push(e)
   }

@@ -8,6 +8,7 @@ import { SelectionHighlight } from '../three/selection'
 import { SelectionController } from '../three/selectionController'
 import { MeasurementOverlay } from '../three/measurement'
 import { MeasurementController } from '../three/measurementController'
+import { PlacementController } from '../three/placementController'
 import { useAppStore } from '../state/appStore'
 
 interface ViewportProps {
@@ -21,6 +22,7 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   const marqueeRef = useRef<HTMLDivElement | null>(null)
   const controllerRef = useRef<SelectionController | null>(null)
   const measureControllerRef = useRef<MeasurementController | null>(null)
+  const placementControllerRef = useRef<PlacementController | null>(null)
 
   const selectMode = useAppStore((state) => state.selectMode)
   const selection = useAppStore((state) => state.selection)
@@ -32,6 +34,11 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   const wireframe = useAppStore((state) => state.wireframe)
   const model = useAppStore((state) => state.model)
   const paramUpdatePending = useAppStore((state) => state.paramUpdatePending)
+  const parts = useAppStore((state) => state.parts)
+  const selectedPartId = useAppStore((state) => state.selectedPartId)
+  const agentBusy = useAppStore((state) => state.agentBusy)
+  const setParts = useAppStore((state) => state.setParts)
+  const setSelectedPartId = useAppStore((state) => state.setSelectedPartId)
 
   useEffect(() => {
     const container = containerRef.current
@@ -60,14 +67,44 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
     })
     measureControllerRef.current = measureController
 
+    // WS-I placement gizmo: persist a dragged part's ground-snapped placement, then let the store
+    // update flow back to the viewer via the parts-sync effect below.
+    const placementController = new PlacementController({
+      getViewer: () => viewerRef.current,
+      onPlacementChange: (partId, placement) => {
+        // Optimistically reflect the drag in the store immediately, so a concurrent setParts (e.g.
+        // another part's visibility toggle resolving first) can't transiently revert the dragged
+        // mesh via the parts-sync effect. Capture the prior placement first so a rejected IPC can
+        // roll both the store and the viewer back to the last-persisted value (no divergence).
+        const store = useAppStore.getState()
+        const prev = store.parts.find((p) => p.id === partId)?.placement
+        store.setParts(store.parts.map((p) => (p.id === partId ? { ...p, placement } : p)))
+        void window.voyager.part
+          .setPlacement({ partId, placement })
+          .then(({ parts, activePartId }) => {
+            setParts(parts)
+            setSelectedPartId(activePartId)
+          })
+          .catch(() => {
+            if (!prev) return
+            const cur = useAppStore.getState()
+            cur.setParts(cur.parts.map((p) => (p.id === partId ? { ...p, placement: prev } : p)))
+            viewerRef.current?.setPartPlacement(partId, prev)
+          })
+      }
+    })
+    placementControllerRef.current = placementController
+
     return () => {
       controller.dispose()
       highlight.dispose()
       measureController.dispose()
       measurementOverlay.dispose()
+      placementController.dispose()
       viewer.dispose()
       controllerRef.current = null
       measureControllerRef.current = null
+      placementControllerRef.current = null
       viewerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -121,6 +158,41 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
     viewerRef.current?.setOrbitEnabled(!paramUpdatePending)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paramUpdatePending])
+
+  // WS-I: the focused part is what selection/measurement/the gizmo act on - keep the viewer in sync
+  // with the store's `selectedPartId` (set by the parts panel, hydration, and each display).
+  useEffect(() => {
+    viewerRef.current?.focusPart(selectedPartId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPartId])
+
+  // WS-I: mirror per-part visibility + placement from the store onto the already-loaded meshes
+  // (a visibility toggle or a placement persisted from the gizmo). Idempotent - re-applying a
+  // placement the gizmo just set is a no-op.
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer) return
+    for (const part of parts) {
+      viewer.setPartVisible(part.id, part.visible)
+      viewer.setPartPlacement(part.id, part.placement)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [parts])
+
+  // WS-I: the placement gizmo is available only for a multi-part project, on the focused part, when
+  // neither select nor measure mode is active (they share the canvas), and not while the agent is
+  // busy - the `part:setPlacement` handler rejects mid-turn, so dragging then would move the mesh
+  // but silently fail to persist. Otherwise detach it.
+  useEffect(() => {
+    const placement = placementControllerRef.current
+    if (!placement) return
+    if (parts.length > 1 && selectedPartId && !selectMode && !measureMode && !agentBusy) {
+      placement.attach(selectedPartId)
+    } else {
+      placement.detach()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPartId, parts, selectMode, measureMode, agentBusy])
 
   return (
     <Box

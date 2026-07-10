@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import type { SelectionSummary } from '../../../shared/ipc'
+import { MAIN_PART_ID } from '../../../shared/ipc'
 import {
   padRectToMinSize,
   pixelRectToNdc,
@@ -121,7 +122,15 @@ export class SelectionController {
     camera.updateMatrixWorld()
     const viewProjection = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
 
-    const triIndices = selectTrianglesInRect(mesh.geometry, viewProjection, ndcRect)
+    // Fold in the focused part's world transform so a placed part's triangles project correctly
+    // (WS-I §14) - the mesh geometry is in local coords, but a placed part carries a placement
+    // transform. For a single/`main` part at the origin this is the identity, so behavior is
+    // unchanged. `selectTrianglesInRect` + `summarizeSelection` then work in the part's local space
+    // (its own dimensions), which is exactly what we want to report for that part's region.
+    mesh.updateMatrixWorld()
+    const localToClip = viewProjection.multiply(mesh.matrixWorld)
+
+    const triIndices = selectTrianglesInRect(mesh.geometry, localToClip, ndcRect)
 
     if (triIndices.length === 0) {
       viewer.setHighlightObject(null)
@@ -131,7 +140,13 @@ export class SelectionController {
 
     this.options.highlight.update(mesh.geometry, triIndices)
     viewer.setHighlightObject(this.options.highlight.object)
-    this.options.onSelectionChange(summarizeSelection(mesh.geometry, triIndices))
+    // Tag the selection with which part it belongs to (WS-I) so the agent knows which part a
+    // "make this hole bigger" refers to; omitted for the default `main` part.
+    const summary = summarizeSelection(mesh.geometry, triIndices)
+    const focusedPartId = viewer.getFocusedPartId()
+    this.options.onSelectionChange(
+      focusedPartId && focusedPartId !== MAIN_PART_ID ? { ...summary, partId: focusedPartId } : summary
+    )
   }
 
   private handleKeyDown(event: KeyboardEvent): void {

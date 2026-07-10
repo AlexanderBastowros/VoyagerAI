@@ -9,22 +9,32 @@ import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 import MenuIcon from '@mui/icons-material/Menu'
 import { BriefPanel } from './components/BriefPanel'
 import { ChatPanel } from './components/ChatPanel'
+import { ImportDialog } from './components/ImportDialog'
 import { ParamPanel } from './components/ParamPanel'
+import { PartsPanel } from './components/PartsPanel'
 import { PrintSettingsPanel } from './components/PrintSettingsPanel'
 import { ProjectsDrawer } from './components/ProjectsDrawer'
 import { SetupScreen } from './components/SetupScreen'
 import { VerificationPanel } from './components/VerificationPanel'
 import { ViewportControls } from './components/ViewportControls'
 import { Viewport } from './components/Viewport'
+import { MAIN_PART_ID } from '../../shared/ipc'
 import { toModelInfo, useAppStore } from './state/appStore'
+import { syncViewportParts } from './state/syncParts'
 import type { ModelViewer } from './three/viewer'
 
 export function App(): React.JSX.Element {
   const viewerRef = useRef<ModelViewer | null>(null)
+  // Monotonic token for model:displayed refetches - drops a stale part/iteration refetch whose
+  // async result resolves after a newer display's (rapid consecutive display_model calls).
+  const displaySeqRef = useRef(0)
   const applyAgentEvent = useAppStore((state) => state.applyAgentEvent)
   const addMessage = useAppStore((state) => state.addMessage)
   const setModel = useAppStore((state) => state.setModel)
-  const addIteration = useAppStore((state) => state.addIteration)
+  const setIterations = useAppStore((state) => state.setIterations)
+  const setActiveIteration = useAppStore((state) => state.setActiveIteration)
+  const setParts = useAppStore((state) => state.setParts)
+  const setSelectedPartId = useAppStore((state) => state.setSelectedPartId)
   const setPrintSettings = useAppStore((state) => state.setPrintSettings)
   const setPendingPermission = useAppStore((state) => state.setPendingPermission)
   const hydrateProject = useAppStore((state) => state.hydrateProject)
@@ -41,10 +51,11 @@ export function App(): React.JSX.Element {
   // hydrateProject + syncModel pairing for the same reason.
   useEffect(() => {
     let cancelled = false
-    void window.voyager.project.getState().then((snapshot) => {
+    void window.voyager.project.getState().then(async (snapshot) => {
       if (cancelled) return
       hydrateProject(snapshot)
-      viewerRef.current?.syncModel(snapshot.model?.stlBuffer ?? null)
+      // Render every part at its placement (WS-I) - replaces the old single-model syncModel.
+      await syncViewportParts(viewerRef.current)
     })
     return () => {
       cancelled = true
@@ -59,10 +70,26 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     const unsubscribeEvents = window.voyager.agent.onEvent(applyAgentEvent)
     const unsubscribeModel = window.voyager.model.onDisplayed((payload) => {
-      viewerRef.current?.loadSTL(payload.stlBuffer)
+      // WS-I: a display belongs to a part (default `main`). Load it into that part's mesh slot and
+      // focus it (it just became the active part), rather than replacing "the" single model.
+      const partId = payload.partId ?? MAIN_PART_ID
+      viewerRef.current?.loadPart(partId, payload.stlBuffer)
+      viewerRef.current?.focusPart(partId)
       setModel(toModelInfo(payload))
-      addIteration(payload)
       addMessage({ role: 'system-status', text: `Model v${payload.iteration} displayed: ${payload.summary}` })
+      // The display may have created a new part and/or switched the active one; refresh the parts
+      // list and the (now active part's) version history so every panel follows. Guard against a
+      // stale refetch (an earlier display's result resolving after a later one's).
+      const seq = ++displaySeqRef.current
+      void Promise.all([window.voyager.part.list(), window.voyager.project.listIterations()]).then(
+        ([partList, iterations]) => {
+          if (seq !== displaySeqRef.current) return
+          setParts(partList.parts)
+          setSelectedPartId(partList.activePartId)
+          setIterations(iterations)
+          setActiveIteration(payload.iteration)
+        }
+      )
     })
     const unsubscribePermission = window.voyager.agent.onPermissionRequest(setPendingPermission)
     const unsubscribePrintSettings = window.voyager.model.onPrintSettings(setPrintSettings)
@@ -72,7 +99,17 @@ export function App(): React.JSX.Element {
       unsubscribePermission()
       unsubscribePrintSettings()
     }
-  }, [applyAgentEvent, addMessage, addIteration, setModel, setPendingPermission, setPrintSettings])
+  }, [
+    applyAgentEvent,
+    addMessage,
+    setModel,
+    setIterations,
+    setActiveIteration,
+    setParts,
+    setSelectedPartId,
+    setPendingPermission,
+    setPrintSettings
+  ])
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', overflow: 'hidden' }}>
@@ -125,6 +162,7 @@ export function App(): React.JSX.Element {
           }}
         >
           <BriefPanel />
+          <PartsPanel />
           <ParamPanel />
           <VerificationPanel />
           <PrintSettingsPanel />
@@ -132,6 +170,8 @@ export function App(): React.JSX.Element {
         </Box>
       </Box>
       <ProjectsDrawer open={projectsOpen} onClose={() => setProjectsOpen(false)} viewerRef={viewerRef} />
+      {/* WS-G import flow; renders a closed dialog until opened via the store's importDialogOpen. */}
+      <ImportDialog />
       {/* Full-viewport overlay; renders null once setup is complete (see SetupScreen). */}
       <SetupScreen />
     </Box>

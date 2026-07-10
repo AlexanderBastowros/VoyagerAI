@@ -6,6 +6,7 @@ import type {
   DesignBrief,
   IterationInfo,
   ModelDisplayedPayload,
+  PartRecord,
   PermissionRequestPayload,
   PrinterProfileRef,
   PrintSettings,
@@ -172,6 +173,16 @@ export interface AppState {
   /** Every saved printer profile (WS-E) and which one is active, or null if none is set yet. */
   printerProfiles: PrinterProfileRef[]
   activePrinterProfileId: string | null
+  /** Every part in the active project (WS-I multi-part, §14). Empty until WS-I lands its store
+   *  model; hydrated by `PartsPanel` via `part.list`/`part:updated`, not from the project snapshot. */
+  parts: PartRecord[]
+  /** The part the user has focused in the parts panel/viewport, or null. Renderer-local (not
+   *  persisted server state, see `PartListResponse`) - travels to the agent as
+   *  `SendMessageRequest.focusedPartId`. */
+  selectedPartId: string | null
+  /** True while the WS-G import dialog is open. Store-held (not local to `App.tsx`) so any trigger -
+   *  a toolbar button, drag-drop, an empty-project prompt - can open it without threading props. */
+  importDialogOpen: boolean
   /** True while a parameter-panel edit's venv re-run is in flight (WS-B) - the viewport reads
    *  this to show a loading spinner over the model and freeze orbit/selection interaction until
    *  the re-run's `model:displayed` broadcast arrives (or it fails). Distinct from `agentBusy`:
@@ -236,6 +247,13 @@ export interface AppState {
   setPrinterProfiles: (profiles: PrinterProfileRef[], activeId: string | null) => void
   /** Sets or clears the in-flight flag for a parameter-panel re-run - see `paramUpdatePending`. */
   setParamUpdatePending: (pending: boolean) => void
+  /** Replaces the parts list - used after `part.list`/`setPlacement`/`setVisibility` and the
+   *  `part:updated` push. */
+  setParts: (parts: PartRecord[]) => void
+  /** Sets or clears (pass `null`) the focused part - see `selectedPartId`. */
+  setSelectedPartId: (id: string | null) => void
+  /** Opens/closes the import dialog - see `importDialogOpen`. */
+  setImportDialogOpen: (open: boolean) => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -264,6 +282,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   verificationReport: null,
   printerProfiles: [],
   activePrinterProfileId: null,
+  parts: [],
+  selectedPartId: null,
+  importDialogOpen: false,
   paramUpdatePending: false,
 
   addMessage: (message) => {
@@ -315,7 +336,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       agentStreamIds: {},
       pendingPermission: null,
       thinkingText: '',
-      paramUpdatePending: false
+      paramUpdatePending: false,
+      // Parts belong to the project being left - clear them so a switch never shows stale parts;
+      // `PartsPanel` refetches via `part.list` when `activeProjectId` changes. Not carried in the
+      // snapshot (see `parts` doc comment).
+      parts: [],
+      selectedPartId: null,
+      importDialogOpen: false
     })
   },
 
@@ -338,7 +365,8 @@ export const useAppStore = create<AppState>((set, get) => ({
           n: payload.iteration,
           summary: payload.summary,
           at: new Date().toISOString(),
-          hasStep: Boolean(payload.stepPath)
+          hasStep: Boolean(payload.stepPath),
+          createdBy: payload.createdBy
         }
       ],
       activeIteration: payload.iteration
@@ -424,5 +452,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setVerificationReport: (verificationReport) => set({ verificationReport }),
   setPrinterProfiles: (printerProfiles, activePrinterProfileId) =>
     set({ printerProfiles, activePrinterProfileId }),
-  setParamUpdatePending: (paramUpdatePending) => set({ paramUpdatePending })
+  setParamUpdatePending: (paramUpdatePending) => set({ paramUpdatePending }),
+  setParts: (parts) => set({ parts }),
+  setSelectedPartId: (selectedPartId) => set({ selectedPartId }),
+  setImportDialogOpen: (importDialogOpen) => set({ importDialogOpen })
 }))

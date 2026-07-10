@@ -20,8 +20,17 @@ export interface BriefCompleteness {
   percent: number
 }
 
-function featureLocator(feature: Feature): string {
+/** Every feature kind except `gear` has one free-text "where" field (`position`, or
+ *  `fillet_chamfer`'s `edges`); gears have none - see `featureDone`. Mirrors
+ *  `packages/agent-core/brief/completeness.ts`. */
+function featureLocator(feature: Exclude<Feature, { kind: 'gear' }>): string {
   return feature.kind === 'fillet_chamfer' ? feature.edges : feature.position
+}
+
+/** Whether a feature counts as "complete" for the meter. Gears carry no locator - a parsed gear
+ *  already has module/teeth/PA, so completeness reduces to a real bore diameter. */
+function featureDone(feature: Feature): boolean {
+  return feature.kind === 'gear' ? feature.bore.value > 0 : featureLocator(feature).trim().length > 0
 }
 
 function requiredChecks(brief: DesignBrief): BriefCompletenessCheck[] {
@@ -44,7 +53,7 @@ export function computeBriefCompleteness(brief: DesignBrief): BriefCompleteness 
     ...requiredChecks(brief),
     ...brief.features.map((feature, index) => ({
       label: `Feature ${index + 1} (${feature.kind})`,
-      done: featureLocator(feature).trim().length > 0
+      done: featureDone(feature)
     }))
   ]
   const filled = checks.filter((c) => c.done).length
@@ -209,5 +218,10 @@ export function featureSummary(feature: Feature): string {
       return `Text "${feature.content}", ${feature.depthMm}mm deep - ${feature.position}`
     case 'insert':
       return `${feature.insertType} insert, ${feature.size} - ${feature.position}`
+    case 'gear': {
+      const helix = feature.helix ? `, ${feature.helix}° helix` : ''
+      const mesh = feature.meshesWith ? `, meshes ${feature.meshesWith}` : ''
+      return `Gear, m${feature.module} ${feature.teeth}T ${feature.pressureAngle}°PA, Ø${feature.bore.value}mm bore${helix}${mesh}`
+    }
   }
 }

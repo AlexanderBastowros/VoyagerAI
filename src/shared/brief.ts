@@ -89,6 +89,29 @@ export const FeatureSchema = z.discriminatedUnion('kind', [
     insertType: z.string(),
     size: z.string(),
     position: z.string()
+  }),
+  /**
+   * A library-generated involute gear (WS-H, architecture doc §13). `module`/`teeth`/
+   * `pressureAngle`/`helix` are engineering parameters (not toleranced `Dim`s); `bore` and the
+   * optional `hub` are real diameters/heights that carry fit tolerance like any hole. `meshesWith`
+   * points at the `id` of the mating gear feature, which is what turns "make a gear" into a
+   * checkable pair spec (matched module/PA, center distance) rather than an unmated shape request.
+   */
+  FeatureBaseSchema.extend({
+    kind: z.literal('gear'),
+    /** Gear module in mm (tooth-size unit): pitch diameter = module × teeth. Must match a mate. */
+    module: z.number().positive(),
+    teeth: z.number().int().positive(),
+    /** Pressure angle in degrees (commonly 20). Must match a mate. */
+    pressureAngle: z.number().positive(),
+    /** Helix angle in degrees; omitted for a spur gear. */
+    helix: z.number().optional(),
+    /** Center bore diameter (for the shaft/axle). */
+    bore: DimSchema,
+    /** Optional raised hub around the bore. */
+    hub: z.object({ diameter: DimSchema, height: DimSchema }).optional(),
+    /** `id` of the Feature this gear meshes with (§13) - makes the pair a checkable spec. */
+    meshesWith: z.string().optional()
   })
 ])
 export type Feature = z.infer<typeof FeatureSchema>
