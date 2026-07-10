@@ -3,6 +3,7 @@ import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-
 import { createDisplayModelTool } from './displayModel'
 import { createRecommendPrintSettingsTool } from './recommendPrintSettings'
 import { createRunVerificationTool } from './runVerification'
+import { createSavePrinterProfileTool } from './savePrinterProfile'
 import { createSetStatusTool } from './setStatus'
 import { createUpdateBriefTool } from './updateBrief'
 import type { VoyagerMcpDeps } from './types'
@@ -10,9 +11,16 @@ import type { VoyagerMcpDeps } from './types'
 export { createDisplayModelTool } from './displayModel'
 export { createRecommendPrintSettingsTool } from './recommendPrintSettings'
 export { createRunVerificationTool } from './runVerification'
+export { createSavePrinterProfileTool } from './savePrinterProfile'
 export { createSetStatusTool } from './setStatus'
 export { createUpdateBriefTool } from './updateBrief'
-export type { VoyagerBriefStore, VoyagerMcpDeps, VoyagerMcpEmission, VoyagerMcpProjectStore } from './types'
+export type {
+  VoyagerBriefStore,
+  VoyagerMcpDeps,
+  VoyagerMcpEmission,
+  VoyagerMcpProjectStore,
+  VoyagerPrinterProfileStore
+} from './types'
 
 /**
  * Assembles the in-process `voyager` MCP server registered on the agent session's `mcpServers`
@@ -29,6 +37,7 @@ export function createVoyagerMcpServer(deps: VoyagerMcpDeps): McpSdkServerConfig
       createDisplayModelTool(deps),
       createRecommendPrintSettingsTool(deps),
       createRunVerificationTool(deps),
+      createSavePrinterProfileTool(deps),
       createSetStatusTool(deps),
       createUpdateBriefTool(deps)
     ]

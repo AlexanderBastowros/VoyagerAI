@@ -12,6 +12,7 @@ import { ChatPanel } from './components/ChatPanel'
 import { ImportDialog } from './components/ImportDialog'
 import { ParamPanel } from './components/ParamPanel'
 import { PartsPanel } from './components/PartsPanel'
+import { PrinterProfilesPanel } from './components/PrinterProfilesPanel'
 import { PrintSettingsPanel } from './components/PrintSettingsPanel'
 import { ProjectsDrawer } from './components/ProjectsDrawer'
 import { SetupScreen } from './components/SetupScreen'
@@ -166,6 +167,7 @@ export function App(): React.JSX.Element {
           <ParamPanel />
           <VerificationPanel />
           <PrintSettingsPanel />
+          <PrinterProfilesPanel />
           <ChatPanel />
         </Box>
       </Box>

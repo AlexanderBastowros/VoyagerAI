@@ -1,5 +1,6 @@
-import type { DesignBrief, ModelDisplayedPayload, PrintSettings, VerificationReport } from '@shared/ipc'
+import type { DesignBrief, ModelDisplayedPayload, PrinterProfileRef, PrintSettings, VerificationReport } from '@shared/ipc'
 import type { ProjectIteration } from '../src/projects/store'
+import type { PrinterProfileList } from '../src/projects/printerProfiles'
 import type { BriefAgentPatch } from '../brief/agentPatch'
 
 /** The subset of ProjectStore each MCP tool needs - kept narrow for testability. */
@@ -33,6 +34,16 @@ export interface VoyagerBriefStore {
   applyAgentPatch(projectDir: string, patch: BriefAgentPatch): Promise<DesignBrief>
 }
 
+/** The subset of `PrinterProfileStore` (`packages/agent-core/src/projects/printerProfiles.ts`)
+ *  the `save_printer_profile` tool and `AgentSession` (which reads the active profile into the
+ *  system prompt) need - kept narrow for testability, mirroring `VoyagerBriefStore`. Optional on
+ *  `VoyagerMcpDeps` so tool tests that don't touch profiles don't need to wire one up;
+ *  `src/main/ipc.ts` always supplies the real app-data-backed store in production. */
+export interface VoyagerPrinterProfileStore {
+  getActive(): Promise<PrinterProfileRef | null>
+  save(profile: PrinterProfileRef): Promise<PrinterProfileList>
+}
+
 /**
  * Domain-level events tool handlers report back to whoever owns the session (AgentSession).
  * Kept independent of the raw `agent:event` / `model:displayed` IPC channel shapes so no tool
@@ -45,6 +56,7 @@ export type VoyagerMcpEmission =
   | { kind: 'print-settings'; payload: PrintSettings }
   | { kind: 'brief-updated'; payload: DesignBrief }
   | { kind: 'verification-computed'; payload: VerificationReport }
+  | { kind: 'printer-profiles-updated'; payload: PrinterProfileList }
 
 export interface VoyagerMcpDeps {
   projectStore: VoyagerMcpProjectStore
@@ -57,5 +69,7 @@ export interface VoyagerMcpDeps {
    * `ProjectStore.onIterationRecorded` hook uses) in production.
    */
   runVerification?: (iteration: ProjectIteration) => Promise<VerificationReport>
+  /** Backs the `save_printer_profile` tool (WS-E) - optional, mirrors `briefStore`. */
+  printerProfiles?: VoyagerPrinterProfileStore
   emit: (emission: VoyagerMcpEmission) => void
 }
