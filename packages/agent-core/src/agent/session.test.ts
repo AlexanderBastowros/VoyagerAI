@@ -6,7 +6,8 @@ import type { CanUseTool, Options, Query, SDKMessage, SDKUserMessage } from '@an
 import { AgentSession, humanizeToolUse, translateSdkMessage, truncateArgs } from './session'
 import type { QueryFn } from './session'
 import { ProjectStore } from '../projects/store'
-import type { AgentEvent, ModelDisplayedPayload, PrintSettings } from '@shared/ipc'
+import type { VoyagerPrinterProfileStore } from '../../tools'
+import type { AgentEvent, ModelDisplayedPayload, PrinterProfileRef, PrintSettings } from '@shared/ipc'
 
 // ---------------------------------------------------------------------------
 // translateSdkMessage (pure)
@@ -287,6 +288,9 @@ interface HarnessOptions {
   /** Overrides the default real, scratch-backed ProjectStore - e.g. to point at a broken
    *  skillSourceDir and force ensureProject()/ensureStarted() to reject. */
   store?: ProjectStore
+  /** Wires a printer-profile store (WS-E) so tests can assert the active profile reaches the
+   *  system prompt and that a profile change restarts the query. */
+  printerProfiles?: VoyagerPrinterProfileStore
 }
 
 function makeHarness(opts: HarnessOptions = {}): Harness {
@@ -347,7 +351,8 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     queryFn,
     env: { PATH: '/usr/bin' },
     requestUserApproval,
-    ...(opts.approvalTimeoutMs !== undefined ? { approvalTimeoutMs: opts.approvalTimeoutMs } : {})
+    ...(opts.approvalTimeoutMs !== undefined ? { approvalTimeoutMs: opts.approvalTimeoutMs } : {}),
+    ...(opts.printerProfiles ? { printerProfiles: opts.printerProfiles } : {})
   })
 
   return {
@@ -568,7 +573,101 @@ describe('AgentSession model/effort settings', () => {
     expect(h.optionsHistory[1]?.effort).toBe('medium')
     expect(h.optionsHistory[1]?.resume).toBe('sess-1')
   })
+
+  it('bakes the active printer profile into the system prompt append (WS-E)', async () => {
+    const h = makeHarness({ printerProfiles: fakePrinterProfiles(printerProfile()).store })
+
+    await h.session.sendMessage('design a 20mm cube')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    const append = promptAppendOf(h.getCapturedOptions())
+    expect(append).toContain('"Prusa MK4"')
+    expect(append).toContain('nozzle diameter')
+  })
+
+  it('says nothing about printer profiles when no profile store is wired', async () => {
+    const h = makeHarness()
+
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+
+    expect(promptAppendOf(h.getCapturedOptions())).not.toContain('printer profile')
+  })
+
+  it('restarts the query (resuming) when the active printer profile changes between turns', async () => {
+    const fake = fakePrinterProfiles(null)
+    const h = makeHarness({ printerProfiles: fake.store })
+
+    await h.session.sendMessage('first')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    h.outputs.push(msg({ type: 'system', subtype: 'init', session_id: 'sess-1' }))
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+    await vi.waitFor(async () => expect(await h.store.getSessionId()).toBe('sess-1'))
+
+    // With no profile saved, the prompt teaches ask-then-offer-to-save.
+    expect(promptAppendOf(h.optionsHistory[0])).toContain('has not saved a printer profile yet')
+
+    fake.setActiveProfile(printerProfile())
+    await h.session.sendMessage('second')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(2))
+
+    expect(h.optionsHistory).toHaveLength(2)
+    expect(promptAppendOf(h.optionsHistory[1])).toContain('"Prusa MK4"')
+    expect(h.optionsHistory[1]?.resume).toBe('sess-1')
+  })
+
+  it('does not restart the query between turns when the active profile is unchanged', async () => {
+    const h = makeHarness({ printerProfiles: fakePrinterProfiles(printerProfile()).store })
+
+    await h.session.sendMessage('first')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+
+    await h.session.sendMessage('second')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(2))
+
+    expect(h.optionsHistory).toHaveLength(1)
+  })
 })
+
+function printerProfile(): PrinterProfileRef {
+  return {
+    id: 'prusa-mk4',
+    name: 'Prusa MK4',
+    bedXMm: 250,
+    bedYMm: 210,
+    bedZMm: 220,
+    nozzleDiameterMm: 0.4,
+    materials: ['PLA']
+  }
+}
+
+/** A `VoyagerPrinterProfileStore` whose active profile tests can swap between turns. */
+function fakePrinterProfiles(initial: PrinterProfileRef | null): {
+  store: VoyagerPrinterProfileStore
+  setActiveProfile: (profile: PrinterProfileRef | null) => void
+} {
+  let active = initial
+  return {
+    store: {
+      getActive: async () => active,
+      save: async (profile) => ({ profiles: [profile], activeId: profile.id })
+    },
+    setActiveProfile: (profile) => {
+      active = profile
+    }
+  }
+}
+
+function promptAppendOf(options: Options | undefined): string {
+  const systemPrompt = options?.systemPrompt
+  if (!systemPrompt || typeof systemPrompt === 'string' || !('append' in systemPrompt)) {
+    throw new Error('expected a preset system prompt with an append')
+  }
+  return systemPrompt.append ?? ''
+}
 
 // ---------------------------------------------------------------------------
 // AgentSession.interrupt

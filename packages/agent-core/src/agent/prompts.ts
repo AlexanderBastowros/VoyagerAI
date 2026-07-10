@@ -1,14 +1,51 @@
 import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resources'
-import type { ChatAttachment, SelectionSummary } from '@shared/ipc'
+import type { ChatAttachment, PrinterProfileRef, SelectionSummary } from '@shared/ipc'
 import type { ProjectIteration } from '../projects/store'
+
+/**
+ * The "your printer is already known" (or "no profile yet - ask, then offer to save") paragraph
+ * appended by `systemPromptAppend` (WS-E, product doc §4.4). Overrides the printable-cad skill's
+ * Phase-1 instruction to ask the nozzle/bed questions up front: with an active profile those
+ * answers are settings, not questions. `null` means "a profile store exists but nothing is
+ * saved/active"; the caller omits the paragraph entirely only when no store is wired at all
+ * (`undefined` - e.g. bare test harnesses).
+ */
+export function formatPrinterProfileContext(profile: PrinterProfileRef | null): string {
+  if (!profile) {
+    return [
+      'The user has not saved a printer profile yet. Ask the printable-cad skill\'s Phase-1 printer',
+      'questions (nozzle diameter, bed size) as usual - then, once the user has answered, offer to',
+      'save the answers as a reusable profile with the `save_printer_profile` MCP tool (only save',
+      'after they agree). With a saved profile, future projects skip these questions entirely.'
+    ].join('\n')
+  }
+
+  const materials =
+    profile.materials.length > 0 ? ` Materials on hand: ${profile.materials.join(', ')}.` : ''
+  return [
+    `The user's saved printer profile "${profile.name}" is active: bed ${profile.bedXMm} x`,
+    `${profile.bedYMm} x ${profile.bedZMm} mm (X x Y x Z), nozzle diameter`,
+    `${profile.nozzleDiameterMm} mm.${materials} Treat these as the already-confirmed answers to the`,
+    'printable-cad skill\'s Phase-1 printer questions - do NOT ask the user for nozzle diameter or',
+    'bed size; derive the script\'s `NOZZLE`, `BED_X`, `BED_Y`, `BED_Z` (and `MIN_WALL`) constants',
+    'from this profile, and use the same values for the Phase-5 validator\'s `--bed-x/--bed-y/',
+    '--bed-z/--nozzle` flags. Mention in passing which profile you\'re using so the user can',
+    'correct you. If they say this project is for a different printer, use their values instead',
+    'and offer to save them as a new profile with the `save_printer_profile` MCP tool.'
+  ].join('\n')
+}
 
 /**
  * Extra context appended to the `claude_code` preset system prompt (see
  * `systemPrompt: { type: 'preset', preset: 'claude_code', append: ... }` in
  * session.ts). Orients Claude inside the Voyager AI desktop app and points
  * it at the printable-cad skill and the project's working directory.
+ *
+ * `printerProfile` is the user's active printer profile (WS-E): a `PrinterProfileRef` pre-answers
+ * the skill's Phase-1 printer questions, `null` instructs asking-then-offering-to-save, and
+ * `undefined` (no profile store wired - some test harnesses) omits the topic entirely.
  */
-export function systemPromptAppend(projectDir: string): string {
+export function systemPromptAppend(projectDir: string, printerProfile?: PrinterProfileRef | null): string {
   return [
     'You are the modeling engine inside Voyager AI, a desktop app for 3D-printing hobbyists.',
     'The user sees your replies in a chat panel next to a live 3D viewport - keep replies',
@@ -44,6 +81,7 @@ export function systemPromptAppend(projectDir: string): string {
     '`recommend_print_settings` MCP tool (skill Phase 7) instead of just replying in prose - it',
     'renders as a list in Voyager\'s print-settings panel.',
     '',
+    ...(printerProfile !== undefined ? [formatPrinterProfileContext(printerProfile), ''] : []),
     'The user cannot run commands themselves - you run everything (the script, the validator, etc.)',
     'on their behalf. `python` on PATH is Voyager\'s managed CAD environment with build123d, trimesh,',
     'and numpy pre-installed; use it directly.',

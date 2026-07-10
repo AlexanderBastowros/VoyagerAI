@@ -7,6 +7,9 @@ export type { ProjectStoreOptions, ProjectRecord, ProjectIteration } from './pro
 export { resolveExportSource } from './projects/exportResolver'
 export type { ExportSourceResolution } from './projects/exportResolver'
 
+export { PrinterProfileStore } from './projects/printerProfiles'
+export type { PrinterProfileList, PrinterProfileStoreOptions } from './projects/printerProfiles'
+
 export { EnvManager } from './python/envManager'
 export type { EnvManagerOptions, SmokeTestResult, SpawnLike } from './python/envManager'
 

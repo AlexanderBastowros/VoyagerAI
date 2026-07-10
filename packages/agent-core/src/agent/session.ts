@@ -9,6 +9,7 @@ import type {
   ChatAttachment,
   DesignBrief,
   ModelDisplayedPayload,
+  PrinterProfileListResponse,
   PrintSettings,
   SelectionSummary,
   SendMessageResponse,
@@ -17,7 +18,7 @@ import type {
 import type { ProjectIteration, ProjectStore } from '../projects/store'
 import { BriefStore } from '../../brief/store'
 import { createVoyagerMcpServer } from '../../tools'
-import type { VoyagerMcpEmission } from '../../tools'
+import type { VoyagerMcpEmission, VoyagerPrinterProfileStore } from '../../tools'
 import { decideToolPermission } from './permissions'
 import { buildUserMessage, formatRevertContext, systemPromptAppend } from './prompts'
 
@@ -117,6 +118,15 @@ export interface AgentSessionDeps {
   runVerification?: (iteration: ProjectIteration) => Promise<VerificationReport>
   /** Pushed whenever `run_verification` recomputes a report - optional, mirrors `emitBriefUpdated`. */
   emitVerificationUpdated?: (payload: VerificationReport) => void
+  /**
+   * Printer profile store (WS-E) - the active profile pre-answers the skill's Phase-1 printer
+   * questions via the system prompt, and backs the `save_printer_profile` MCP tool. Optional so
+   * existing test harnesses don't need to wire one up; when omitted, the system prompt simply
+   * says nothing about profiles and the tool reports itself unavailable.
+   */
+  printerProfiles?: VoyagerPrinterProfileStore
+  /** Pushed whenever `save_printer_profile` persists a profile - optional, mirrors `emitBriefUpdated`. */
+  emitPrinterProfilesUpdated?: (payload: PrinterProfileListResponse) => void
   /**
    * Surfaces an out-of-policy tool call to the user (an inline Allow/Deny
    * card in the chat) and resolves with their decision. Backed by an IPC
@@ -245,6 +255,8 @@ export function humanizeToolUse(name: string, input: Record<string, unknown>): T
       return null // the tool handler itself emits the (better) status text
     case 'mcp__voyager__update_brief':
       return activity('Updating the design brief')
+    case 'mcp__voyager__save_printer_profile':
+      return activity('Saving your printer profile')
     case 'AskUserQuestion':
       // Denied by policy (see decideToolPermission); Claude re-asks in prose,
       // so a "Using AskUserQuestion" line would just be confusing noise.
@@ -361,6 +373,10 @@ export class AgentSession {
   /** The model/effort combination baked into the currently-running query, if any - compared
    *  against the project's live settings on each `ensureStarted` call to detect a change. */
   private appliedSettings: AgentSettings | null = null
+  /** JSON of the active printer profile baked into the currently-running query's system prompt -
+   *  compared against the live store on each `ensureStarted` call so saving or switching a
+   *  profile restarts the query (with `resume`, like a settings change) instead of going stale. */
+  private appliedPrinterProfileKey = 'null'
   /** Accumulates the current turn's assistant text so it can be persisted as one durable
    *  message on the turn's terminal event - see `flushAssistantBuffer`. */
   private assistantBuffer = ''
@@ -539,6 +555,12 @@ export class AgentSession {
     const projectChanged = dir !== this.projectDir
     this.projectDir = dir
     const settings = await this.deps.projectStore.getAgentSettings()
+    // `undefined` = no store wired (the system prompt omits the topic); `null` = store wired but
+    // nothing saved/active yet (the prompt says to ask, then offer to save) - see prompts.ts.
+    const printerProfile = this.deps.printerProfiles
+      ? await this.deps.printerProfiles.getActive()
+      : undefined
+    const printerProfileKey = JSON.stringify(printerProfile ?? null)
 
     if (projectChanged) {
       // Both are scoped to whatever project was previously active - carrying either into a
@@ -556,12 +578,13 @@ export class AgentSession {
       const unchanged =
         !projectChanged &&
         this.appliedSettings?.model === settings.model &&
-        this.appliedSettings?.effort === settings.effort
+        this.appliedSettings?.effort === settings.effort &&
+        this.appliedPrinterProfileKey === printerProfileKey
       if (unchanged) return
-      // The active project switched, or the user picked a different model/effort, since this
-      // query started - end the input stream so the subprocess exits cleanly, then fall
-      // through to start a fresh one below. `sendMessage` only reaches `ensureStarted` while
-      // idle, so this never cuts an in-flight turn short.
+      // The active project switched, or the user picked a different model/effort or saved/switched
+      // a printer profile, since this query started - end the input stream so the subprocess exits
+      // cleanly, then fall through to start a fresh one below. `sendMessage` only reaches
+      // `ensureStarted` while idle, so this never cuts an in-flight turn short.
       this.queue?.end()
       this.queue = null
       this.activeQuery = null
@@ -585,6 +608,7 @@ export class AgentSession {
           projectStore: this.deps.projectStore,
           briefStore: this.briefStore,
           runVerification: this.deps.runVerification,
+          printerProfiles: this.deps.printerProfiles,
           emit: (emission) => this.handleEmission(emission)
         })
       },
@@ -602,11 +626,12 @@ export class AgentSession {
         'mcp__voyager__display_model',
         'mcp__voyager__recommend_print_settings',
         'mcp__voyager__run_verification',
+        'mcp__voyager__save_printer_profile',
         'mcp__voyager__set_status',
         'mcp__voyager__update_brief'
       ],
       canUseTool: this.canUseTool,
-      systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(dir) },
+      systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(dir, printerProfile) },
       includePartialMessages: true,
       // Enable adaptive thinking with visible summaries so the renderer receives thinking_delta
       // stream events (off by default on Opus 4.7/4.8; display defaults to "omitted" = empty text).
@@ -625,6 +650,7 @@ export class AgentSession {
     this.queue = new AsyncPushQueue<SDKUserMessage>()
     this.receivedAnyMessage = false
     this.appliedSettings = settings
+    this.appliedPrinterProfileKey = printerProfileKey
     this.activeQuery = this.queryFn({ prompt: this.queue, options })
     void this.consume(this.activeQuery, resume !== undefined)
   }
@@ -718,6 +744,9 @@ export class AgentSession {
         return
       case 'verification-computed':
         this.deps.emitVerificationUpdated?.(emission.payload)
+        return
+      case 'printer-profiles-updated':
+        this.deps.emitPrinterProfilesUpdated?.(emission.payload)
         return
     }
   }

@@ -49,6 +49,7 @@ import {
   BriefStore,
   ClaudeChecker,
   EnvManager,
+  PrinterProfileStore,
   ProjectStore,
   readManifestForIteration,
   rerunWithParam,
@@ -200,11 +201,11 @@ async function buildProjectSnapshot(projectStore: ProjectStore): Promise<Project
 }
 
 /**
- * In-memory stubs for the WS-E/F contracts landed by WS-0b (WS-A's brief handlers, WS-B's
- * parameter handlers, and WS-C's verification handlers below are all real). None of this is
- * persisted or per-project - each real work order (see `agents/production-roadmap.md`) replaces
- * its stub with durable, project-scoped state without needing to touch this file again, since the
- * IPC shapes are already final.
+ * In-memory stub for the WS-F contract landed by WS-0b (WS-A's brief handlers, WS-B's
+ * parameter handlers, WS-C's verification handlers, and WS-E's printer-profile handlers below
+ * are all real). It isn't persisted or per-project - the real work order (see
+ * `agents/production-roadmap.md`) replaces its stub with durable state without needing to touch
+ * this file again, since the IPC shapes are already final.
  */
 
 /** Registers all main-process IPC handlers. */
@@ -219,6 +220,10 @@ export function registerIpcHandlers(): void {
 
   const briefStore = new BriefStore()
 
+  // App-level (not per-project) user settings - product doc §4.4: bed/nozzle/materials are
+  // settings, not per-project questions. Persisted at `<userData>/printer-profiles.json`.
+  const printerProfileStore = new PrinterProfileStore({ baseDir: app.getPath('userData') })
+
   /**
    * Recomputes verification layers 1-3 (WS-C) for one iteration and persists the report beside
    * its STL (`writeVerificationForIteration`). Two call sites feed this: `ProjectStore`'s
@@ -228,6 +233,10 @@ export function registerIpcHandlers(): void {
    */
   async function verifyIteration(iteration: ProjectIteration, projectDir: string): Promise<VerificationReport> {
     const brief = await briefStore.get(projectDir)
+    // Layer 2's bed-fit and nozzle-scaled checks read `brief.printer`; a brief that never
+    // recorded a printer falls back to the app-level active profile (WS-E - "verification layer 2
+    // reads them"). Merged only into this run's input, never persisted onto the brief.
+    const activeProfile = brief.printer ? null : await printerProfileStore.getActive()
     const report = await runVerification({
       iteration: iteration.n,
       pythonPath: envManager.pythonPath(),
@@ -238,7 +247,7 @@ export function registerIpcHandlers(): void {
       scriptPath: join(projectDir, iteration.scriptSnapshotPath ?? iteration.scriptPath),
       stlPath: join(projectDir, iteration.stlPath),
       stepPath: iteration.stepPath ? join(projectDir, iteration.stepPath) : undefined,
-      brief
+      brief: activeProfile ? { ...brief, printer: activeProfile } : brief
     })
     await writeVerificationForIteration(projectDir, iteration, report)
     return report
@@ -264,6 +273,7 @@ export function registerIpcHandlers(): void {
     projectStore,
     briefStore,
     runVerification: (iteration) => verifyIteration(iteration, projectStore.getProjectDir()),
+    printerProfiles: printerProfileStore,
     pythonPath: () => envManager.pythonPath(),
     claudeCliPath: () => claudeChecker.cliPath(),
     emitAgentEvent: (event: AgentEvent) => broadcast(IPC.agentEvent, event),
@@ -271,6 +281,7 @@ export function registerIpcHandlers(): void {
     emitPrintSettings: (payload: PrintSettings) => broadcast(IPC.printSettingsUpdated, payload),
     emitBriefUpdated: (payload: DesignBrief) => broadcast(IPC.briefUpdated, payload),
     emitVerificationUpdated: (payload: VerificationReport) => broadcast(IPC.verificationUpdated, payload),
+    emitPrinterProfilesUpdated: (payload: PrinterProfileListResponse) => broadcast(IPC.printerProfileUpdated, payload),
     requestUserApproval: askUser
   })
   app.on('will-quit', () => agentSession.dispose())
@@ -568,27 +579,34 @@ export function registerIpcHandlers(): void {
     return { report: await readVerificationForIteration(projectStore.getProjectDir(), active) }
   })
 
-  // -- WS-E Printer profiles (stub - no persisted store yet) --------------
+  // -- WS-E Printer profiles ------------------------------------------------
+  // App-level (see printerProfileStore above), so unlike the project-mutating handlers these
+  // don't need the isBusy() gate - the agent only ever reads profiles (at query start) or writes
+  // through the same serialized store. Mutations broadcast printerProfile:updated so every
+  // window's panel stays in sync (the agent's save_printer_profile tool broadcasts via the
+  // emitPrinterProfilesUpdated dep above).
 
   ipcMain.handle(
     IPC.printerProfileList,
-    async (): Promise<PrinterProfileListResponse> => ({ profiles: [], activeId: null })
+    async (): Promise<PrinterProfileListResponse> => printerProfileStore.list()
   )
 
   ipcMain.handle(
     IPC.printerProfileSave,
-    async (_event, _request: PrinterProfileSaveRequest): Promise<PrinterProfileListResponse> => ({
-      profiles: [],
-      activeId: null
-    })
+    async (_event, request: PrinterProfileSaveRequest): Promise<PrinterProfileListResponse> => {
+      const response = await printerProfileStore.save(request.profile)
+      broadcast(IPC.printerProfileUpdated, response)
+      return response
+    }
   )
 
   ipcMain.handle(
     IPC.printerProfileSetActive,
-    async (_event, _request: PrinterProfileSetActiveRequest): Promise<PrinterProfileListResponse> => ({
-      profiles: [],
-      activeId: null
-    })
+    async (_event, request: PrinterProfileSetActiveRequest): Promise<PrinterProfileListResponse> => {
+      const response = await printerProfileStore.setActive(request.id)
+      broadcast(IPC.printerProfileUpdated, response)
+      return response
+    }
   )
 
   // -- WS-F Graduation package export (stub - no package builder yet) ----

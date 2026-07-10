@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { buildUserMessage, formatRevertContext, formatSelectionContext, systemPromptAppend } from './prompts'
-import type { ChatAttachment, SelectionSummary } from '@shared/ipc'
+import {
+  buildUserMessage,
+  formatPrinterProfileContext,
+  formatRevertContext,
+  formatSelectionContext,
+  systemPromptAppend
+} from './prompts'
+import type { ChatAttachment, PrinterProfileRef, SelectionSummary } from '@shared/ipc'
 import type { ProjectIteration } from '../projects/store'
 
 const selection: SelectionSummary = {
@@ -146,5 +152,57 @@ describe('systemPromptAppend', () => {
     expect(prompt).toMatch(/inferred/i)
     expect(prompt).toMatch(/locked brief/i)
     expect(prompt).toMatch(/Phase 4/i)
+  })
+
+  it('omits the printer-profile paragraph entirely when no profile store is wired (WS-E)', () => {
+    const prompt = systemPromptAppend('/tmp/project')
+    expect(prompt).not.toContain('printer profile')
+    expect(prompt).not.toContain('save_printer_profile')
+  })
+
+  it('embeds the active profile and forbids re-asking the printer questions (WS-E)', () => {
+    const prompt = systemPromptAppend('/tmp/project', printerProfile())
+    expect(prompt).toContain('"Prusa MK4"')
+    expect(prompt).toContain('250 x')
+    expect(prompt).toContain('210 x 220 mm')
+    expect(prompt).toContain('0.4 mm')
+    expect(prompt).toMatch(/do NOT ask the user for nozzle diameter or\nbed size/)
+  })
+
+  it('asks-then-offers-to-save when a store is wired but no profile is active (WS-E)', () => {
+    const prompt = systemPromptAppend('/tmp/project', null)
+    expect(prompt).toContain('has not saved a printer profile yet')
+    expect(prompt).toContain('save_printer_profile')
+  })
+})
+
+function printerProfile(overrides: Partial<PrinterProfileRef> = {}): PrinterProfileRef {
+  return {
+    id: 'prusa-mk4',
+    name: 'Prusa MK4',
+    bedXMm: 250,
+    bedYMm: 210,
+    bedZMm: 220,
+    nozzleDiameterMm: 0.4,
+    materials: ['PLA', 'PETG'],
+    ...overrides
+  }
+}
+
+describe('formatPrinterProfileContext', () => {
+  it('names the script constants the profile must drive', () => {
+    const block = formatPrinterProfileContext(printerProfile())
+    for (const constant of ['`NOZZLE`', '`BED_X`', '`BED_Y`', '`BED_Z`', '`MIN_WALL`']) {
+      expect(block).toContain(constant)
+    }
+  })
+
+  it('lists materials on hand only when the profile has some', () => {
+    expect(formatPrinterProfileContext(printerProfile())).toContain('Materials on hand: PLA, PETG.')
+    expect(formatPrinterProfileContext(printerProfile({ materials: [] }))).not.toContain('Materials on hand')
+  })
+
+  it('still teaches save_printer_profile for the switched-printer case', () => {
+    expect(formatPrinterProfileContext(printerProfile())).toContain('save_printer_profile')
   })
 })
