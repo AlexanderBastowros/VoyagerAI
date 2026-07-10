@@ -17,7 +17,8 @@ function deps(): VoyagerMcpDeps {
       recordIteration: async () => {
         throw new Error('not used')
       },
-      activeIterationRecord: async () => null
+      activeIterationRecord: async () => null,
+      getActivePartId: async () => 'main'
     },
     printerProfiles,
     emit: (e) => emissions.push(e)

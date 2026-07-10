@@ -452,7 +452,7 @@ Notes on the gates:
   agent to use ad-hoc printer values while the verification panel judges bed-fit by the *active
   saved* profile - the prompt now says to save the new printer (saving activates it) and to warn
   that the panel checks the saved profile until then (root-cause fix filed below). Quality gate
-  green: 392 tests (352 prior + 40 new: 25 store, 4 tool, 6 prompts, 5 session incl. the
+  green: 423 tests after rebasing onto WS-0c/WS-I (383 prior + 40 new: 25 store, 4 tool, 6 prompts, 5 session incl. the
   stale-loop regression), build, typecheck. Not runtime-verified here: the live Electron E2E
   (signed-in CLI + managed env), the same sandbox gap WS-B/WS-C noted.
 - **Why:** product doc §4.4 — bed/nozzle/materials are settings, not per-project questions;
