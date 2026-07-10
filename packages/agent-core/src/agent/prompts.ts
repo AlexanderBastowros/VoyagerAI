@@ -31,7 +31,11 @@ export function formatPrinterProfileContext(profile: PrinterProfileRef | null): 
     'from this profile, and use the same values for the Phase-5 validator\'s `--bed-x/--bed-y/',
     '--bed-z/--nozzle` flags. Mention in passing which profile you\'re using so the user can',
     'correct you. If they say this project is for a different printer, use their values instead',
-    'and offer to save them as a new profile with the `save_printer_profile` MCP tool.'
+    'and encourage saving them as a new profile with the `save_printer_profile` MCP tool (a',
+    'newly saved profile becomes the active one). That matters beyond convenience: Voyager\'s',
+    'automatic verification panel checks bed fit against the *active saved profile*, so until',
+    'the different printer is saved, tell the user the panel\'s bed-fit result may be judged',
+    'against the wrong printer.'
   ].join('\n')
 }
 

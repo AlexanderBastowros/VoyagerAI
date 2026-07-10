@@ -58,7 +58,7 @@ WS-0a (extract agent-core) ── DONE
           ├─► WS-B  PARAMS + parameter panel ── DONE
           ├─► WS-C  Verification layers 1–3    ┐
           ├─► WS-D  Render rig + self-inspect  ├─ parallel, disjoint file footprints
-          ├─► WS-E  Printer profiles           ┘
+          ├─► WS-E  Printer profiles ── DONE   ┘
           └─► WS-0c (contract addendum: import/parts/gears) ── DONE
                  ├─► WS-G  External model import/remix  ┐
                  ├─► WS-H  Gear generation              ├─ parallel (H's verify checks after WS-C)
@@ -409,8 +409,52 @@ Notes on the gates:
   agent viewing renders before displaying; renders are pixel-stable across two runs on the
   same geometry.
 
-### WS-E — Printer profiles · **Status: TODO** · depends: 0a, 0b
+### WS-E — Printer profiles · **Status: DONE** · depends: 0a, 0b
 
+- **Landed:** `packages/agent-core/src/projects/printerProfiles.ts` (the roadmap path above omits
+  `src/`, same shorthand as WS-A's `prompts.ts`) — `PrinterProfileStore`, app-level
+  `<userData>/printer-profiles.json` (constructor-injected `baseDir`, no `electron` imports),
+  persisting exactly the frozen `PrinterProfileListResponse` shape: zod-validated lenient reads for
+  display paths, **strict reads for mutations** (missing file = empty store; I/O error aborts the
+  save; an unparseable file is preserved as `.bak`, never silently clobbered), **atomic
+  temp-file+rename writes**, promise-chain-serialized mutations, slug ids derived from the name
+  (`save` throws on a stale non-empty id instead of forking a duplicate), and
+  new-profile-becomes-active semantics. `src/main/ipc.ts` replaced the three WS-0b stub bodies
+  (the designated points): `list`/`save`/`setActive` run on the real store and mutations broadcast
+  `printerProfile:updated`; `verifyIteration` now merges the **active profile** into the
+  verification input when `brief.printer` is unset, so layer 2's bed-fit/nozzle checks read the
+  profile (this order's stated "why") without persisting anything onto the brief. Agent hook:
+  `tools/savePrinterProfile.ts` (`save_printer_profile` MCP tool - the ask-then-offer-to-save flow;
+  one tool file + one registry line, the pattern `tools/index.ts` documents) with additive
+  `VoyagerMcpDeps.printerProfiles`/`printer-profiles-updated` emission in `tools/types.ts`;
+  `prompts.ts`'s `systemPromptAppend` gained an optional `printerProfile` param (`undefined` = no
+  store wired, topic omitted; `null` = "ask Phase-1 questions, then offer to save"; a profile =
+  "these are the already-confirmed Phase-1 answers - do NOT ask; derive `NOZZLE`/`BED_X/Y/Z`
+  (+`MIN_WALL`) and the Phase-5 validator flags from it"); `session.ts` reads the active profile in
+  `ensureStarted`, bakes it into the system prompt, and **restarts the query (with `resume`) when
+  the active profile changes** between turns, mirroring the `appliedSettings` pattern, plus
+  allow-listing/humanizing the new tool. The small additive `prompts.ts`/`session.ts` edits are
+  this order's explicit "prompt hook" scope (WS-C precedent for additive session deps); `SKILL.md`
+  was **not** touched - request filed below. UI: `PrinterProfilesPanel.tsx` (house collapsible
+  panel: profile list with radio set-active + edit, add/edit form with client-side validation,
+  fetch-on-mount + `onUpdated` subscription feeding the WS-0b `setPrinterProfiles` slice), mounted
+  below `PrintSettingsPanel` via a one-import/one-line `App.tsx` edit (0b pre-landed the slices/
+  channels/preload for WS-E but no mount stub existed; WS-I precedent for minimal App.tsx
+  integration edits). A 5-finder adversarial review with per-finding refutation verifiers caught
+  and fixed before landing: the original non-atomic truncate-write + fallback-to-empty mutation
+  read could turn one corrupt/torn file into a silent wipe of every profile (now atomic + strict +
+  `.bak`); a **pre-existing** stale-`consume()`-loop bug where any query restart's superseded loop
+  later ran `resetAfterExit()` against the *replacement* session (clearing `busy` mid-turn, killing
+  the new queue - WS-E's profile-change restart put it on the mainline first-save flow) - fixed
+  with an owning-query identity guard + per-consume `receivedAnyMessage`, with a regression test
+  verified to fail without the guard; the panel's in-flight save could discard concurrent form
+  edits (form + edit buttons now disable while busy); and the switched-printer prompt arm told the
+  agent to use ad-hoc printer values while the verification panel judges bed-fit by the *active
+  saved* profile - the prompt now says to save the new printer (saving activates it) and to warn
+  that the panel checks the saved profile until then (root-cause fix filed below). Quality gate
+  green: 392 tests (352 prior + 40 new: 25 store, 4 tool, 6 prompts, 5 session incl. the
+  stale-loop regression), build, typecheck. Not runtime-verified here: the live Electron E2E
+  (signed-in CLI + managed env), the same sandbox gap WS-B/WS-C noted.
 - **Why:** product doc §4.4 — bed/nozzle/materials are settings, not per-project questions;
   verification layer 2 and the future split planner read them.
 - **Scope:** profile store (`packages/agent-core/projects/printerProfiles.ts`, persisted in
@@ -669,3 +713,36 @@ Notes on the gates:
   rotation: [n,n,n] } }>` (each part's active-iteration STL + its placement) - transform each mesh by
   its placement, then AABB-then-mesh interference-test the set. This is the same caliper-class,
   LLM-free check the verification pyramid already favors.
+
+- **WS-E needs printer fields in `update_brief`'s patch shape (WS-A-owned `brief/agentPatch.ts`).**
+  `DesignBriefSchema.printer` exists (0b) and WS-C's `verifyIteration` *prefers* `brief.printer`
+  over the app-level active profile, but `briefAgentPatchShape` has no printer fields, so the agent
+  cannot record a per-project printer into the brief at all. Confirmed consequence (adversarial
+  review, WS-E): when the user says "this project is for a different printer" and declines to save
+  it, the agent's constants/validator flags follow the ad-hoc printer while automatic layer-2
+  bed-fit judges by the *active saved* profile - a false FAIL, or worse a false PASS for a part
+  that can't fit the printer it will actually print on. WS-E's stopgap is prompt-side (encourage
+  saving, which activates the new profile; warn otherwise). Root fix: add `printer_name`/
+  `printer_bed_x_mm`/`printer_bed_y_mm`/`printer_bed_z_mm`/`printer_nozzle_mm`/
+  `printer_materials` to `briefAgentPatchShape` + `mergeAgentPatch` (agent-core-local, not a
+  frozen-contract change), and one sentence in WS-E's switched-printer prompt arm telling the
+  agent to record the project's printer via `update_brief` - `verifyIteration`'s
+  brief-printer-first logic then does the right thing with no other change.
+
+- **WS-E requests a Phase-1 sentence in `SKILL.md` (WS-B-owned).** Phase 1 currently says to ask
+  the nozzle/bed questions "together, up front" every session; WS-E now overrides that via the
+  system prompt when a saved profile exists. The override wins in practice, but the skill text
+  contradicts the host app's behavior - proposed addition at the top of Phase 1: *"If the host
+  application's system prompt provides a saved printer profile, treat it as the answers to the
+  questions below and do not re-ask them; skip to the confirm-with-defaults items."* Note the
+  skill is copied per-project at creation (`ProjectStore.materializeProject` copies only when
+  missing), so existing projects keep their old copy either way - the system-prompt override is
+  the mechanism that works for them.
+
+- **WS-E notes the frozen `printerProfile:*` contract has no delete.** The panel can list, save,
+  and set-active but never remove a profile (a mis-added printer lives forever; the store's only
+  escape hatch is hand-editing `<userData>/printer-profiles.json`). Proposed:
+  `printerProfile:delete` with `PrinterProfileDeleteRequest { id: string }` →
+  `PrinterProfileListResponse` (active pointer moves to `null` when the active profile is
+  deleted), wired like `printerProfile:setActive`, plus a delete affordance in
+  `PrinterProfilesPanel.tsx` (WS-E-owned, trivial once the channel exists).

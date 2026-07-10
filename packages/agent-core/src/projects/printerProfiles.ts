@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
 import { PrinterProfileRefSchema } from '@shared/ipc'
@@ -86,19 +86,24 @@ export class PrinterProfileStore {
 
   /**
    * Upserts one profile and returns the full refreshed list. An empty `id` means "new" - the
-   * store derives a unique slug id from the name. A newly added profile (or any save while
-   * nothing is active) becomes the active one: saving a printer means you're about to use it,
-   * and the panel/agent flows both expect the fresh save to take effect without a second
-   * set-active step. Saving over an existing profile never steals the active slot.
+   * store derives a unique slug id from the name; a non-empty id must match a saved profile
+   * (throws otherwise, so a caller holding a stale id fails loudly instead of silently forking
+   * a duplicate). A newly added profile (or any save while nothing is active) becomes the
+   * active one: saving a printer means you're about to use it, and the panel/agent flows both
+   * expect the fresh save to take effect without a second set-active step. Saving over an
+   * existing profile never steals the active slot.
    */
   async save(profile: PrinterProfileRef): Promise<PrinterProfileList> {
     return this.enqueue(async () => {
       const normalized = normalizeProfile(profile)
-      const current = await this.read()
+      const current = await this.readForMutation()
 
       const existingIndex = normalized.id
         ? current.profiles.findIndex((p) => p.id === normalized.id)
         : -1
+      if (normalized.id && existingIndex < 0) {
+        throw new Error(`Unknown printer profile: ${normalized.id}`)
+      }
       const saved: PrinterProfileRef = {
         ...normalized,
         id:
@@ -125,7 +130,7 @@ export class PrinterProfileStore {
   /** Points `activeId` at an already-saved profile. Throws on an unknown id. */
   async setActive(id: string): Promise<PrinterProfileList> {
     return this.enqueue(async () => {
-      const current = await this.read()
+      const current = await this.readForMutation()
       if (!current.profiles.some((profile) => profile.id === id)) {
         throw new Error(`Unknown printer profile: ${id}`)
       }
@@ -147,6 +152,8 @@ export class PrinterProfileStore {
     return result
   }
 
+  /** Lenient read for the pure-read paths (`list`/`getActive`): any failure - missing file,
+   *  torn/corrupt JSON, schema drift - degrades to "no profiles" rather than erroring. */
   private async read(): Promise<PrinterProfileList> {
     let parsed: PrinterProfileList
     try {
@@ -163,9 +170,44 @@ export class PrinterProfileStore {
     return parsed
   }
 
+  /**
+   * Strict read for the read-modify-write paths: `read()`'s treat-anything-as-empty fallback
+   * is fine when the result is only displayed, but feeding it into a mutation would let one
+   * corrupt/unreadable file turn a "save one profile" into "silently replace the whole store".
+   * A missing file is genuinely an empty store; an I/O error aborts the mutation; an unparseable
+   * file is preserved as `printer-profiles.json.bak` (never silently clobbered) before the
+   * mutation proceeds against an empty store.
+   */
+  private async readForMutation(): Promise<PrinterProfileList> {
+    let raw: string
+    try {
+      raw = await readFile(this.filePath, 'utf-8')
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return EMPTY_LIST
+      throw new Error(
+        `Could not read the saved printer profiles (${err instanceof Error ? err.message : String(err)}).`
+      )
+    }
+    try {
+      const parsed = PrinterProfileFileSchema.parse(JSON.parse(raw))
+      if (parsed.activeId !== null && !parsed.profiles.some((p) => p.id === parsed.activeId)) {
+        return { ...parsed, activeId: null }
+      }
+      return parsed
+    } catch {
+      await rename(this.filePath, `${this.filePath}.bak`)
+      return EMPTY_LIST
+    }
+  }
+
+  /** Atomic replace (temp file + rename on the same filesystem): a crash mid-save leaves either
+   *  the old complete file or the new one, never a truncated store, and concurrent lenient reads
+   *  can never observe a half-written file. */
   private async write(list: PrinterProfileList): Promise<void> {
     await mkdir(this.baseDir, { recursive: true })
-    await writeFile(this.filePath, JSON.stringify(list, null, 2), 'utf-8')
+    const tempPath = `${this.filePath}.tmp`
+    await writeFile(tempPath, JSON.stringify(list, null, 2), 'utf-8')
+    await rename(tempPath, this.filePath)
   }
 }
 

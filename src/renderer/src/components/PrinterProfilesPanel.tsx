@@ -239,16 +239,19 @@ export function PrinterProfilesPanel(): React.JSX.Element {
                       </Typography>
                     </Stack>
                     <Tooltip title={`Edit ${profile.name}`}>
-                      <IconButton
-                        size="small"
-                        aria-label={`Edit ${profile.name}`}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          openForm(profile)
-                        }}
-                      >
-                        <EditOutlinedIcon sx={{ fontSize: 16 }} />
-                      </IconButton>
+                      <span>
+                        <IconButton
+                          size="small"
+                          aria-label={`Edit ${profile.name}`}
+                          disabled={busy}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            openForm(profile)
+                          }}
+                        >
+                          <EditOutlinedIcon sx={{ fontSize: 16 }} />
+                        </IconButton>
+                      </span>
                     </Tooltip>
                   </Stack>
                 ))}
@@ -262,6 +265,7 @@ export function PrinterProfilesPanel(): React.JSX.Element {
                   label="Printer name"
                   placeholder="e.g. Prusa MK4"
                   value={draft.name}
+                  disabled={busy}
                   onChange={(e) => setField('name', e.target.value)}
                   sx={fieldSx}
                 />
@@ -279,6 +283,7 @@ export function PrinterProfilesPanel(): React.JSX.Element {
                       type="number"
                       label={label}
                       value={draft[key]}
+                      disabled={busy}
                       onChange={(e) => setField(key, e.target.value)}
                       sx={fieldSx}
                     />
@@ -289,6 +294,7 @@ export function PrinterProfilesPanel(): React.JSX.Element {
                   type="number"
                   label="Nozzle Ø (mm)"
                   value={draft.nozzle}
+                  disabled={busy}
                   onChange={(e) => setField('nozzle', e.target.value)}
                   sx={fieldSx}
                 />
@@ -297,6 +303,7 @@ export function PrinterProfilesPanel(): React.JSX.Element {
                   label="Materials on hand"
                   helperText="Comma-separated, e.g. PLA, PETG"
                   value={draft.materials}
+                  disabled={busy}
                   onChange={(e) => setField('materials', e.target.value)}
                   sx={fieldSx}
                 />

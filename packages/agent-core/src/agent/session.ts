@@ -364,7 +364,6 @@ export class AgentSession {
   private turn = 0
   private currentMessageId = 'turn-0'
   private sessionId: string | null = null
-  private receivedAnyMessage = false
   private skipResumeOnRestart = false
   private approvalSeq = 0
   /** Set once `ensureStarted` resolves the project dir; read by `canUseTool`, and compared
@@ -648,7 +647,6 @@ export class AgentSession {
     }
 
     this.queue = new AsyncPushQueue<SDKUserMessage>()
-    this.receivedAnyMessage = false
     this.appliedSettings = settings
     this.appliedPrinterProfileKey = printerProfileKey
     this.activeQuery = this.queryFn({ prompt: this.queue, options })
@@ -656,9 +654,14 @@ export class AgentSession {
   }
 
   private async consume(activeQuery: Query, resumed: boolean): Promise<void> {
+    // Deliberately local, not instance state: a restart (project switch, settings or
+    // printer-profile change) can leave this loop draining a superseded query while
+    // `ensureStarted` has already started the replacement - shared state here would let the
+    // old query's fate misclassify the new one's resume.
+    let receivedAnyMessage = false
     try {
       for await (const message of activeQuery) {
-        this.receivedAnyMessage = true
+        receivedAnyMessage = true
         const translation = translateSdkMessage(message, this.currentMessageId, this.interruptRequested)
 
         if (translation.sessionId && translation.sessionId !== this.sessionId) {
@@ -677,10 +680,15 @@ export class AgentSession {
           this.interruptRequested = false
         }
       }
+      // A superseded query exiting (its input stream was ended by a restart, and the subprocess
+      // wound down while the replacement was already live) must not touch shared session state -
+      // `resetAfterExit()` here would kill the NEW queue and clear `busy` mid-turn.
+      if (this.activeQuery !== activeQuery) return
       // Input stream ended (dispose) or the subprocess exited cleanly.
       this.resetAfterExit()
     } catch (err) {
-      const failedBeforeAnyMessage = !this.receivedAnyMessage
+      if (this.activeQuery !== activeQuery) return // superseded - see the post-loop guard above
+      const failedBeforeAnyMessage = !receivedAnyMessage
       this.resetAfterExit()
 
       if (resumed && failedBeforeAnyMessage) {

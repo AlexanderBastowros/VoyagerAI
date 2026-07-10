@@ -630,6 +630,37 @@ describe('AgentSession model/effort settings', () => {
 
     expect(h.optionsHistory).toHaveLength(1)
   })
+
+  it('a superseded query winding down after a restart does not clobber the replacement session', async () => {
+    const fake = fakePrinterProfiles(null)
+    const h = makeHarness({ printerProfiles: fake.store })
+
+    await h.session.sendMessage('first')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+
+    // Saving a profile between turns makes the next sendMessage restart the query.
+    fake.setActiveProfile(printerProfile())
+    await h.session.sendMessage('second')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(2))
+    expect(h.optionsHistory).toHaveLength(2)
+
+    // The real SDK winds the OLD subprocess down asynchronously once its input stream is
+    // ended - i.e. after the replacement query is already live and mid-turn. Its consume
+    // loop exiting must not reset the session (that would clear `busy` mid-turn, kill the
+    // new queue, and let a concurrent third query start).
+    h.outputsHistory[0]?.end()
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    expect(h.session.isBusy()).toBe(true)
+
+    // The replacement query still completes its turn normally and stays reusable.
+    h.outputsHistory[1]?.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+    await h.session.sendMessage('third')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(3))
+    expect(h.optionsHistory).toHaveLength(2) // no spurious extra restart - the new queue survived
+  })
 })
 
 function printerProfile(): PrinterProfileRef {

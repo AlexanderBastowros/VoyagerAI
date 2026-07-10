@@ -143,6 +143,30 @@ describe('PrinterProfileStore.save', () => {
     const final = await store.list()
     expect(final.profiles.map((p) => p.name).sort()).toEqual(['Printer A', 'Printer B'])
   })
+
+  it('throws on a non-empty id that matches no saved profile instead of silently forking a new one', async () => {
+    await store.save(profile({ name: 'First' }))
+    await expect(store.save(profile({ id: 'stale-id', name: 'Renamed' }))).rejects.toThrow(
+      'Unknown printer profile: stale-id'
+    )
+    // The store is untouched by the failed save.
+    expect((await store.list()).profiles.map((p) => p.id)).toEqual(['first'])
+  })
+
+  it('preserves an unparseable file as .bak instead of silently clobbering it on save', async () => {
+    await writeFile(join(baseDir, 'printer-profiles.json'), '{ definitely not valid', 'utf-8')
+    const result = await store.save(profile({ name: 'Fresh' }))
+    expect(result.profiles.map((p) => p.id)).toEqual(['fresh'])
+    // The corrupt content survives for manual recovery rather than being truncated away.
+    expect(await readFile(join(baseDir, 'printer-profiles.json.bak'), 'utf-8')).toBe(
+      '{ definitely not valid'
+    )
+  })
+
+  it('leaves no temp file behind after a save (atomic replace)', async () => {
+    await store.save(profile())
+    await expect(readFile(join(baseDir, 'printer-profiles.json.tmp'), 'utf-8')).rejects.toThrow()
+  })
 })
 
 describe('PrinterProfileStore.setActive', () => {
