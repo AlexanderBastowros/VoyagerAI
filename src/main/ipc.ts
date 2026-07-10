@@ -154,12 +154,11 @@ function toIterationInfo(iteration: ProjectIteration): IterationInfo {
 
 /**
  * Reads everything the renderer needs to hydrate a project on mount, create, switch, or revert:
- * its summary list, full chat history, model/effort settings, the version-history list (R4),
- * and (if any iteration exists) the *active* iteration's STL bytes ready for the same
- * `viewerRef.current?.loadSTL(...)` call the live `model:displayed` path already uses - the
- * ArrayBuffer-slice here mirrors `modelLoadSample` below and `mcpTools.ts`'s `toArrayBuffer`.
- * Uses `activeIterationRecord()` (not `latestIteration()`) so a prior `revertTo()` call is
- * honored - see `ProjectStore.activeIterationRecord`.
+ * its summary list, full chat history, model/effort settings, the version-history list (R4), and
+ * (if any iteration exists) the *active* iteration's `model` metadata. The geometry itself is loaded
+ * per-part by the renderer via `part.getModel` (WS-I `syncViewportParts`), so `model.stlBuffer` here
+ * is intentionally empty - it's used only for presence + metadata. The version history reflects the
+ * active part; `activeIterationRecord()` (not `latestIteration()`) honors a prior `revertTo()`.
  */
 async function buildProjectSnapshot(projectStore: ProjectStore): Promise<ProjectStateSnapshot> {
   const [projects, messages, agentSettings, active, iterations] = await Promise.all([
@@ -170,16 +169,22 @@ async function buildProjectSnapshot(projectStore: ProjectStore): Promise<Project
     projectStore.listIterations()
   ])
 
+  // WS-I: the renderer loads each part's geometry on demand via `part.getModel` (see
+  // `syncViewportParts`), and only uses this `model` for its metadata + presence (`toModelInfo`
+  // never reads the bytes). So skip reading + structured-cloning the STL here - it was a redundant
+  // multi-MB read on every getState/switch/create/revert. Hand back an empty buffer, tagged with the
+  // active part.
   let model: ModelDisplayedPayload | null = null
   if (active) {
-    const buffer = await readFile(join(projectStore.getProjectDir(), active.stlPath))
     model = {
       stlPath: active.stlPath,
       stepPath: active.stepPath,
       scriptPath: active.scriptPath,
       summary: active.summary,
       iteration: active.n,
-      stlBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+      stlBuffer: new ArrayBuffer(0),
+      partId: await projectStore.getActivePartId(),
+      createdBy: active.createdBy
     }
   }
 
@@ -523,9 +528,14 @@ export function registerIpcHandlers(): void {
         stlPath: result.stlRelPath,
         stepPath: result.stepRelPath,
         scriptPath: result.scriptRelPath,
-        summary
+        summary,
+        createdBy: 'param'
       })
 
+      // A param edit re-runs the *active* part's script (`recordIteration` with no partId), so tag
+      // the payload with that part (WS-I) - otherwise the renderer's `partId ?? 'main'` fallback
+      // would load the re-run geometry into the wrong part when the active part isn't `main`.
+      const partId = await projectStore.getActivePartId()
       const buffer = await readFile(join(projectStore.getProjectDir(), iteration.stlPath))
       const payload: ModelDisplayedPayload = {
         stlPath: iteration.stlPath,
@@ -533,7 +543,9 @@ export function registerIpcHandlers(): void {
         scriptPath: iteration.scriptPath,
         summary: iteration.summary,
         iteration: iteration.n,
-        stlBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)
+        stlBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+        partId,
+        createdBy: 'param'
       }
       // Pushed the same way an agent-authored `display_model` call is, so the viewport/version
       // history update identically either path - see `ParamUpdateResponse`'s doc comment.
@@ -599,39 +611,79 @@ export function registerIpcHandlers(): void {
     })
   )
 
-  // -- WS-I Multi-part projects (stubs - single `main` part until WS-I) ---
-  // WS-I replaces these three stub bodies with real `ProjectStore`-backed parts logic (the same
-  // designated-stub-replacement pattern WS-B/WS-C used for their handlers), without touching the
-  // frozen channel wiring above.
+  // -- WS-I Multi-part projects ------------------------------------------
+  // Real ProjectStore-backed parts logic (replacing WS-0c's stubs at the designated
+  // stub-replacement points, the same pattern WS-B/WS-C used, without touching the frozen channel
+  // wiring above). The write handlers gate on `agentSession.isBusy()` like the other
+  // project-mutating handlers - two writers racing on project.json (a placement edit vs. an agent
+  // `display_model`) could otherwise clobber each other.
 
-  ipcMain.handle(IPC.partList, async (): Promise<PartListResponse> => ({ parts: [], activePartId: null }))
+  async function currentPartList(): Promise<PartListResponse> {
+    return { parts: await projectStore.listParts(), activePartId: await projectStore.getActivePartId() }
+  }
 
+  ipcMain.handle(IPC.partList, async (): Promise<PartListResponse> => {
+    await projectStore.ensureProject()
+    return currentPartList()
+  })
+
+  // Loads one part's active-iteration model (with STL bytes) so the viewer can render every visible
+  // part, each at its placement. Same ArrayBuffer-slice as `buildProjectSnapshot`/`modelLoadSample`.
   ipcMain.handle(
     IPC.partGetModel,
-    async (_event, _request: PartGetModelRequest): Promise<ModelDisplayedPayload | null> => null
+    async (_event, request: PartGetModelRequest): Promise<ModelDisplayedPayload | null> => {
+      const active = await projectStore.activeIterationRecord(request.partId)
+      if (!active) return null
+      const buffer = await readFile(join(projectStore.getProjectDir(), active.stlPath))
+      return {
+        stlPath: active.stlPath,
+        stepPath: active.stepPath,
+        scriptPath: active.scriptPath,
+        summary: active.summary,
+        iteration: active.n,
+        stlBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+        partId: request.partId,
+        createdBy: active.createdBy
+      }
+    }
   )
 
   ipcMain.handle(
     IPC.partSetPlacement,
-    async (_event, _request: PartSetPlacementRequest): Promise<PartListResponse> => ({
-      parts: [],
-      activePartId: null
-    })
+    async (_event, request: PartSetPlacementRequest): Promise<PartListResponse> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before rearranging parts.')
+      }
+      const parts = await projectStore.setPlacement(request.partId, request.placement)
+      const response: PartListResponse = { parts, activePartId: await projectStore.getActivePartId() }
+      broadcast(IPC.partUpdated, response)
+      return response
+    }
   )
 
   ipcMain.handle(
     IPC.partSetVisibility,
-    async (_event, _request: PartSetVisibilityRequest): Promise<PartListResponse> => ({
-      parts: [],
-      activePartId: null
-    })
+    async (_event, request: PartSetVisibilityRequest): Promise<PartListResponse> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before changing part visibility.')
+      }
+      const parts = await projectStore.setVisibility(request.partId, request.visible)
+      const response: PartListResponse = { parts, activePartId: await projectStore.getActivePartId() }
+      broadcast(IPC.partUpdated, response)
+      return response
+    }
   )
 
   ipcMain.handle(
     IPC.partSetActive,
-    async (_event, _request: PartSetActiveRequest): Promise<PartListResponse> => ({
-      parts: [],
-      activePartId: null
-    })
+    async (_event, request: PartSetActiveRequest): Promise<PartListResponse> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before switching parts.')
+      }
+      const parts = await projectStore.setActivePart(request.partId)
+      const response: PartListResponse = { parts, activePartId: request.partId }
+      broadcast(IPC.partUpdated, response)
+      return response
+    }
   )
 }

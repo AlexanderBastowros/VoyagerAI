@@ -62,7 +62,7 @@ WS-0a (extract agent-core) ── DONE
           └─► WS-0c (contract addendum: import/parts/gears) ── DONE
                  ├─► WS-G  External model import/remix  ┐
                  ├─► WS-H  Gear generation              ├─ parallel (H's verify checks after WS-C)
-                 └─► WS-I  Multi-part & placement       ┘
+                 └─► WS-I  Multi-part & placement ── DONE ┘
                         └─► WS-F  Graduation package + per-part export (needs WS-I)
 Then: M1 integration pass (dispatcher-led).
 M2+ (Bedrock, multi-model, plugins) — sketched only; decomposed when a trigger fires.
@@ -507,8 +507,63 @@ Notes on the gates:
   "make me a gear" prompt triggers the skill's gear clarify questions instead of
   generating an unmated guess.
 
-### WS-I — Multi-part projects: parts, placement, parts panel · **Status: TODO** · depends: 0a, 0b, **0c**
+### WS-I — Multi-part projects: parts, placement, parts panel · **Status: DONE** · depends: 0a, 0b, **0c**
 
+- **Landed:** `packages/agent-core/src/projects/store.ts` reshaped from a flat `iterations`/
+  `activeIteration` record to `parts: StoredPart[]` + a project-level `activePartId` pointer. Each
+  part carries its own iteration history, active pointer, `placement`, and `visible`; every unscoped
+  method (`recordIteration`/`activeIterationRecord`/`listIterations`/`latestIteration`/`revertTo`)
+  defaults to the **active part** so every existing caller (the frozen `src/main/ipc.ts` handlers,
+  `session.ts`'s revert-context, the print/verify tools) keeps working unchanged, while an optional
+  `partId` targets a specific part. New part API: `listParts`/`getActivePartId`/`setActivePart`/
+  `setPlacement`/`setVisibility`, a `slugifyPartId` path-traversal guard (part ids become
+  `outputs/versions/<partId>/` dirs), per-part iteration numbering, and part-scoped chat-history
+  ids. A `migrateRecord()` discovers a pre-WS-I project as a single `main` part
+  (discover-don't-recreate). `packages/agent-core/tools/displayModel.ts` gained `part`/`part_name`
+  args (slugified, created on first use, emitted as `ModelDisplayedPayload.partId`); `tools/types.ts`
+  widened `VoyagerMcpProjectStore`. `src/main/ipc.ts` replaced the WS-0c `part:*` stubs with real
+  handlers (`part:list`/`getModel`/`setPlacement`/`setVisibility`/`setActive`, gated on
+  `isBusy()` + broadcasting `part:updated`, the designated stub-replacement points). Renderer:
+  `viewer.ts` now renders a `Map<partId, mesh>` at each part's placement with a focused part for
+  selection/measurement/gizmo (`loadPart`/`setPartPlacement`/`setPartVisible`/`focusPart`/
+  `frameAll`, highlight re-parented under the focused mesh so it aligns with placed parts); new
+  `placementController.ts` wraps three's `TransformControls` (translate on the plate + rotate,
+  ground-snapped on release, layout-only); new pure `placement.ts` (Euler + ground-snap math,
+  unit-tested); `selectionController.ts` folds the focused mesh's world matrix into the projection
+  and tags `SelectionSummary.partId`; new `PartsPanel.tsx` (list + visibility toggles +
+  click-to-focus, hidden for a single-part project); `syncParts.ts` loads every part on hydration.
+  `App.tsx`/`Viewport.tsx`/`ProjectsDrawer.tsx` were rewired for multi-part load, part-aware
+  `model:displayed`, and gizmo attach/detach. A follow-up adversarial code review (3 parallel finder
+  passes over the diff) caught and fixed several real bugs before landing: `param:update` recorded
+  into the active part but broadcast a payload with no `partId`, so a slider edit on a non-`main`
+  active part loaded geometry into the wrong part (now tags `partId` + `createdBy: 'param'`);
+  `recordIteration` pushed a new part into the in-memory record *before* the `copyFile` that can
+  throw, leaving a phantom un-persisted part (now defers all mutation until after the copy);
+  `migrateRecord` dereferenced `part.iterations` unguarded, so a malformed part triggered the
+  destructive fresh-record overwrite (now coerces); `buildProjectSnapshot` read + IPC-cloned the
+  active part's STL that the renderer no longer consumes (now an empty buffer - the geometry loads
+  per-part); the placement gizmo wasn't gated on `agentBusy` (a drag mid-turn silently diverged the
+  viewer from disk - now busy-gated + optimistic-store-update with rollback); `loadPart` reused a
+  rotated part's stale ground-snapped Y on re-display so a refined part floated (ground-snap is now
+  the invariant on every placement application); `syncViewportParts` set the store before loading
+  meshes, racing the focus/gizmo effects (now loads meshes first); the `model:displayed` refetch
+  wasn't sequence-guarded (stale refetch could regress the panels - now token-guarded); and the
+  gizmo's `g`/`r`/`t` shortcuts fired while typing (now ignore text fields). Quality gate green: 383
+  tests (362 prior + 21 new: store parts, displayModel part arg, placement math, 2 review regressions),
+  build, typecheck.
+- **Delivered vs. Done-when:** ✅ separate parts with independent histories + revert (store, tested);
+  ✅ agent regenerates one part without touching another's history (`display_model part` arg, tested);
+  ✅ gizmo move/rotate with ground-snap + placement persists across restart (placementController +
+  persisted `placement`); ✅ region-select captures the selected part (`SelectionSummary.partId`
+  populated by `selectionController`). **Two coordination follow-ups** (filed below, exactly as this
+  order's coordination notes anticipated): the agent only *uses* the `part` arg / *sees* the selected
+  part + arrangement once the WS-A-owned `prompts.ts` parts-vocabulary lands; the interpenetration
+  check lands in WS-C's layer 2. Both are contract-change requests, not WS-I code.
+- **Not runtime-verified in this environment:** the live gizmo drag / multi-part WebGL interaction
+  can't be exercised in the sandbox (no Electron + signed-in CLI + managed Python env, same gap
+  WS-B/WS-C noted). Verified via typecheck/build, the full unit suite, and the pure placement-math
+  tests; the three.js `TransformControls` API surface used (`getHelper`/`setMode`/`setSpace`/
+  `showX/Y/Z`/`dragging-changed`) was confirmed against the installed `three@0.185`.
 - **Why:** product doc §5.3 / architecture doc §14 — real projects are a box *and* its
   lid, a gear *pair*, a bracket set; the single-part data model is why everything merges
   into one exported file. Gear pairs (WS-H), split-plan pieces, and imports (WS-G) all
@@ -568,3 +623,36 @@ Notes on the gates:
   main handler (`BriefStore.listVersions`), and the `window.voyager.brief.listVersions()` preload
   method all shipped. Remaining: the version-list UI inside `BriefPanel.tsx` (WS-A-owned) - a small
   WS-A follow-up, not a contract change.
+
+- **WS-I needs parts-vocabulary + envelope part-context in `prompts.ts` (WS-A-owned).** The
+  multi-part *mechanism* is fully landed (WS-I): `display_model` takes a `part` slug, the store keeps
+  per-part histories, the parts panel + placement gizmo work, `SelectionSummary.partId` is populated,
+  and `SendMessageRequest.focusedPartId` exists in the contract. But the agent won't *use* or *see*
+  any of it until `packages/agent-core/src/agent/prompts.ts` is updated - and that file is WS-A-owned,
+  so WS-I did not touch it. Needed:
+  1. `systemPromptAppend` (skill/designer prompt): teach the parts vocabulary - name the `part` on
+     `display_model` for a multi-part project (a box AND its lid, a gear pair, split pieces), and ask
+     which part a change targets when ambiguous (arch doc §14; also unblocks WS-H gear pairs
+     generating as sibling parts).
+  2. `formatSelectionContext(selection)`: include `selection.partId` when set, so a region-select on
+     a specific part tells the agent which part "make this hole bigger" refers to.
+  3. `buildUserMessage(...)`: accept and render the **current arrangement** (part names + placements)
+     and the **focused part** so the agent has spatial context. The data is available main-side -
+     `AgentSession` can read `projectStore.listParts()`; `focusedPartId` needs a one-line pass-through
+     in `ChatPanel.tsx` (send it) → `src/main/ipc.ts`'s `agent:sendMessage` handler → a new optional
+     `focusedPartId` param on `AgentSession.sendMessage`. These pass-throughs are small and coupled to
+     the `prompts.ts` change, so land them together.
+  Until this lands, criteria "region-select reports which part was selected" and multi-part agent
+  authoring are captured/persisted on the WS-I side but not yet surfaced to the model.
+
+- **WS-I needs a cross-part interference check in WS-C's layer 2.** WS-I persists each part's
+  `placement` (`ProjectStore.setPlacement`; `listParts()` exposes `PartRecord.placement`) but does no
+  geometry interference check itself. WS-C's layer 2 (`packages/verify/python/geometry_report.py`,
+  composed by `runVerification` in `packages/verify` and wired through `verifyIteration` in
+  `src/main/ipc.ts`) should run a cross-part interference/clearance check on the **placed
+  arrangement** and surface interpenetration as a layer-2 finding (product doc §5.3 / arch §14).
+  Proposed input the check should consume, assembled in `verifyIteration` from the store: for the
+  active project, `Array<{ partId: string; stlPath: string; placement: { position: [n,n,n];
+  rotation: [n,n,n] } }>` (each part's active-iteration STL + its placement) - transform each mesh by
+  its placement, then AABB-then-mesh interference-test the set. This is the same caliper-class,
+  LLM-free check the verification pyramid already favors.

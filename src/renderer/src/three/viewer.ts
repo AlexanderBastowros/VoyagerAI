@@ -1,7 +1,10 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
+import type { Placement } from '../../../shared/ipc'
+import { MAIN_PART_ID } from '../../../shared/ipc'
 import { colors } from '../colors'
+import { applyPlacement, groundSnap } from './placement'
 import { easeInOutCubic, upForDirection, ViewCubeGizmo, type ViewRegion } from './viewCube'
 
 const BACKGROUND_COLOR = colors.bgApp
@@ -21,10 +24,20 @@ interface ViewTween {
   startTime: number
 }
 
+/** One rendered part (WS-I): its mesh, current placement, and visibility. The mesh's transform is
+ *  the placement (layout only - the geometry itself is never modified). */
+interface PartView {
+  mesh: THREE.Mesh
+  placement: Placement
+  visible: boolean
+}
+
 /**
- * Thin wrapper around a three.js scene/camera/renderer set up for viewing a
- * single CAD-style model at a time. Later milestones will add region
- * selection highlighting and refinement overlays on top of this.
+ * Thin wrapper around a three.js scene/camera/renderer set up for viewing one
+ * or more CAD-style parts (WS-I multi-part, architecture doc §14): a map of
+ * part id -> mesh, each positioned by its placement, with one part "focused"
+ * for selection/measurement/gizmo interaction. Region-selection highlighting
+ * and measurement overlays sit on top of this.
  */
 export class ModelViewer {
   private readonly container: HTMLElement
@@ -37,7 +50,10 @@ export class ModelViewer {
   private readonly viewCube: ViewCubeGizmo
   private readonly handleViewCubePointerDown: (event: PointerEvent) => void
 
-  private mesh: THREE.Mesh | null = null
+  /** Every rendered part, keyed by part id (WS-I). Iterated in insertion order for camera framing. */
+  private readonly parts = new Map<string, PartView>()
+  /** The part selection/measurement/the placement gizmo act on; null when nothing is loaded. */
+  private focusedPartId: string | null = null
   private highlight: THREE.Object3D | null = null
   private measurementObject: THREE.Object3D | null = null
   private axesHelper: THREE.AxesHelper | null = null
@@ -159,23 +175,20 @@ export class ModelViewer {
     this.renderer.setSize(width, height)
   }
 
-  /** Parses `buffer` as an STL and displays it, replacing any current model. */
-  loadSTL(buffer: ArrayBuffer): void {
-    this.clear()
-
+  /** Parses `buffer` into an origin-aligned mesh. The minimum corner is baked to the geometry
+   *  origin (so an identity-placement part rests on the grid in the +X/+Y/+Z octant and its local
+   *  coords equal world coords - what selection/measurement assume); the *placement* is then applied
+   *  as the mesh transform, never baked into the geometry (layout != geometry, §14). */
+  private buildMesh(buffer: ArrayBuffer): THREE.Mesh {
     const loader = new STLLoader()
     const geometry = loader.parse(buffer)
     geometry.computeVertexNormals()
     geometry.computeBoundingBox()
-
-    // Align the part's minimum corner with the XYZ origin so it rests on the grid and lines up
-    // with the axes gizmo, extending into the +X/+Y/+Z octant. Baked into the geometry (not the
-    // mesh transform) so world coords still equal geometry-local coords, which the selection and
-    // measurement tools assume. `translate` -> `applyMatrix4` recomputes the bounding box/sphere.
     const bounds = geometry.boundingBox
     if (bounds) {
       geometry.translate(-bounds.min.x, -bounds.min.y, -bounds.min.z)
     }
+    geometry.computeBoundingBox()
     geometry.computeBoundingSphere()
 
     const material = new THREE.MeshStandardMaterial({
@@ -184,20 +197,130 @@ export class ModelViewer {
       roughness: 0.65,
       wireframe: this.wireframe
     })
-
-    const mesh = new THREE.Mesh(geometry, material)
-    this.mesh = mesh
-    this.scene.add(mesh)
-
-    this.frameCameraOn(geometry.boundingSphere)
+    return new THREE.Mesh(geometry, material)
   }
 
-  /** Loads `stlBuffer` if given, otherwise clears the viewport entirely - the shared sync
-   *  point for both the live `model:displayed` event and project-switch/create hydration,
-   *  where a freshly-switched-to project may have no model yet. */
+  /**
+   * Loads (or replaces) one part's geometry (WS-I). The part keeps its existing placement/visibility
+   * when re-displayed (an agent refinement), or takes the supplied ones on first load. The first
+   * part loaded becomes focused and frames the camera; additional parts leave the camera put so the
+   * view doesn't jump around as a multi-part project fills in.
+   */
+  loadPart(partId: string, buffer: ArrayBuffer, placement?: Placement, visible = true): void {
+    // Selection/measurement overlays refer to the old geometry - drop them on any (re)load.
+    this.setHighlightObject(null)
+    this.setMeasurementObject(null)
+
+    const existing = this.parts.get(partId)
+    const requested = placement ?? existing?.placement ?? { position: [0, 0, 0], rotation: [0, 0, 0] }
+    const resolvedVisible = existing ? existing.visible : visible
+    if (existing) this.disposeMesh(existing.mesh)
+
+    const mesh = this.buildMesh(buffer)
+    // Ground-snap against THIS geometry's bounds: a re-displayed (refined) part reuses its prior
+    // placement, whose resting y was computed for the old geometry - re-deriving y here keeps the
+    // part resting on the plate instead of floating/sinking. Ground-snap is thus the invariant
+    // everywhere a placement is applied (here + setPartPlacement), so the store-sync effect can't
+    // un-rest a part either.
+    const box = mesh.geometry.boundingBox
+    const resolvedPlacement = box ? groundSnap(requested, box.min, box.max) : requested
+    applyPlacement(mesh, resolvedPlacement)
+    mesh.visible = resolvedVisible
+    this.scene.add(mesh)
+    this.parts.set(partId, { mesh, placement: resolvedPlacement, visible: resolvedVisible })
+
+    if (!this.focusedPartId || !this.parts.has(this.focusedPartId)) this.focusedPartId = partId
+    if (this.parts.size === 1) this.frameCameraOn(mesh.geometry.boundingSphere)
+  }
+
+  /** Legacy single-part entrypoint (the sample-model loader): loads `buffer` as the sole `main`
+   *  part, clearing any others. Multi-part callers use `loadPart`. */
+  loadSTL(buffer: ArrayBuffer): void {
+    this.clear()
+    this.loadPart(MAIN_PART_ID, buffer)
+  }
+
+  /** Loads `stlBuffer` as the sole part if given, otherwise clears the viewport entirely. */
   syncModel(stlBuffer: ArrayBuffer | null): void {
     if (stlBuffer) this.loadSTL(stlBuffer)
     else this.clear()
+  }
+
+  /** Updates a part's placement (layout only), ground-snapped so the part rests on the plate for its
+   *  current geometry (see `loadPart`). No-op for an unknown part. */
+  setPartPlacement(partId: string, placement: Placement): void {
+    const view = this.parts.get(partId)
+    if (!view) return
+    view.mesh.geometry.computeBoundingBox()
+    const box = view.mesh.geometry.boundingBox
+    const snapped = box ? groundSnap(placement, box.min, box.max) : placement
+    view.placement = snapped
+    applyPlacement(view.mesh, snapped)
+  }
+
+  /** Shows/hides a part. No-op for an unknown part. */
+  setPartVisible(partId: string, visible: boolean): void {
+    const view = this.parts.get(partId)
+    if (!view) return
+    view.visible = visible
+    view.mesh.visible = visible
+  }
+
+  /** Removes and disposes a part's mesh. Refocuses another part if the removed one was focused. */
+  removePart(partId: string): void {
+    const view = this.parts.get(partId)
+    if (!view) return
+    this.disposeMesh(view.mesh)
+    this.parts.delete(partId)
+    if (this.focusedPartId === partId) {
+      this.setHighlightObject(null)
+      this.focusedPartId = this.parts.keys().next().value ?? null
+    }
+  }
+
+  /** The part ids currently loaded, in insertion order. */
+  getPartIds(): string[] {
+    return [...this.parts.keys()]
+  }
+
+  /** Marks which part selection/measurement/the placement gizmo act on. */
+  focusPart(partId: string | null): void {
+    if (partId !== null && !this.parts.has(partId)) return
+    if (this.focusedPartId !== partId) this.setHighlightObject(null)
+    this.focusedPartId = partId
+  }
+
+  /** The focused part id, or null if nothing is loaded. */
+  getFocusedPartId(): string | null {
+    return this.focusedPartId
+  }
+
+  /** A specific part's mesh (for the placement gizmo to attach to), or null. */
+  getPartMesh(partId: string): THREE.Mesh | null {
+    return this.parts.get(partId)?.mesh ?? null
+  }
+
+  private disposeMesh(mesh: THREE.Mesh): void {
+    this.scene.remove(mesh)
+    mesh.geometry.dispose()
+    const material = mesh.material
+    if (Array.isArray(material)) material.forEach((m) => m.dispose())
+    else material.dispose()
+  }
+
+  /** Frames the camera on the combined bounds of every visible part (WS-I) - used after multi-part
+   *  hydration so the whole arrangement is in view, not just the first-loaded part. */
+  frameAll(): void {
+    const box = new THREE.Box3()
+    let any = false
+    for (const view of this.parts.values()) {
+      if (!view.visible) continue
+      view.mesh.updateMatrixWorld()
+      box.expandByObject(view.mesh)
+      any = true
+    }
+    if (!any || box.isEmpty()) return
+    this.frameCameraOn(box.getBoundingSphere(new THREE.Sphere()))
   }
 
   private frameCameraOn(sphere: THREE.Sphere | null): void {
@@ -218,38 +341,27 @@ export class ModelViewer {
   }
 
   /**
-   * Removes and disposes the current model, if any, and detaches (but does
-   * not dispose - the caller owns its lifecycle) any active selection
-   * highlight or measurement overlay, since both refer to points/triangles
-   * on the mesh being cleared. Safe to call repeatedly.
+   * Removes and disposes every loaded part, and detaches (but does not dispose
+   * - the caller owns its lifecycle) any active selection highlight or
+   * measurement overlay, since both refer to points/triangles on a mesh being
+   * cleared. Safe to call repeatedly.
    */
   clear(): void {
     this.setHighlightObject(null)
     this.setMeasurementObject(null)
-
-    if (!this.mesh) return
-
-    this.scene.remove(this.mesh)
-    this.mesh.geometry.dispose()
-
-    const material = this.mesh.material
-    if (Array.isArray(material)) {
-      material.forEach((m) => m.dispose())
-    } else {
-      material.dispose()
-    }
-
-    this.mesh = null
+    for (const view of this.parts.values()) this.disposeMesh(view.mesh)
+    this.parts.clear()
+    this.focusedPartId = null
   }
 
-  /** The currently displayed mesh, or null if no model is loaded. */
+  /** The focused part's mesh, or null if nothing is loaded - what selection/measurement act on. */
   getMesh(): THREE.Mesh | null {
-    return this.mesh
+    return this.focusedPartId ? (this.parts.get(this.focusedPartId)?.mesh ?? null) : null
   }
 
-  /** The current mesh's bounding-box size (X/Y/Z, mm), or null if no model is loaded. */
+  /** The focused part's bounding-box size (X/Y/Z, mm), or null if no model is loaded. */
   getDimensions(): { x: number; y: number; z: number } | null {
-    const box = this.mesh?.geometry.boundingBox
+    const box = this.getMesh()?.geometry.boundingBox
     if (!box) return null
     return { x: box.max.x - box.min.x, y: box.max.y - box.min.y, z: box.max.z - box.min.z }
   }
@@ -257,6 +369,11 @@ export class ModelViewer {
   /** The viewer's camera - useful for building a view-projection matrix for selection. */
   getCamera(): THREE.PerspectiveCamera {
     return this.camera
+  }
+
+  /** The viewer's scene - so the placement controller can add its `TransformControls` helper (WS-I). */
+  getScene(): THREE.Scene {
+    return this.scene
   }
 
   /** The canvas element selection interaction should attach pointer listeners to. */
@@ -277,9 +394,12 @@ export class ModelViewer {
    */
   setHighlightObject(object: THREE.Object3D | null): void {
     if (this.highlight === object) return
-    if (this.highlight) this.scene.remove(this.highlight)
+    if (this.highlight?.parent) this.highlight.parent.remove(this.highlight)
     this.highlight = object
-    if (this.highlight) this.scene.add(this.highlight)
+    // Parent the highlight under the focused part's mesh (not the scene) so it inherits that part's
+    // placement transform - the highlight is built in the mesh's local geometry coords, so a placed
+    // part's highlight would otherwise render at the origin instead of on the part.
+    if (this.highlight) (this.getMesh() ?? this.scene).add(this.highlight)
   }
 
   /**
@@ -313,7 +433,9 @@ export class ModelViewer {
    *  carries over to the next model loaded via `loadSTL`/`syncModel`. */
   setWireframe(enabled: boolean): void {
     this.wireframe = enabled
-    if (this.mesh) (this.mesh.material as THREE.MeshStandardMaterial).wireframe = enabled
+    for (const view of this.parts.values()) {
+      ;(view.mesh.material as THREE.MeshStandardMaterial).wireframe = enabled
+    }
   }
 
   /**

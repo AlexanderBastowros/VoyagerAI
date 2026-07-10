@@ -17,7 +17,8 @@ export function makeDeps(
         n += 1
         return { ...entry, n, at: new Date().toISOString() }
       },
-      activeIterationRecord: async (): Promise<ProjectIteration | null> => getActiveIteration()
+      activeIterationRecord: async (): Promise<ProjectIteration | null> => getActiveIteration(),
+      getActivePartId: async (): Promise<string> => 'main'
     },
     emit: (emission) => emissions.push(emission)
   }

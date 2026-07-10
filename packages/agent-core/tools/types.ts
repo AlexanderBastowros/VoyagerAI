@@ -10,10 +10,17 @@ export interface VoyagerMcpProjectStore {
     stepPath?: string
     scriptPath: string
     summary: string
+    briefVersion?: number
+    /** Which part to record into (WS-I); defaults to the active part, created on first use. */
+    partId?: string
+    partName?: string
   }): Promise<ProjectIteration>
   /** The iteration currently shown/exported, or null if the project has none yet - used by
    *  `recommend_print_settings` to tag its output with the model version it applies to. */
   activeIterationRecord(): Promise<ProjectIteration | null>
+  /** The active part's id (WS-I) - `display_model` resolves it to tag its emission with the part
+   *  it recorded into when the agent didn't name one explicitly. */
+  getActivePartId(): Promise<string>
 }
 
 /** The subset of `BriefStore` (`packages/agent-core/brief/store.ts`) the `update_brief` tool and

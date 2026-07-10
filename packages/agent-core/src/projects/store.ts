@@ -1,7 +1,15 @@
 import { copyFile, cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
-import type { AgentSettings, IterationCreatedBy, PersistedMessage, ProjectSummary } from '@shared/ipc'
+import type {
+  AgentSettings,
+  IterationCreatedBy,
+  PartRecord,
+  PersistedMessage,
+  Placement,
+  ProjectSummary
+} from '@shared/ipc'
+import { identityPlacement, MAIN_PART_ID } from '@shared/ipc'
 
 /**
  * One versioned export produced by the `display_model` MCP tool. Paths are
@@ -14,7 +22,7 @@ export interface ProjectIteration {
   stepPath?: string
   scriptPath: string
   /**
-   * App-controlled, version-locked copy of the generating script (e.g. `outputs/versions/v3.py`),
+   * App-controlled, version-locked copy of the generating script (e.g. `outputs/versions/main/v3.py`),
    * made by `recordIteration()` at the moment the STL is displayed. Unlike `scriptPath` (the
    * agent-written `<part>_vN.py`, which the agent could in principle reuse or edit in place), this
    * snapshot is guaranteed to correspond to this iteration's STL - so reverting can rebase the
@@ -28,10 +36,34 @@ export interface ProjectIteration {
    *  architecture doc §4.4: "the locked brief version is stamped onto every iteration it
    *  produces"). Undefined for an iteration recorded before a brief was ever locked. */
   briefVersion?: number
-  /** How this iteration came to exist (WS-0c, architecture doc §8). WS-G stamps `'import'`, WS-I
-   *  stamps `'param'`/`'revert'` where those paths record an iteration; a plain agent
-   *  `display_model` leaves it undefined. Optional so records written before this field parse. */
+  /** How this iteration came to exist (WS-0c, architecture doc §8). WS-G stamps `'import'`, WS-B's
+   *  param path `'param'`; a plain agent `display_model` leaves it undefined. */
   createdBy?: IterationCreatedBy
+}
+
+/**
+ * One part of a project (WS-I, architecture doc §14): its own script lineage, iteration history,
+ * active-iteration pointer, placement, and visibility. The on-disk superset of the renderer-safe
+ * `PartRecord` (`src/shared/parts.ts`) - it additionally carries the full `iterations` array and a
+ * `createdAt`, exactly as `ProjectIteration` is the on-disk superset of `IterationInfo`.
+ */
+export interface StoredPart {
+  /** Stable slug, unique within the project. A migrated single-part project has one part, `main`. */
+  id: string
+  name: string
+  createdAt: string
+  iterations: ProjectIteration[]
+  /**
+   * The `n` of the iteration currently shown/exported for this part. Explicit rather than
+   * always-latest so `revertTo()` can point back at an older generation per part. Undefined for a
+   * part with no iterations yet; back-filled to the latest on read for records that predate it.
+   */
+  activeIteration?: number
+  /** Layout in the shared build space (position + orientation), edited by the viewport gizmo.
+   *  Layout only - never modifies the part's script or mesh (§14). */
+  placement: Placement
+  /** Whether the part is shown in the viewport (per-part visibility toggle). */
+  visible: boolean
 }
 
 export interface ProjectRecord {
@@ -41,19 +73,30 @@ export interface ProjectRecord {
   sessionId?: string
   agentModel?: AgentSettings['model']
   agentEffort?: AgentSettings['effort']
-  iterations: ProjectIteration[]
+  /**
+   * The project's parts (WS-I, §14) - always ≥1 after migration. Replaces the pre-WS-I flat
+   * top-level `iterations`/`activeIteration`, which `readRecord()` migrates into a single `main`
+   * part (discover-don't-recreate, the same style the pre-R3 single-project migration used).
+   */
+  parts: StoredPart[]
+  /**
+   * Which part unscoped operations target: the model shown as "current", the part
+   * `param:*`/`verification:get`/export/`revertTo` resolve against, and the default for a
+   * `display_model` with no explicit part. A project-level pointer (like a part's `activeIteration`),
+   * set by the last `display_model` and by `setActivePart()`. Back-filled to the first part on read.
+   */
+  activePartId?: string
   /** Durable chat transcript (R3.1) - user/assistant turns only; see `AgentSession`'s
    *  `flushAssistantBuffer` for why routine tool-activity narration isn't included. */
   messages: PersistedMessage[]
-  /**
-   * The `n` of the iteration currently considered "current" for display/export (R4 version
-   * history + revert). Explicit rather than always-latest so `revertTo()` can point back at an
-   * older generation without deleting or re-recording anything - the agent keeps working from
-   * the live conversation and on-disk files (it never rewrites history), while this pointer is
-   * what governs what the viewport shows and `model:export` copies. Undefined for a project with
-   * no iterations yet; back-filled to the latest iteration's `n` for older `project.json` files
-   * that predate this field (see `readRecord()`).
-   */
+}
+
+/** A `project.json` as it may exist on disk before the WS-I parts migration - flat top-level
+ *  `iterations`/`activeIteration` and no `parts`. Used only by the migration in `readRecord()`. */
+interface LegacyProjectRecord extends Omit<ProjectRecord, 'parts' | 'activePartId'> {
+  parts?: StoredPart[]
+  activePartId?: string
+  iterations?: ProjectIteration[]
   activeIteration?: number
 }
 
@@ -105,16 +148,66 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
+/** A part's active-iteration number: its explicit pointer, or the latest recorded, or null. */
+function activeIterationNumber(part: StoredPart): number | null {
+  if (part.activeIteration !== undefined && part.iterations.some((it) => it.n === part.activeIteration)) {
+    return part.activeIteration
+  }
+  return part.iterations.at(-1)?.n ?? null
+}
+
+/** The renderer-safe view of a part (drops the full iteration history + createdAt). */
+function toPartRecord(part: StoredPart): PartRecord {
+  return {
+    id: part.id,
+    name: part.name,
+    placement: part.placement,
+    visible: part.visible,
+    activeIteration: activeIterationNumber(part)
+  }
+}
+
+/** A blank part (no iterations), placed at the origin and visible. */
+function freshPart(id: string, name: string, createdAt: string): StoredPart {
+  return { id, name, createdAt, iterations: [], placement: identityPlacement(), visible: true }
+}
+
+/** A human-ish default name for an agent-created part slug (`lid` -> `Lid`, `main` -> `Main`). */
+function defaultPartName(partId: string): string {
+  if (!partId) return 'Part'
+  return partId.charAt(0).toUpperCase() + partId.slice(1)
+}
+
+/**
+ * Normalizes an agent- or import-supplied part id into a safe filesystem slug. Part ids become
+ * directory names (`outputs/versions/<partId>/`), so this is also the guard that keeps a hostile or
+ * sloppy id (`../escape`, `a/b`, spaces) from escaping the project dir: lowercased, every run of
+ * non-`[a-z0-9]` collapsed to a single `-`, leading/trailing `-` stripped, falling back to `part`.
+ */
+export function slugifyPartId(raw: string): string {
+  const slug = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return slug || 'part'
+}
+
 /**
  * Owns every Voyager AI project: each one's on-disk layout under
  * `<baseDir>/<id>/`, the copy of the printable-cad skill it carries, and its
- * `project.json` bookkeeping (name, session id, model/effort, iteration
- * history, chat transcript) that survives app restarts. A small
+ * `project.json` bookkeeping (name, session id, model/effort, parts + their
+ * iteration histories, chat transcript) that survives app restarts. A small
  * `manifest.json` sibling to the per-project directories tracks which ids
  * exist and which one is active - see `bootstrapManifest()` for the
  * self-healing logic that also doubles as the migration path from the old
  * single-`'default'`-project layout (a `default/project.json` found on disk
  * with no manifest is simply "discovered" the same way any project would be).
+ *
+ * Multi-part (WS-I, §14): a project holds `parts`, each with its own iteration
+ * history and active pointer. Every unscoped method (`recordIteration`,
+ * `activeIterationRecord`, `listIterations`, `revertTo`, `latestIteration`)
+ * operates on the **active part** by default, preserving pre-WS-I single-part
+ * behavior for existing callers; pass a `partId` to target a specific part.
  *
  * Contains no top-level `electron` import and takes all filesystem roots as
  * constructor options (mirrors `EnvManager`), so it is fully unit-testable
@@ -229,10 +322,57 @@ export class ProjectStore {
     return toSummary(record)
   }
 
+  // -- parts (WS-I, §14) --------------------------------------------------
+
+  /** Every part in the active project, in creation order (renderer-safe view). */
+  async listParts(): Promise<PartRecord[]> {
+    const record = await this.requireRecord()
+    return record.parts.map(toPartRecord)
+  }
+
+  /** The active part's id - the part unscoped operations target. */
+  async getActivePartId(): Promise<string> {
+    const record = await this.requireRecord()
+    return this.activePart(record).id
+  }
+
+  /** Makes `partId` the active part. Throws if `partId` isn't a known part. */
+  async setActivePart(partId: string): Promise<PartRecord[]> {
+    const record = await this.requireRecord()
+    if (!record.parts.some((p) => p.id === partId)) {
+      throw new Error(`Unknown part: ${partId}`)
+    }
+    record.activePartId = partId
+    await this.writeRecord(this.dirFor(record.id), record)
+    return record.parts.map(toPartRecord)
+  }
+
+  /** Persists a part's placement (layout only - never touches its script/mesh). Throws if unknown. */
+  async setPlacement(partId: string, placement: Placement): Promise<PartRecord[]> {
+    const record = await this.requireRecord()
+    const part = record.parts.find((p) => p.id === partId)
+    if (!part) throw new Error(`Unknown part: ${partId}`)
+    part.placement = placement
+    await this.writeRecord(this.dirFor(record.id), record)
+    return record.parts.map(toPartRecord)
+  }
+
+  /** Shows/hides a part in the viewport. Throws if `partId` isn't a known part. */
+  async setVisibility(partId: string, visible: boolean): Promise<PartRecord[]> {
+    const record = await this.requireRecord()
+    const part = record.parts.find((p) => p.id === partId)
+    if (!part) throw new Error(`Unknown part: ${partId}`)
+    part.visible = visible
+    await this.writeRecord(this.dirFor(record.id), record)
+    return record.parts.map(toPartRecord)
+  }
+
   /**
-   * Records a new versioned iteration (called by the `display_model` MCP
-   * tool once an export validates). The iteration number is computed here as
-   * `latest + 1` so numbering is single-sourced - callers never pass `n`.
+   * Records a new versioned iteration for a part (called by the `display_model`
+   * MCP tool once an export validates, and by WS-B's `param:update`). The part
+   * is `entry.partId` (created on first use with `entry.partName`), or the
+   * active part when omitted; it becomes the active part. The iteration number
+   * is per-part (`latest + 1` within that part) so numbering is single-sourced.
    */
   async recordIteration(entry: {
     stlPath: string
@@ -243,24 +383,50 @@ export class ProjectStore {
     /** Provenance of this iteration (WS-0c) - passed through onto the recorded `ProjectIteration`.
      *  Undefined for a plain agent `display_model` call. */
     createdBy?: IterationCreatedBy
+    /** Which part to record into (WS-I); defaults to the active part. Created on first use. */
+    partId?: string
+    /** Display name to give the part if it's created on first use (ignored for an existing part). */
+    partName?: string
   }): Promise<ProjectIteration> {
     const record = await this.requireRecord()
-    const n = (record.iterations.at(-1)?.n ?? 0) + 1
+    // Slugify a caller-supplied id (path-traversal guard - it becomes a directory name below); the
+    // active part's own id is already a slug, so this is idempotent for the default case.
+    const partId = entry.partId !== undefined ? slugifyPartId(entry.partId) : this.activePart(record).id
+    const existing = record.parts.find((p) => p.id === partId)
+
+    const n = (existing?.iterations.at(-1)?.n ?? 0) + 1
     const dir = this.dirFor(record.id)
     // Snapshot the generating script into an app-controlled, version-locked file so this
     // iteration's `.py` can never drift from its STL (the agent's own `<part>_vN.py` is only
-    // convention). Forward-slash relative path to match how every other path in project.json is
-    // stored. Throwing on a failed copy surfaces a clear error to the agent via `display_model`.
-    const scriptSnapshotPath = `outputs/versions/v${n}.py`
-    await mkdir(join(dir, 'outputs', 'versions'), { recursive: true })
+    // convention). Part-scoped (`outputs/versions/<partId>/`) so two parts' v1 snapshots can't
+    // collide. Forward-slash relative path to match how every other path in project.json is stored.
+    // Copy BEFORE mutating the record so a failed copy (disk full, permission) can't leave a
+    // phantom, never-persisted part or iteration in the in-memory record.
+    const scriptSnapshotPath = `outputs/versions/${partId}/v${n}.py`
+    await mkdir(join(dir, 'outputs', 'versions', partId), { recursive: true })
     await copyFile(join(dir, entry.scriptPath), join(dir, scriptSnapshotPath))
-    const iteration: ProjectIteration = { ...entry, scriptSnapshotPath, n, at: new Date().toISOString() }
-    record.iterations.push(iteration)
-    // A freshly-generated iteration always becomes the active/current one - if the user had
-    // reverted to an older version and then asked Voyager to refine further, the new generation
-    // supersedes it.
-    record.activeIteration = n
-    await this.writeRecord(this.dirFor(record.id), record)
+
+    const iteration: ProjectIteration = {
+      stlPath: entry.stlPath,
+      stepPath: entry.stepPath,
+      scriptPath: entry.scriptPath,
+      summary: entry.summary,
+      briefVersion: entry.briefVersion,
+      createdBy: entry.createdBy,
+      scriptSnapshotPath,
+      n,
+      at: new Date().toISOString()
+    }
+    // Copy succeeded - now safe to mutate + persist the record (creating the part on first use).
+    const part = existing ?? freshPart(partId, entry.partName ?? defaultPartName(partId), new Date().toISOString())
+    part.iterations.push(iteration)
+    // A freshly-generated iteration always becomes its part's active/current one, and that part
+    // becomes the project's active part - if the user had reverted or focused elsewhere and then
+    // asked Voyager to refine this part, the new generation supersedes it and pulls focus.
+    part.activeIteration = n
+    if (!existing) record.parts.push(part)
+    record.activePartId = partId
+    await this.writeRecord(dir, record)
     // Guarded, not just fire-and-forget: the iteration is already persisted and active at this
     // point, so a hook that throws *synchronously* (rather than rejecting a promise it started)
     // must not turn into a rejected `recordIteration()` and make display_model/param:update
@@ -303,48 +469,52 @@ export class ProjectStore {
     }
   }
 
-  /** Most recent iteration, or null if the project has none yet. */
-  async latestIteration(): Promise<ProjectIteration | null> {
+  /** Most recent iteration of `partId` (default: the active part), or null if it has none yet. */
+  async latestIteration(partId?: string): Promise<ProjectIteration | null> {
     const record = await this.requireRecord()
-    return record.iterations.at(-1) ?? null
+    const part = this.resolvePart(record, partId)
+    return part?.iterations.at(-1) ?? null
   }
 
-  /** Every iteration ever recorded for the active project, oldest first. A copy, not the live
-   *  array - callers must go through `recordIteration()`/`revertTo()` to mutate it. */
-  async listIterations(): Promise<ProjectIteration[]> {
+  /** Every iteration ever recorded for `partId` (default: the active part), oldest first. A copy,
+   *  not the live array - callers go through `recordIteration()`/`revertTo()` to mutate it. */
+  async listIterations(partId?: string): Promise<ProjectIteration[]> {
     const record = await this.requireRecord()
-    return [...record.iterations]
+    const part = this.resolvePart(record, partId)
+    return part ? [...part.iterations] : []
   }
 
   /**
-   * The iteration that should currently be shown/exported (R4). Prefers the explicit
-   * `activeIteration` pointer; falls back to `latestIteration()` for a project that predates
-   * `revertTo()` ever having been called (or has no iterations at all). Use this - not
+   * The iteration that should currently be shown/exported for `partId` (default: the active part).
+   * Prefers the part's explicit `activeIteration` pointer; falls back to its latest. Use this - not
    * `latestIteration()` - anywhere "the current model" is needed.
    */
-  async activeIterationRecord(): Promise<ProjectIteration | null> {
+  async activeIterationRecord(partId?: string): Promise<ProjectIteration | null> {
     const record = await this.requireRecord()
-    if (record.activeIteration !== undefined) {
-      const active = record.iterations.find((it) => it.n === record.activeIteration)
+    const part = this.resolvePart(record, partId)
+    if (!part) return null
+    if (part.activeIteration !== undefined) {
+      const active = part.iterations.find((it) => it.n === part.activeIteration)
       if (active) return active
     }
-    return record.iterations.at(-1) ?? null
+    return part.iterations.at(-1) ?? null
   }
 
   /**
-   * Points the active project's "current" iteration at an earlier (or later) generation without
-   * deleting or re-recording anything - old STLs stay on disk and reachable. A subsequent
-   * `recordIteration()` (i.e. the user asks Voyager to keep refining) supersedes this and again
-   * becomes active, so continuing the conversation branches from whatever was last reverted to.
-   * Throws if `n` doesn't name a known iteration.
+   * Points a part's "current" iteration at an earlier (or later) generation without deleting or
+   * re-recording anything - old STLs stay on disk and reachable. Reverts `partId` (default: the
+   * active part) and makes it the active part. A subsequent `recordIteration()` supersedes this and
+   * again becomes active. Throws if `n` doesn't name a known iteration of that part.
    */
-  async revertTo(n: number): Promise<ProjectIteration> {
+  async revertTo(n: number, partId?: string): Promise<ProjectIteration> {
     const record = await this.requireRecord()
-    const iteration = record.iterations.find((it) => it.n === n)
-    if (!iteration) {
+    const part = this.resolvePart(record, partId)
+    const iteration = part?.iterations.find((it) => it.n === n)
+    if (!part || !iteration) {
       throw new Error(`Unknown iteration: v${n}`)
     }
-    record.activeIteration = n
+    part.activeIteration = n
+    record.activePartId = part.id
     await this.writeRecord(this.dirFor(record.id), record)
     return iteration
   }
@@ -358,24 +528,41 @@ export class ProjectStore {
 
   /**
    * The active project's full restorable history: persisted user/assistant
-   * messages merged with system-status lines synthesized from `iterations`
-   * (`Model vN displayed: ...`), sorted chronologically. Synthesizing from
+   * messages merged with system-status lines synthesized from every part's
+   * `iterations` (`Model vN displayed: ...`, tagged with the part name once a
+   * project has more than one part), sorted chronologically. Synthesizing from
    * `iterations` (already durable) rather than persisting a separate
    * model-displayed message keeps there from being two sources of truth for
    * the same fact.
    */
   async getChatHistory(): Promise<PersistedMessage[]> {
     const record = await this.requireRecord()
-    const fromIterations: PersistedMessage[] = record.iterations.map((it) => ({
-      id: `iteration-${it.n}`,
-      role: 'system-status',
-      text: `Model v${it.n} displayed: ${it.summary}`,
-      createdAt: it.at
-    }))
+    const multiPart = record.parts.length > 1
+    const fromIterations: PersistedMessage[] = record.parts.flatMap((part) =>
+      part.iterations.map((it) => ({
+        id: `iteration-${part.id}-${it.n}`,
+        role: 'system-status' as const,
+        text: multiPart
+          ? `Model v${it.n} displayed (${part.name}): ${it.summary}`
+          : `Model v${it.n} displayed: ${it.summary}`,
+        createdAt: it.at
+      }))
+    )
     return [...record.messages, ...fromIterations].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
   }
 
   // -- internal -----------------------------------------------------------
+
+  /** The active part: the one named by `activePartId`, or the first part as a fallback. */
+  private activePart(record: ProjectRecord): StoredPart {
+    return record.parts.find((p) => p.id === record.activePartId) ?? record.parts[0]
+  }
+
+  /** Resolves an explicit `partId` (or the active part when omitted) to a `StoredPart`. */
+  private resolvePart(record: ProjectRecord, partId?: string): StoredPart | undefined {
+    if (partId !== undefined) return record.parts.find((p) => p.id === partId)
+    return this.activePart(record)
+  }
 
   /**
    * Reads `manifest.json` (defaulting to empty), reconciles `projectOrder`
@@ -466,7 +653,15 @@ export class ProjectStore {
 
     let record = await this.readRecord(dir)
     if (!record) {
-      record = { id, name, createdAt: new Date().toISOString(), iterations: [], messages: [] }
+      const now = new Date().toISOString()
+      record = {
+        id,
+        name,
+        createdAt: now,
+        parts: [freshPart(MAIN_PART_ID, 'Main', now)],
+        activePartId: MAIN_PART_ID,
+        messages: []
+      }
       await this.writeRecord(dir, record)
     }
     return record
@@ -483,15 +678,7 @@ export class ProjectStore {
   private async readRecord(dir: string): Promise<ProjectRecord | null> {
     try {
       const raw = await readFile(join(dir, 'project.json'), 'utf-8')
-      const record = JSON.parse(raw) as ProjectRecord
-      // Defends against a pre-R3 project.json with no `messages` field yet, and a pre-R4
-      // project.json with no `activeIteration` pointer yet (defaults to "the latest one",
-      // matching the pre-R4 always-latest behavior).
-      return {
-        ...record,
-        messages: record.messages ?? [],
-        activeIteration: record.activeIteration ?? record.iterations.at(-1)?.n
-      }
+      return migrateRecord(JSON.parse(raw) as LegacyProjectRecord)
     } catch {
       return null
     }
@@ -503,6 +690,69 @@ export class ProjectStore {
 
   private async writeRecord(dir: string, record: ProjectRecord): Promise<void> {
     await writeFile(join(dir, 'project.json'), JSON.stringify(record, null, 2), 'utf-8')
+  }
+}
+
+/**
+ * Normalizes a `project.json` into the current `ProjectRecord` shape (WS-I migration).
+ * - Defends against a pre-R3 record with no `messages` field.
+ * - A record that already has `parts` (WS-I+) is back-filled with an `activePartId` and each
+ *   part's `activeIteration` (both default to "the latest", matching pre-explicit-pointer behavior).
+ * - A pre-WS-I record (flat top-level `iterations`/`activeIteration`, no `parts`) is migrated into a
+ *   single `main` part carrying those iterations (discover-don't-recreate, §14) - the old top-level
+ *   fields are dropped from the returned shape. Ephemeral (not persisted until the next write),
+ *   mirroring how the pre-R4 `activeIteration` back-fill worked.
+ */
+function migrateRecord(parsed: LegacyProjectRecord): ProjectRecord {
+  const messages = parsed.messages ?? []
+
+  if (parsed.parts && parsed.parts.length > 0) {
+    const parts = parsed.parts.map((part) => {
+      // Defend against a malformed part missing `iterations` - a bare deref would throw, which
+      // `readRecord`'s catch turns into `null`, which `materializeProject` then "recovers" by
+      // overwriting the file with a fresh empty project (data loss). Coerce instead.
+      const iterations = part.iterations ?? []
+      return {
+        ...part,
+        iterations,
+        placement: part.placement ?? identityPlacement(),
+        visible: part.visible ?? true,
+        activeIteration: part.activeIteration ?? iterations.at(-1)?.n
+      }
+    })
+    return {
+      id: parsed.id,
+      name: parsed.name,
+      createdAt: parsed.createdAt,
+      sessionId: parsed.sessionId,
+      agentModel: parsed.agentModel,
+      agentEffort: parsed.agentEffort,
+      parts,
+      activePartId: parsed.activePartId ?? parts[0].id,
+      messages
+    }
+  }
+
+  const iterations = parsed.iterations ?? []
+  const mainPart: StoredPart = {
+    id: MAIN_PART_ID,
+    name: 'Main',
+    createdAt: parsed.createdAt,
+    iterations,
+    activeIteration: parsed.activeIteration ?? iterations.at(-1)?.n,
+    placement: identityPlacement(),
+    visible: true
+  }
+  return {
+    id: parsed.id,
+    name: parsed.name,
+    createdAt: parsed.createdAt,
+    sessionId: parsed.sessionId,
+    agentModel: parsed.agentModel,
+    agentEffort: parsed.agentEffort,
+    parts: [mainPart],
+    activePartId: MAIN_PART_ID,
+    messages
   }
 }
 

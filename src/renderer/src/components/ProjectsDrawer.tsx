@@ -17,6 +17,7 @@ import AddIcon from '@mui/icons-material/Add'
 import EditIcon from '@mui/icons-material/Edit'
 import HistoryIcon from '@mui/icons-material/History'
 import { useAppStore } from '../state/appStore'
+import { syncViewportParts } from '../state/syncParts'
 import type { ModelViewer } from '../three/viewer'
 import { colors } from '../colors'
 
@@ -71,7 +72,7 @@ export function ProjectsDrawer({ open, onClose, viewerRef }: ProjectsDrawerProps
     try {
       const snapshot = await window.voyager.project.create({})
       hydrateProject(snapshot)
-      viewerRef.current?.syncModel(snapshot.model?.stlBuffer ?? null)
+      await syncViewportParts(viewerRef.current)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create a new project')
     } finally {
@@ -90,7 +91,7 @@ export function ProjectsDrawer({ open, onClose, viewerRef }: ProjectsDrawerProps
     try {
       const snapshot = await window.voyager.project.switch({ id })
       hydrateProject(snapshot)
-      viewerRef.current?.syncModel(snapshot.model?.stlBuffer ?? null)
+      await syncViewportParts(viewerRef.current)
       onClose()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to switch projects')
@@ -110,7 +111,7 @@ export function ProjectsDrawer({ open, onClose, viewerRef }: ProjectsDrawerProps
     try {
       const snapshot = await window.voyager.project.revertTo({ n })
       hydrateProject(snapshot)
-      viewerRef.current?.syncModel(snapshot.model?.stlBuffer ?? null)
+      await syncViewportParts(viewerRef.current)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to revert to that version')
     } finally {

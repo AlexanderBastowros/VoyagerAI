@@ -34,7 +34,9 @@ describe('display_model tool', () => {
         stl_path: '../../etc/passwd',
         step_path: undefined,
         script_path: 'outputs/part_v1.py',
-        summary: 'nope'
+        summary: 'nope',
+        part: undefined,
+        part_name: undefined
       },
       {}
     )
@@ -46,7 +48,7 @@ describe('display_model tool', () => {
   it('rejects absolute paths outside the project directory', async () => {
     const handler = createDisplayModelTool(deps()).handler
     const result = await handler(
-      { stl_path: '/etc/hosts', step_path: undefined, script_path: 'outputs/p.py', summary: 'nope' },
+      { stl_path: '/etc/hosts', step_path: undefined, script_path: 'outputs/p.py', summary: 'nope', part: undefined, part_name: undefined },
       {}
     )
     expect(result.isError).toBe(true)
@@ -56,14 +58,14 @@ describe('display_model tool', () => {
     const handler = createDisplayModelTool(deps()).handler
 
     const missing = await handler(
-      { stl_path: 'outputs/nope.stl', step_path: undefined, script_path: 'outputs/p.py', summary: 's' },
+      { stl_path: 'outputs/nope.stl', step_path: undefined, script_path: 'outputs/p.py', summary: 's', part: undefined, part_name: undefined },
       {}
     )
     expect(missing.isError).toBe(true)
 
     await writeFile(join(projectDir, 'outputs', 'tiny.stl'), Buffer.alloc(10))
     const tiny = await handler(
-      { stl_path: 'outputs/tiny.stl', step_path: undefined, script_path: 'outputs/p.py', summary: 's' },
+      { stl_path: 'outputs/tiny.stl', step_path: undefined, script_path: 'outputs/p.py', summary: 's', part: undefined, part_name: undefined },
       {}
     )
     expect(tiny.isError).toBe(true)
@@ -76,7 +78,7 @@ describe('display_model tool', () => {
 
     const handler = createDisplayModelTool(deps()).handler
     const result = await handler(
-      { stl_path: 'outputs/part_v1.stl', step_path: undefined, script_path: 'outputs/part_v1.py', summary: 's' },
+      { stl_path: 'outputs/part_v1.stl', step_path: undefined, script_path: 'outputs/part_v1.py', summary: 's', part: undefined, part_name: undefined },
       {}
     )
 
@@ -95,7 +97,9 @@ describe('display_model tool', () => {
         stl_path: 'outputs/part_v1.stl',
         step_path: 'outputs/part_v1.step',
         script_path: 'outputs/part_v1.py',
-        summary: 'A 20mm test cube'
+        summary: 'A 20mm test cube',
+        part: undefined,
+        part_name: undefined
       },
       {}
     )
@@ -109,7 +113,8 @@ describe('display_model tool', () => {
         stlPath: 'outputs/part_v1.stl',
         stepPath: 'outputs/part_v1.step',
         scriptPath: 'outputs/part_v1.py',
-        summary: 'A 20mm test cube'
+        summary: 'A 20mm test cube',
+        partId: 'main'
       }
     ])
 
@@ -118,6 +123,32 @@ describe('display_model tool', () => {
     if (emission.kind !== 'model-displayed') throw new Error('expected model-displayed')
     expect(emission.payload.iteration).toBe(1)
     expect(emission.payload.stlBuffer.byteLength).toBe(fakeStlBytes().byteLength)
+    // No explicit part -> the active (`main`) part; the emission carries it so the viewer keys its
+    // per-part mesh map correctly (WS-I).
+    expect(emission.payload.partId).toBe('main')
+  })
+
+  it('records into (and emits) an explicit part slug, slugified (WS-I)', async () => {
+    await writeFile(join(projectDir, 'outputs', 'lid_v1.stl'), fakeStlBytes())
+    await writeFile(join(projectDir, 'outputs', 'lid_v1.py'), '# script')
+
+    const handler = createDisplayModelTool(deps()).handler
+    await handler(
+      {
+        stl_path: 'outputs/lid_v1.stl',
+        step_path: undefined,
+        script_path: 'outputs/lid_v1.py',
+        summary: 'the lid',
+        part: 'Lid Top',
+        part_name: 'Lid'
+      },
+      {}
+    )
+
+    expect(recorded[0]).toMatchObject({ partId: 'lid-top', partName: 'Lid' })
+    const emission = emissions[0]
+    if (emission.kind !== 'model-displayed') throw new Error('expected model-displayed')
+    expect(emission.payload.partId).toBe('lid-top')
   })
 
   it('stamps the locked brief version onto the iteration when a brief store is configured', async () => {
@@ -140,7 +171,7 @@ describe('display_model tool', () => {
 
     const handler = createDisplayModelTool({ ...deps(), briefStore }).handler
     await handler(
-      { stl_path: 'outputs/part_v1.stl', step_path: undefined, script_path: 'outputs/part_v1.py', summary: 's' },
+      { stl_path: 'outputs/part_v1.stl', step_path: undefined, script_path: 'outputs/part_v1.py', summary: 's', part: undefined, part_name: undefined },
       {}
     )
 
@@ -150,6 +181,7 @@ describe('display_model tool', () => {
         stepPath: undefined,
         scriptPath: 'outputs/part_v1.py',
         summary: 's',
+        partId: 'main',
         briefVersion: 1
       }
     ])
@@ -162,7 +194,7 @@ describe('display_model tool', () => {
     const briefStore = new BriefStore()
     const handler = createDisplayModelTool({ ...deps(), briefStore }).handler
     await handler(
-      { stl_path: 'outputs/part_v1.stl', step_path: undefined, script_path: 'outputs/part_v1.py', summary: 's' },
+      { stl_path: 'outputs/part_v1.stl', step_path: undefined, script_path: 'outputs/part_v1.py', summary: 's', part: undefined, part_name: undefined },
       {}
     )
 
