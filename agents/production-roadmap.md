@@ -564,6 +564,19 @@ Notes on the gates:
   WS-B/WS-C noted). Verified via typecheck/build, the full unit suite, and the pure placement-math
   tests; the three.js `TransformControls` API surface used (`getHelper`/`setMode`/`setSpace`/
   `showX/Y/Z`/`dragging-changed`) was confirmed against the installed `three@0.185`.
+- **Known gap — the parameter panel doesn't work on multi-part projects (future fix).** The WS-B
+  parameter panel + `param:update` path (no-LLM slider re-run) was built for a single-part project
+  and operates on the *active part*'s manifest/iteration. On a project with more than one part it
+  does not correctly target the focused part - editing a slider doesn't reliably re-run/re-record
+  the intended part's script. WS-I wired `param:update` to at least emit the active part's `partId`
+  (so a re-run lands in the right viewer slot), but the end-to-end parameter workflow across parts
+  is unverified and known-broken. **A future work order should:** make `ParamPanel` refetch and edit
+  the *focused* part's manifest on `part:setActive`, ensure each part carries its own PARAMS manifest
+  and `param:getManifest`/`param:update` resolve it per part, and add a multi-part param test.
+  Files to look at: `src/renderer/src/components/ParamPanel.tsx` (WS-B), the `param:*` handlers in
+  `src/main/ipc.ts`, `packages/agent-core/params/**`, and the focus/refetch path in
+  `src/renderer/src/components/PartsPanel.tsx` (WS-I). Not a WS-I regression - single-part parameter
+  editing is unchanged.
 - **Why:** product doc §5.3 / architecture doc §14 — real projects are a box *and* its
   lid, a gear *pair*, a bracket set; the single-part data model is why everything merges
   into one exported file. Gear pairs (WS-H), split-plan pieces, and imports (WS-G) all
