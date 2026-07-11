@@ -2,6 +2,7 @@ import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk'
 import { createDisplayModelTool } from './displayModel'
 import { createRecommendPrintSettingsTool } from './recommendPrintSettings'
+import { createRenderViewsTool } from './renderViews'
 import { createRunVerificationTool } from './runVerification'
 import { createSavePrinterProfileTool } from './savePrinterProfile'
 import { createSetStatusTool } from './setStatus'
@@ -10,11 +11,13 @@ import type { VoyagerMcpDeps } from './types'
 
 export { createDisplayModelTool } from './displayModel'
 export { createRecommendPrintSettingsTool } from './recommendPrintSettings'
+export { createRenderViewsTool } from './renderViews'
 export { createRunVerificationTool } from './runVerification'
 export { createSavePrinterProfileTool } from './savePrinterProfile'
 export { createSetStatusTool } from './setStatus'
 export { createUpdateBriefTool } from './updateBrief'
 export type {
+  RenderIterationOutcome,
   VoyagerBriefStore,
   VoyagerMcpDeps,
   VoyagerMcpEmission,
@@ -36,6 +39,7 @@ export function createVoyagerMcpServer(deps: VoyagerMcpDeps): McpSdkServerConfig
     tools: [
       createDisplayModelTool(deps),
       createRecommendPrintSettingsTool(deps),
+      createRenderViewsTool(deps),
       createRunVerificationTool(deps),
       createSavePrinterProfileTool(deps),
       createSetStatusTool(deps),

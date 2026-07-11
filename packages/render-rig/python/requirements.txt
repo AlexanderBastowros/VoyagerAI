@@ -1,0 +1,14 @@
+# WS-D render rig (packages/render-rig/python/render_views.py).
+#
+# trimesh + numpy are already part of Voyager's managed venv (see
+# `packages/agent-core/src/python/envManager.ts`'s REQUIRED_PACKAGES) - listed here too so this
+# directory is a complete, installable requirement set on its own. matplotlib is new: it is the
+# render rig's rasterizer (see render_views.py's module docstring for why Agg/matplotlib was
+# chosen over pyrender/EGL) and is NOT yet installed automatically into the managed venv -
+# `envManager.ts` is owned outside this work order, so that wiring is filed as a contract-change
+# request in agents/production-roadmap.md rather than edited here. Until it lands,
+# render_views.py detects the missing import and reports a clean `{"ok": false, "error": ...}`
+# instead of crashing (same convention `packages/verify/python/geometry_report.py` uses).
+trimesh>=4.0
+numpy>=1.24
+matplotlib>=3.7

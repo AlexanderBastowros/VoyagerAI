@@ -393,8 +393,79 @@ Notes on the gates:
 - **Done when:** every new iteration gets a report; a deliberately-wrong dimension in a
   test fixture is caught by layer 3 and shown as a red row.
 
-### WS-D — Render rig + designer self-inspection · **Status: TODO** · depends: 0a, 0b
+### WS-D — Render rig + designer self-inspection · **Status: DONE (partial)** · depends: 0a, 0b
 
+- **Landed:** `packages/render-rig` (new npm workspace, mirroring `packages/verify`'s shape).
+  **Rendering backend is matplotlib's Agg canvas, not pyrender/EGL** despite the scope line
+  below - Voyager renders locally on the user's own desktop (Mac/Windows/Linux), and EGL is a
+  Linux/NVIDIA-only headless GL extension with no macOS equivalent, so a pyrender/EGL-only path
+  would simply not run for a large share of desktop users (this dev sandbox is macOS, where it
+  could not have been exercised either). Agg is a pure-software rasterizer bundled with
+  matplotlib - no GPU, no display server, no OS driver stack - and is exactly the "pinned
+  fallback" the scope line allows; it was chosen as the primary (only) implementation for that
+  reason, with the camera/projection/shading done as our own small vectorized-numpy code (see
+  below) rather than relying on `mplot3d`'s 3D camera model.
+  `python/render_views.py` renders one STL's 6 orthographic axis views + 2 isometric views to
+  fixed-size PNGs - deterministic camera basis (Gram-Schmidt'd `(right, up, view_dir)` per view,
+  a documented, fixed `VIEW_DEFS` table), backface culling + a painter's-algorithm depth sort
+  feeding matplotlib's 2D `PolyCollection` (own small vectorized-numpy projection/shading code,
+  **not** `mplot3d` - sidesteps its orthographic-aspect-ratio/hidden-surface quirks), fixed
+  ambient+diffuse lighting from a constant world-space light direction, a fixed neutral
+  blue-gray material (deliberately not the app's per-part palette), and an mm grid + tick labels
+  baked into every frame (the "mm scale reference" requirement) with a "nice step" chosen so
+  gridlines land near round mm values regardless of part size. Prints one JSON line on stdout,
+  `{"ok": true, "views": {...}, "widthMm", "heightMm", "depthMm", "sizePx"}` or `{"ok": false,
+  "error"}` on any failure (including missing imports) - never a bare traceback, matching
+  `packages/verify/python/*.py`'s convention exactly. `src/renderViews.ts` is the thin
+  injectable-exec TS wrapper (`packages/verify/src/validateStl.ts`'s exact shape, own local copy
+  of the small `execFile` helper rather than a cross-package dependency on `@voyager/verify` -
+  render-rig and verify are independent siblings per the architecture doc, not a stack);
+  `renderConvention.ts` gives renders a home beside each iteration's STL
+  (`<base>.renders/{front,back,left,right,top,bottom,iso1,iso2}.png`, mirroring
+  `manifestPathForStl`/`verificationPathForStl`'s "one rule for what lives next to the STL"
+  convention, but naming a directory instead of a single file). Root `package.json`/`tsconfig.json`
+  gained the same per-package `typecheck:render-rig` wiring `agent-core`/`verify` already have
+  (`vitest.config.ts`'s `packages/**/*.test.ts` glob already covered the new tests with no
+  change needed).
+  `packages/agent-core/tools/renderViews.ts` is the `render_views` MCP tool, same standalone-
+  handler/injected-deps shape as `runVerification.ts`: reads the active iteration, calls
+  `deps.renderViews(iteration)`, reads each PNG's bytes itself (mirrors `display_model` reading
+  its own STL bytes), and returns them as MCP **image content blocks** (`{type: 'image', data:
+  base64, mimeType: 'image/png'}`) plus a one-line text summary - the model can actually *see*
+  the renders, not just get told they exist, which is the whole point of self-inspection. Wired
+  into the registry (`tools/index.ts`) and one small additive optional field on
+  `VoyagerMcpDeps`/new `RenderIterationOutcome` type (`tools/types.ts`), exactly mirroring how
+  WS-C's `runVerification`/WS-E's `printerProfiles` were added - both files are siblings of this
+  order's own `tools/renderViews.ts`, not a different stream's surface. SKILL.md gained one
+  surgical paragraph at the Phase 5/6 boundary (WS-D's explicitly-owned paragraphs): call
+  `render_views` and look at the result - missing/misplaced/mirrored/mis-oriented features -
+  before calling `display_model`; explicitly told it's a sanity check, not a measurement tool,
+  and to proceed to Phase 6 without blocking if rendering reports itself unavailable.
+  **Execution-verified against real geometry** (WS-C precedent): an ad-hoc `pip install --user
+  trimesh numpy matplotlib` in the sandbox (none of the three importable from the repo's own
+  managed venv here) rendered a deliberately asymmetric L-shaped test STL; front/back/left/right
+  visually confirmed *not* mirrored or rotated wrong (worked through the camera-basis math by
+  hand for two views to confirm the rendered silhouettes match); two independent runs against the
+  same STL produced **byte-identical PNGs** (same checksum, same size) - the "pixel-stable across
+  two runs" done-when criterion. Quality gate green: 463 tests (448 prior + 15 new: 4 render-rig
+  exec-wrapper, 5 `renderDirForStl`, 6 tool), build, typecheck (now including the new
+  `typecheck:render-rig`).
+- **Not wired live (honest gap - see contract-change requests below):** `deps.renderViews` is
+  optional and nothing in this order's file ownership constructs a real implementation, so
+  today the tool always replies "Rendering is not available in this session" in the actual app -
+  `src/main/ipc.ts` (where `verifyIteration`/`AgentSession` are constructed) and
+  `packages/agent-core/src/agent/session.ts` (`AgentSessionDeps`, the `createVoyagerMcpServer`
+  call) are where WS-C's `runVerification` and WS-E's `printerProfiles` were threaded through by
+  their own orders even though neither file was in *their* "Files owned" line either - this
+  order's brief was explicit to touch only its three owned surfaces and file a request for
+  anything else, so that wiring (fully specified below, all-additive, ~20 lines) is left for the
+  dispatcher to route rather than assumed. Net effect: the "done when" criteria (canonical
+  render set on disk per iteration; transcript shows self-inspection before display) are **not**
+  met end-to-end yet - only the tool + renderer are done and independently verified. Thumbnails
+  in the version-history UI (`ProjectsDrawer.tsx`'s "Versions" list) are **not implemented**:
+  reading PNG bytes into the renderer process needs a new IPC channel (nothing in the frozen
+  `src/shared/ipc.ts` surface exposes arbitrary file bytes, nor should it generically), which is
+  a contract change outside this order's file ownership - filed below instead of edited.
 - **Why:** product doc §4.3 — deterministic canonical views; the designer looks at its own
   output before declaring success (works fully in CLI mode; the *independent* vision critic
   waits for Mode B).
@@ -773,3 +844,57 @@ Notes on the gates:
   `PrinterProfileListResponse` (active pointer moves to `null` when the active profile is
   deleted), wired like `printerProfile:setActive`, plus a delete affordance in
   `PrinterProfilesPanel.tsx` (WS-E-owned, trivial once the channel exists).
+
+- **WS-D needs `render_views` threaded through `src/main/ipc.ts` + `session.ts` to actually run**
+  (neither file is in WS-D's "Files owned" line, and this order's brief was explicit to touch
+  only its three owned surfaces). The tool + renderer are done and independently
+  execution-verified (see WS-D's landed note); only the main-process wiring that constructs a
+  real `deps.renderViews` and threads it through is missing, and it is small and entirely
+  additive - mirrors WS-C's `runVerification` wiring line-for-line:
+  1. `src/main/ipc.ts`: add a `renderScriptPath()` resolver next to `geometryReportScriptPath()`
+     (same dev/packaged `app.isPackaged` branch, pointing at
+     `packages/render-rig/python/render_views.py`), and a `renderIteration(iteration, projectDir)`
+     function next to `verifyIteration` that calls `@voyager/render-rig`'s `renderViews({
+     pythonPath: envManager.pythonPath(), scriptPath: renderScriptPath(), stlPath: join(projectDir,
+     iteration.stlPath), outDir: join(projectDir, renderDirForStl(iteration.stlPath)) })` and
+     returns the `RenderIterationOutcome` shape `tools/types.ts` already declares (`{ ok: true,
+     dir: outDir, views: result.views, widthMm, heightMm, depthMm }` on success, `{ ok: false,
+     error }` passthrough on failure). Pass `renderViews: (iteration) =>
+     renderIteration(iteration, projectStore.getProjectDir())` into the existing `new
+     AgentSession({...})` call (alongside `runVerification`/`printerProfiles`, ~line 275).
+  2. `packages/agent-core/src/agent/session.ts`: add `renderViews?: (iteration: ProjectIteration)
+     => Promise<RenderIterationOutcome>` to `AgentSessionDeps` (mirrors `runVerification`'s optional
+     field exactly) and pass `renderViews: this.deps.renderViews` into the `createVoyagerMcpServer({
+     ... })` call. Optionally (UX polish, not a blocker - `decideToolPermission`'s blanket
+     `mcp__voyager__*` allow already covers it either way): add
+     `'mcp__voyager__render_views'` to the `allowedTools` array and a
+     `case 'mcp__voyager__render_views': return activity('Rendering canonical views')` arm in
+     `humanizeToolUse`.
+  3. `electron-builder.yml`: add a `- from: packages/render-rig/python` / `to: render-rig`
+     `extraResources` entry (mirrors the existing `verify`/`params` entries) so packaged builds
+     ship `render_views.py`.
+  Until this lands, `render_views` always replies "Rendering is not available in this session."
+
+- **WS-D needs `matplotlib` added to the managed venv's `REQUIRED_PACKAGES`
+  (`packages/agent-core/src/python/envManager.ts`, owned outside this order).** The render rig's
+  rasterizer is matplotlib (see WS-D's landed note for why, over pyrender/EGL); `trimesh`/`numpy`
+  are already required but matplotlib isn't. `render_views.py` detects the missing import and
+  reports a clean `{"ok": false, "error": ...}` rather than crashing, so nothing breaks today -
+  but `render_views` can't actually produce a render in any real install until
+  `REQUIRED_PACKAGES` gains `'matplotlib'` (and the `STAGE_PATTERNS` progress-line matcher gains
+  a `matplotlib` entry, cosmetic only). `packages/render-rig/python/requirements.txt` documents
+  the same gap.
+
+- **WS-D requests a new `render:list`/`render:get`-shaped channel for version-history
+  thumbnails** (frozen `src/shared/ipc.ts`/preload/`src/main/ipc.ts` surface, owned outside this
+  order). The scope line asked for thumbnails in `ProjectsDrawer.tsx`'s "Versions" list, but
+  nothing in the existing contract exposes arbitrary file bytes to the renderer process (nor
+  should it, generically) - reading a render PNG back requires a new round-trip. Proposed:
+  `render:get` with `RenderGetRequest { partId?: string; n: number; view: RenderViewName }` →
+  `RenderGetResponse { dataUrl: string | null }` (base64 `data:image/png;base64,...`, `null` if
+  that iteration has no render set yet - e.g. recorded before this order's `renderIteration` hook
+  existed, or before `render_views` was ever called for it), handler reading
+  `renderDirForStl`'s convention path off disk via `@voyager/render-rig`. `ProjectsDrawer.tsx`
+  would fetch one thumbnail view (e.g. `iso1`) per visible version row, lazily, the same
+  on-demand shape `part:getModel` already uses instead of pushing every iteration's images
+  up front.

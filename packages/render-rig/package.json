@@ -1,0 +1,12 @@
+{
+  "name": "@voyager/render-rig",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic headless canonical-view renders (6 ortho + 2 iso) for designer self-inspection and, later, the vision critic (WS-D, architecture doc §4.3/§5).",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  }
+}
