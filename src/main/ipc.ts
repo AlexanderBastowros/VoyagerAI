@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
-import { copyFile, readFile, writeFile } from 'node:fs/promises'
+import { copyFile, readFile, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../shared/ipc'
 import type {
@@ -38,6 +38,7 @@ import type {
   ProjectSummary,
   RenameProjectRequest,
   RevertToRequest,
+  ScriptManifest,
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus,
@@ -52,15 +53,27 @@ import {
   EnvManager,
   PrinterProfileStore,
   ProjectStore,
+  buildGraduationPackage,
+  buildPlateStl,
+  containedAbsPath,
+  deriveThreeMfPath,
   readManifestForIteration,
   rerunWithParam,
   resolveAllPartsExportSources,
   resolveExportSource,
   runPreflight,
+  slugifyZipBase,
   validateParamUpdate,
   writeZip
 } from '@voyager/agent-core'
-import type { PartExportSource, ProjectIteration, ZipEntry } from '@voyager/agent-core'
+import type {
+  PackageFsDeps,
+  PackagePartInput,
+  PartExportSource,
+  PlatePart,
+  ProjectIteration,
+  ZipEntry
+} from '@voyager/agent-core'
 import { readVerificationForIteration, runVerification, writeVerificationForIteration } from '@voyager/verify'
 
 /**
@@ -153,6 +166,26 @@ function toIterationInfo(iteration: ProjectIteration): IterationInfo {
     at: iteration.at,
     hasStep: Boolean(iteration.stepPath),
     createdBy: iteration.createdBy
+  }
+}
+
+/**
+ * Probes whether a 3MF was actually produced for the iteration that recorded `stlPath`, at the
+ * conventional sibling path `deriveThreeMfPath` computes - SKILL.md's Phase 4 currently only
+ * "offers" 3MF on request rather than always producing it (a contract-change request for that is
+ * filed in the roadmap), so it's absent more often than not. `resolveExportSource`/
+ * `resolveAllPartsExportSources` stay pure (no filesystem I/O), so this real `stat` call lives
+ * here - applying the same containment guard those functions use before ever touching disk.
+ */
+async function resolveThreeMfPath(projectDir: string, stlPath: string): Promise<string | undefined> {
+  const candidate = deriveThreeMfPath(stlPath)
+  const abs = containedAbsPath(projectDir, candidate)
+  if (!abs) return undefined
+  try {
+    await stat(abs)
+    return candidate
+  } catch {
+    return undefined
   }
 }
 
@@ -335,6 +368,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC.modelExport,
     async (event, request: ExportModelRequest): Promise<ExportModelResponse> => {
+      const { format, partId } = request
       const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
       async function promptSavePath(defaultPath: string, filters: Electron.FileFilter[]): Promise<string | null> {
         const dialogOptions = { defaultPath, filters }
@@ -351,23 +385,83 @@ export function registerIpcHandlers(): void {
       const projectDir = projectStore.getProjectDir()
       const activeProjectId = projectStore.getActiveProjectId()
 
+      if (format === 'package') {
+        return {
+          saved: false,
+          reason: 'Use "Export package" instead - graduation packages have their own export.'
+        }
+      }
+
+      if (format === 'plate') {
+        // Bakes every VISIBLE part's current placement into one merged STL, matching the
+        // viewport arrangement (§14/WS-F) - spans every part, so `partId` is ignored.
+        const plateParts: PlatePart[] = []
+        const skippedParts: string[] = []
+        for (const part of parts) {
+          if (!part.visible) {
+            skippedParts.push(part.name)
+            continue
+          }
+          const iteration = await projectStore.activeIterationRecord(part.id)
+          if (!iteration) {
+            skippedParts.push(part.name)
+            continue
+          }
+          const abs = containedAbsPath(projectDir, iteration.stlPath)
+          if (!abs) {
+            return {
+              saved: false,
+              reason: `The recorded STL path for part "${part.name}" resolves outside the project directory and was rejected.`
+            }
+          }
+          plateParts.push({ name: part.name, stlBuffer: await readFile(abs), placement: part.placement })
+        }
+        // Every await above yields the event loop - mirrors the all-parts zip branch below's
+        // concurrent-project-switch guard, since a plate mixing one project's STL bytes with
+        // another's placements would be silently wrong rather than just stale.
+        if (projectStore.getActiveProjectId() !== activeProjectId) {
+          return { saved: false, reason: 'The active project changed while exporting - try again.' }
+        }
+
+        const built = buildPlateStl(plateParts)
+        if (!built.ok) return { saved: false, reason: built.reason }
+
+        const projectName = (await projectStore.listProjects()).find((p) => p.id === activeProjectId)?.name
+        const defaultName = `${slugifyZipBase(projectName ?? '') || 'plate'}-plate.stl`
+        const filePath = await promptSavePath(defaultName, [{ name: 'STL', extensions: ['stl'] }])
+        if (!filePath) return { saved: false }
+
+        try {
+          await writeFile(filePath, built.stlBuffer)
+        } catch (err) {
+          return {
+            saved: false,
+            reason: err instanceof Error ? `Could not save the file: ${err.message}` : 'Could not save the file.'
+          }
+        }
+
+        return {
+          saved: true,
+          path: filePath,
+          ...(skippedParts.length > 0 ? { skippedParts } : {})
+        }
+      }
+
       // A stale/typo'd part id gets a precise error (matching setActivePart/setVisibility)
       // instead of resolving as "part with no iterations" -> "No model has been generated yet."
-      if (request.partId && !parts.some((p) => p.id === request.partId)) {
-        return { saved: false, reason: `Unknown part: ${request.partId}` }
+      if (partId && !parts.some((p) => p.id === partId)) {
+        return { saved: false, reason: `Unknown part: ${partId}` }
       }
 
       // Multi-part project with no explicit part: every part's active iteration as separate
-      // files in one zip - never a silent merge (§14/WS-F). Only for the per-part single-file
-      // formats; 'plate'/'package' keep their own (stubbed) semantics below.
-      if (!request.partId && parts.length > 1 && (request.format === 'stl' || request.format === 'step')) {
+      // files in one zip - never a silent merge (§14/WS-F).
+      if (!partId && parts.length > 1) {
         const sources: PartExportSource[] = []
         for (const part of parts) {
-          sources.push({
-            id: part.id,
-            name: part.name,
-            iteration: await projectStore.activeIterationRecord(part.id)
-          })
+          const iteration = await projectStore.activeIterationRecord(part.id)
+          const threeMfPath =
+            format === '3mf' && iteration ? await resolveThreeMfPath(projectDir, iteration.stlPath) : undefined
+          sources.push({ id: part.id, name: part.name, iteration: iteration ? { ...iteration, threeMfPath } : null })
         }
         const projectName = (await projectStore.listProjects()).find((p) => p.id === activeProjectId)?.name
         // Every await above yields the event loop, so a concurrent `project:switch` may have
@@ -376,7 +470,7 @@ export function registerIpcHandlers(): void {
         if (projectStore.getActiveProjectId() !== activeProjectId) {
           return { saved: false, reason: 'The active project changed while exporting - try again.' }
         }
-        const resolved = resolveAllPartsExportSources(sources, projectDir, request.format, projectName)
+        const resolved = resolveAllPartsExportSources(sources, projectDir, format, projectName)
         if (!resolved.ok) return { saved: false, reason: resolved.reason }
 
         const filePath = await promptSavePath(resolved.zipFileName, [{ name: 'ZIP archive', extensions: ['zip'] }])
@@ -404,14 +498,17 @@ export function registerIpcHandlers(): void {
 
       // Single-file path: the requested part's active iteration (or the active part's when
       // no partId is given - a single-part project always lands here).
-      const active = await projectStore.activeIterationRecord(request.partId)
-      const resolved = resolveExportSource(active, projectDir, request.format)
+      const active = await projectStore.activeIterationRecord(partId)
+      const threeMfPath = format === '3mf' && active ? await resolveThreeMfPath(projectDir, active.stlPath) : undefined
+      const resolved = resolveExportSource(active ? { ...active, threeMfPath } : null, projectDir, format)
       if (!resolved.ok) return { saved: false, reason: resolved.reason }
 
       const filters =
-        request.format === 'step'
+        format === 'step'
           ? [{ name: 'STEP', extensions: ['step', 'stp'] }]
-          : [{ name: 'STL', extensions: ['stl'] }]
+          : format === '3mf'
+            ? [{ name: '3MF', extensions: ['3mf'] }]
+            : [{ name: 'STL', extensions: ['stl'] }]
 
       const filePath = await promptSavePath(resolved.fileName, filters)
       if (!filePath) return { saved: false }
@@ -673,14 +770,112 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  // -- WS-F Graduation package export (stub - no package builder yet) ----
+  // -- WS-F Graduation package export --------------------------------------
+  // Replaces the WS-0b stub at this designated stub-replacement point - the `IPC.modelExportPackage`
+  // channel wiring above is unchanged.
 
   ipcMain.handle(
     IPC.modelExportPackage,
-    async (_event, _request: ExportPackageRequest): Promise<ExportPackageResponse> => ({
-      saved: false,
-      reason: 'Package export is not implemented yet.'
-    })
+    async (event, request: ExportPackageRequest): Promise<ExportPackageResponse> => {
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+      const parts = await projectStore.listParts()
+      const projectDir = projectStore.getProjectDir()
+      const activeProjectId = projectStore.getActiveProjectId()
+
+      // A stale/typo'd part id gets a precise error, matching `model:export`'s convention.
+      if (request.partId && !parts.some((p) => p.id === request.partId)) {
+        return { saved: false, reason: `Unknown part: ${request.partId}` }
+      }
+      // Iteration numbers are per-part - an explicit iteration with no part to scope it to is
+      // ambiguous across a multi-part project rather than silently picking one.
+      if (request.iteration !== undefined && !request.partId) {
+        return { saved: false, reason: 'An iteration number requires a specific part - pass partId too.' }
+      }
+
+      const scoped = request.partId ? parts.filter((p) => p.id === request.partId) : parts
+
+      const packageParts: PackagePartInput[] = []
+      const manifests: Record<string, ScriptManifest | null> = {}
+      for (const part of scoped) {
+        let iteration: ProjectIteration | null
+        if (request.partId && request.iteration !== undefined) {
+          const history = await projectStore.listIterations(part.id)
+          iteration = history.find((it) => it.n === request.iteration) ?? null
+          if (!iteration) {
+            return { saved: false, reason: `Unknown iteration: v${request.iteration}` }
+          }
+        } else {
+          iteration = await projectStore.activeIterationRecord(part.id)
+        }
+        // No model yet for this part - left out of the bundle (format-honesty degrade, mirrors
+        // `resolveAllPartsExportSources`' `skippedParts`); `buildGraduationPackage` itself fails
+        // if this leaves every part out.
+        if (!iteration) continue
+
+        packageParts.push({
+          id: part.id,
+          name: part.name,
+          iteration: {
+            n: iteration.n,
+            stlPath: iteration.stlPath,
+            stepPath: iteration.stepPath,
+            scriptPath: iteration.scriptPath,
+            scriptSnapshotPath: iteration.scriptSnapshotPath,
+            briefVersion: iteration.briefVersion
+          }
+        })
+        manifests[part.id] = await readManifestForIteration(projectDir, iteration)
+      }
+
+      // Every await above yields the event loop - the same concurrent-project-switch guard
+      // `model:export`'s branches use, since mixing one project's artifacts with another's brief/
+      // manifests would be silently wrong.
+      if (projectStore.getActiveProjectId() !== activeProjectId) {
+        return { saved: false, reason: 'The active project changed while exporting - try again.' }
+      }
+
+      // The package always bundles the project's *currently* locked brief (a project-level
+      // artifact), not a per-iteration lookup - see `BuildGraduationPackageInput.lockedBrief`'s
+      // doc comment. Omitted entirely if the project has never locked one.
+      const brief = await briefStore.get(projectDir)
+      const lockedBrief = brief.lockedAt
+        ? { version: brief.version, json: JSON.stringify(brief, null, 2) }
+        : undefined
+
+      const projectName =
+        (await projectStore.listProjects()).find((p) => p.id === activeProjectId)?.name ?? 'Voyager project'
+
+      const fsDeps: PackageFsDeps = {
+        readFile: (absPath) => readFile(absPath),
+        fileExists: (absPath) => stat(absPath).then(() => true, () => false)
+      }
+
+      const result = await buildGraduationPackage(
+        { projectDir, projectName, parts: packageParts, lockedBrief, manifests },
+        fsDeps
+      )
+      if (!result.ok) return { saved: false, reason: result.reason }
+
+      const dialogOptions = {
+        defaultPath: result.zipFileName,
+        filters: [{ name: 'ZIP archive', extensions: ['zip'] }]
+      }
+      const { canceled, filePath } = win
+        ? await dialog.showSaveDialog(win, dialogOptions)
+        : await dialog.showSaveDialog(dialogOptions)
+      if (canceled || !filePath) return { saved: false }
+
+      try {
+        await writeFile(filePath, result.zipBuffer)
+      } catch (err) {
+        return {
+          saved: false,
+          reason: err instanceof Error ? `Could not save the file: ${err.message}` : 'Could not save the file.'
+        }
+      }
+
+      return { saved: true, path: filePath }
+    }
   )
 
   // -- WS-G External model import (stub - no import pipeline yet) ---------
