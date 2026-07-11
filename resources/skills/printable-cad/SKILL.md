@@ -200,12 +200,26 @@ Minimum-wall correctness is enforced at **design** time (Phase 4), not measured 
 mesh, because thin-wall detection on a triangle soup is unreliable. If the user forced a
 sub-minimum wall, that's flagged in Phase 4.
 
+Before moving to Phase 6, call the `render_views` MCP tool on the STL you just validated
+and actually look at the result. It renders 6 orthographic views (front/back/left/right/
+top/bottom) plus 2 isometric angles — fixed lighting, a neutral material, and an mm grid
+in frame — so you can check what you built, not just what the numbers say. Look at every
+view against the brief/request: is a feature missing, misplaced, mirrored, or
+mis-oriented; does the silhouette match what was asked for. This is a sanity check, not a
+measurement tool — it cannot judge dimensions (that's already covered above); use it to
+catch the gross, obvious errors dimension checks can't (a hole on the wrong face, a
+mirrored bracket, a boss floating in space). If something looks wrong, fix the model and
+re-validate/re-render before displaying it — don't display a model you haven't looked at.
+If the tool reports that rendering isn't available in this session, don't block on it —
+proceed to Phase 6.
+
 ---
 
 ## Phase 6 — Display and iterate
 
 Voyager AI has a built-in 3D viewport — do **not** generate `viewer.html` with
-`preview.py`. Instead, after the STL validates, call the `display_model` MCP tool:
+`preview.py`. Instead, after the STL validates and you've looked at its renders, call the
+`display_model` MCP tool:
 
 - `stl_path` — path to the exported STL (required)
 - `step_path` — path to the exported STEP (if produced)

@@ -58,6 +58,15 @@ export type VoyagerMcpEmission =
   | { kind: 'verification-computed'; payload: VerificationReport }
   | { kind: 'printer-profiles-updated'; payload: PrinterProfileList }
 
+/** Result of rendering one iteration's canonical view set (WS-D) - returned by
+ *  `VoyagerMcpDeps.renderViews`. `dir` is an absolute path so the `render_views` tool can read
+ *  the PNG bytes back itself (mirrors how `display_model` reads its own STL bytes) without
+ *  knowing anything about python/venv paths; `views` maps each view name to its filename inside
+ *  `dir`, a `Partial` since a degraded render (e.g. one view failed) may not cover every name. */
+export type RenderIterationOutcome =
+  | { ok: true; dir: string; views: Partial<Record<string, string>>; widthMm: number; heightMm: number; depthMm: number }
+  | { ok: false; error: string }
+
 export interface VoyagerMcpDeps {
   projectStore: VoyagerMcpProjectStore
   briefStore?: VoyagerBriefStore
@@ -71,5 +80,14 @@ export interface VoyagerMcpDeps {
   runVerification?: (iteration: ProjectIteration) => Promise<VerificationReport>
   /** Backs the `save_printer_profile` tool (WS-E) - optional, mirrors `briefStore`. */
   printerProfiles?: VoyagerPrinterProfileStore
+  /**
+   * Renders the 6 ortho + 2 iso canonical views for one iteration (WS-D, architecture doc
+   * §4.3/§5) - backs the `render_views` on-demand tool. Optional so tool tests that don't touch
+   * rendering (every fixture that predates WS-D) don't need to wire one up; a real
+   * `@voyager/render-rig`-backed implementation is a contract-change request (not yet wired into
+   * `src/main/ipc.ts`/`session.ts` - see `agents/production-roadmap.md`), mirroring exactly how
+   * `runVerification` is threaded through today.
+   */
+  renderViews?: (iteration: ProjectIteration) => Promise<RenderIterationOutcome>
   emit: (emission: VoyagerMcpEmission) => void
 }
