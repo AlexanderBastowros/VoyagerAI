@@ -1017,6 +1017,15 @@ Notes on the gates:
      the `prompts.ts` change, so land them together.
   Until this lands, criteria "region-select reports which part was selected" and multi-part agent
   authoring are captured/persisted on the WS-I side but not yet surfaced to the model.
+  **→ LANDED (contracts follow-up, 2026-07-11):** all three landed together. `systemPromptAppend`
+  gained a parts-vocabulary paragraph (name `part` on `display_model` for multi-part projects, ask
+  when ambiguous); `formatSelectionContext` includes `selection.partId` when set;
+  `buildUserMessage`/`AgentSession.sendMessage` gained an `arrangementContext`/`focusedPartId` path
+  backed by a new `formatArrangementContext` (part names + placements, injected only for 2+ parts) -
+  `AgentSession.sendMessage` reads `projectStore.listParts()` itself, and `focusedPartId` flows
+  `ChatPanel.tsx` → `agent:sendMessage` → `AgentSession.sendMessage`'s new optional param. Also fixed
+  the stale `outputs/versions/vN.py` snapshot-path prose (now `outputs/versions/<part>/vN.py`) in
+  both `prompts.ts` and `SKILL.md`.
 
 - **WS-I needs a cross-part interference check in WS-C's layer 2.** WS-I persists each part's
   `placement` (`ProjectStore.setPlacement`; `listParts()` exposes `PartRecord.placement`) but does no
@@ -1029,6 +1038,17 @@ Notes on the gates:
   rotation: [n,n,n] } }>` (each part's active-iteration STL + its placement) - transform each mesh by
   its placement, then AABB-then-mesh interference-test the set. This is the same caliper-class,
   LLM-free check the verification pyramid already favors.
+  **→ LANDED (contracts follow-up, 2026-07-11):** new `packages/verify/python/part_interference.py`
+  (min-corner-aligns each mesh like the renderer's `viewer.ts`/`placement.ts`, then AABB-padded-by-
+  epsilon-then-ray-cast interference test - deliberately not `trimesh.contains()`/`signed_distance()`,
+  both of which need `rtree`, not in the guaranteed venv; confirmed by hand) and a new
+  `packages/verify/src/layerPartInterference.ts` wrapper, composed into `runVerification` (findings
+  tagged `layer: 'geometry'`, only runs for 2+ parts) and wired through `verifyIteration` in
+  `src/main/ipc.ts` (assembles each part's active-iteration STL + placement via
+  `projectStore.listParts()`/`activeIterationRecord(partId)`). Unit-tested with fixture boxes
+  (overlapping, clear, and flush-touching - the touching case needed a small epsilon pad on the
+  AABB pre-filter to avoid a false positive) actually executed against real STL geometry with
+  system Python (numpy + trimesh), plus TS-level tests against a faked `execFileFn`.
 
 - **WS-E needs printer fields in `update_brief`'s patch shape (WS-A-owned `brief/agentPatch.ts`).**
   `DesignBriefSchema.printer` exists (0b) and WS-C's `verifyIteration` *prefers* `brief.printer`
@@ -1044,6 +1064,12 @@ Notes on the gates:
   frozen-contract change), and one sentence in WS-E's switched-printer prompt arm telling the
   agent to record the project's printer via `update_brief` - `verifyIteration`'s
   brief-printer-first logic then does the right thing with no other change.
+  **→ LANDED (contracts follow-up, 2026-07-11):** the six `printer_*` fields landed on
+  `briefAgentPatchShape` and `mergeAgentPatch` (agent-core-local, matches the "no provenance
+  concept" plain-scalar pattern the other patch fields already use - unspecified fields fall back
+  to whatever the brief already had, not to 0/''), plus the prompted sentence in
+  `formatPrinterProfileContext`'s switched-printer arm telling the agent to call `update_brief`
+  right away rather than waiting on a saved-profile confirmation.
 
 - **WS-E requests a Phase-1 sentence in `SKILL.md` (WS-B-owned).** Phase 1 currently says to ask
   the nozzle/bed questions "together, up front" every session; WS-E now overrides that via the
@@ -1054,6 +1080,8 @@ Notes on the gates:
   skill is copied per-project at creation (`ProjectStore.materializeProject` copies only when
   missing), so existing projects keep their old copy either way - the system-prompt override is
   the mechanism that works for them.
+  **→ LANDED (contracts follow-up, 2026-07-11):** the quoted sentence added verbatim at the top of
+  Phase 1 in `resources/skills/printable-cad/SKILL.md`.
 
 - **WS-E notes the frozen `printerProfile:*` contract has no delete.** The panel can list, save,
   and set-active but never remove a profile (a mis-added printer lives forever; the store's only
@@ -1062,6 +1090,7 @@ Notes on the gates:
   `PrinterProfileListResponse` (active pointer moves to `null` when the active profile is
   deleted), wired like `printerProfile:setActive`, plus a delete affordance in
   `PrinterProfilesPanel.tsx` (WS-E-owned, trivial once the channel exists).
+<<<<<<< HEAD
 
 - **WS-D needs `render_views` threaded through `src/main/ipc.ts` + `session.ts` to actually run**
   (neither file is in WS-D's "Files owned" line, and this order's brief was explicit to touch
@@ -1228,3 +1257,15 @@ Notes on the gates:
   `webUtils.getPathForFile` in `src/preload/index.ts`, then `ImportDialog.tsx`'s `handleDrop` swaps
   its `(file as unknown as { path?: string }).path` probe for the new bridge call (a small,
   WS-G-owned follow-up once the bridge exists).
+=======
+  **→ LANDED (contracts follow-up, 2026-07-11):** the shape above, shipped as `printerProfile:delete`
+  (`src/shared/ipc.ts`/`ipc.test.ts`, `src/preload/api.ts`/`index.ts`), `PrinterProfileStore.delete`
+  (unit-tested: unknown-id throw, active-pointer-to-null, non-active delete leaves the pointer
+  alone, persists across store instances), a main handler gated on `agentSession.isBusy()` (unlike
+  `save`/`setActive`, since deleting the *active* profile out from under an in-flight turn would
+  invalidate that turn's already-baked-in system-prompt printer context) that broadcasts
+  `printerProfile:updated`, and a delete icon next to each profile's edit affordance in
+  `PrinterProfilesPanel.tsx` (confirms via `window.confirm` before calling it - no destructive
+  action anywhere else in the app to match an existing pattern against, so this is deliberately
+  the simplest thing that works).
+>>>>>>> claude/ws-contracts-followups

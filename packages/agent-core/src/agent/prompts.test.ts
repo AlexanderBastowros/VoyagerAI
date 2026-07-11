@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildUserMessage,
+  formatArrangementContext,
   formatPrinterProfileContext,
   formatRevertContext,
   formatSelectionContext,
   systemPromptAppend
 } from './prompts'
+import type { PartArrangementEntry } from './prompts'
 import type { ChatAttachment, PrinterProfileRef, SelectionSummary } from '@shared/ipc'
 import type { ProjectIteration } from '../projects/store'
 
@@ -29,6 +31,15 @@ describe('formatSelectionContext', () => {
 
   it('marks the block as machine-generated, not user-typed', () => {
     expect(formatSelectionContext(selection)).toMatch(/not typed by the user/i)
+  })
+
+  it('omits the Part line when selection.partId is unset', () => {
+    expect(formatSelectionContext(selection)).not.toContain('Part:')
+  })
+
+  it('includes the Part line when selection.partId is set (WS-I multi-part)', () => {
+    const block = formatSelectionContext({ ...selection, partId: 'lid' })
+    expect(block).toContain('Part: lid')
   })
 })
 
@@ -122,6 +133,55 @@ describe('buildUserMessage', () => {
     // Selection block comes before revert block.
     expect(message.indexOf('Selected region')).toBeLessThan(message.indexOf('Reverted model'))
   })
+
+  it('appends the arrangement context after the text when passed', () => {
+    const arrangement = formatArrangementContext(parts())
+    const message = buildUserMessage('make the lid taller', null, undefined, null, arrangement) as string
+    expect(message.startsWith('make the lid taller\n\n')).toBe(true)
+    expect(message).toContain('Part arrangement')
+  })
+
+  it('orders selection, revert, then arrangement when all three are present', () => {
+    const revert = formatRevertContext(iteration(), 5)
+    const arrangement = formatArrangementContext(parts())
+    const message = buildUserMessage('tweak this', selection, undefined, revert, arrangement) as string
+    expect(message.indexOf('Selected region')).toBeLessThan(message.indexOf('Reverted model'))
+    expect(message.indexOf('Reverted model')).toBeLessThan(message.indexOf('Part arrangement'))
+  })
+})
+
+function parts(): PartArrangementEntry[] {
+  return [
+    { id: 'box', name: 'Box', placement: { position: [0, 0, 0], rotation: [0, 0, 0] } },
+    { id: 'lid', name: 'Lid', placement: { position: [0, 0, 20], rotation: [0, 0, 0] } }
+  ]
+}
+
+describe('formatArrangementContext', () => {
+  it('lists every part\'s name, id, and placement', () => {
+    const block = formatArrangementContext(parts())
+    expect(block).toContain('"Box" (part: box)')
+    expect(block).toContain('position (0, 0, 0) mm, rotation (0, 0, 0)°')
+    expect(block).toContain('"Lid" (part: lid)')
+    expect(block).toContain('position (0, 0, 20) mm, rotation (0, 0, 0)°')
+  })
+
+  it('marks the block as machine-generated, not user-typed', () => {
+    expect(formatArrangementContext(parts())).toMatch(/not typed by the user/i)
+  })
+
+  it('tags the focused part and tells the agent to assume it for ambiguous changes', () => {
+    const block = formatArrangementContext(parts(), 'lid')
+    expect(block).toContain('"Lid" (part: lid) [currently focused]')
+    expect(block).not.toContain('"Box" (part: box) [currently focused]')
+    expect(block).toMatch(/user has "lid" focused/i)
+  })
+
+  it('tells the agent to ask when no part is focused', () => {
+    const block = formatArrangementContext(parts(), null)
+    expect(block).toMatch(/no part is currently focused/i)
+    expect(block).toMatch(/ask which one/i)
+  })
 })
 
 describe('systemPromptAppend', () => {
@@ -141,8 +201,18 @@ describe('systemPromptAppend', () => {
 
   it('documents the per-version script snapshots and the reverted-model rebase behavior', () => {
     const prompt = systemPromptAppend('/tmp/project')
-    expect(prompt).toContain('outputs/versions/vN.py')
+    // Part-scoped (WS-I): `recordIteration` snapshots to `outputs/versions/<partId>/vN.py`, not a
+    // flat `outputs/versions/vN.py` - the prompt must match reality (contract change request).
+    expect(prompt).toContain('outputs/versions/<part>/vN.py')
     expect(prompt).toContain('Reverted model')
+  })
+
+  it('teaches the display_model part-slug vocabulary for multi-part projects (WS-I follow-up)', () => {
+    const prompt = systemPromptAppend('/tmp/project')
+    expect(prompt).toContain('display_model')
+    expect(prompt).toMatch(/`part`/)
+    expect(prompt).toMatch(/more than one part/i)
+    expect(prompt).toMatch(/ask which part/i)
   })
 
   it('teaches the designer to fill the brief during Phase 2 and require a lock before Phase 4 (WS-A)', () => {
@@ -204,5 +274,15 @@ describe('formatPrinterProfileContext', () => {
 
   it('still teaches save_printer_profile for the switched-printer case', () => {
     expect(formatPrinterProfileContext(printerProfile())).toContain('save_printer_profile')
+  })
+
+  it('tells the agent to record a switched printer into the brief via update_brief (WS-E follow-up)', () => {
+    const block = formatPrinterProfileContext(printerProfile())
+    expect(block).toContain('update_brief')
+    expect(block).toContain('printer_name')
+    expect(block).toContain('printer_bed_x_mm')
+    expect(block).toContain('printer_bed_y_mm')
+    expect(block).toContain('printer_bed_z_mm')
+    expect(block).toContain('printer_nozzle_mm')
   })
 })

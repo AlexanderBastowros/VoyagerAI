@@ -83,4 +83,87 @@ describe('mergeAgentPatch', () => {
     mergeAgentPatch(base, { part_name: 'Bracket', features: [{ kind: 'hole', id: 'f1', diameter_mm: 3, purpose: 'clearance', position: 'x' }] })
     expect(base).toEqual(baseSnapshot)
   })
+
+  describe('printer fields (WS-E follow-up)', () => {
+    it('leaves brief.printer untouched when the patch has no printer fields', () => {
+      const next = mergeAgentPatch(emptyDesignBrief(), { part_name: 'Bracket' })
+      expect(next.printer).toBeUndefined()
+    })
+
+    it('starts a printer record from scratch when any one printer field is set', () => {
+      const next = mergeAgentPatch(emptyDesignBrief(), { printer_nozzle_mm: 0.4 })
+      expect(next.printer).toEqual({
+        id: '',
+        name: '',
+        bedXMm: 0,
+        bedYMm: 0,
+        bedZMm: 0,
+        nozzleDiameterMm: 0.4,
+        materials: []
+      })
+    })
+
+    it('sets every printer field from a full patch', () => {
+      const next = mergeAgentPatch(emptyDesignBrief(), {
+        printer_name: 'Ender 3',
+        printer_bed_x_mm: 220,
+        printer_bed_y_mm: 220,
+        printer_bed_z_mm: 250,
+        printer_nozzle_mm: 0.4,
+        printer_materials: ['PLA']
+      })
+      expect(next.printer).toEqual({
+        id: '',
+        name: 'Ender 3',
+        bedXMm: 220,
+        bedYMm: 220,
+        bedZMm: 250,
+        nozzleDiameterMm: 0.4,
+        materials: ['PLA']
+      })
+    })
+
+    it('fills unspecified printer fields from the existing record rather than clobbering them', () => {
+      const base = {
+        ...emptyDesignBrief(),
+        printer: {
+          id: 'ender-3',
+          name: 'Ender 3',
+          bedXMm: 220,
+          bedYMm: 220,
+          bedZMm: 250,
+          nozzleDiameterMm: 0.4,
+          materials: ['PLA']
+        }
+      }
+      const next = mergeAgentPatch(base, { printer_nozzle_mm: 0.6 })
+      expect(next.printer).toEqual({
+        id: 'ender-3',
+        name: 'Ender 3',
+        bedXMm: 220,
+        bedYMm: 220,
+        bedZMm: 250,
+        nozzleDiameterMm: 0.6,
+        materials: ['PLA']
+      })
+    })
+
+    it('does not mutate the base brief\'s printer record', () => {
+      const base = {
+        ...emptyDesignBrief(),
+        printer: {
+          id: 'ender-3',
+          name: 'Ender 3',
+          bedXMm: 220,
+          bedYMm: 220,
+          bedZMm: 250,
+          nozzleDiameterMm: 0.4,
+          materials: ['PLA']
+        }
+      }
+      const baseSnapshot = JSON.parse(JSON.stringify(base))
+      mergeAgentPatch(base, { printer_nozzle_mm: 0.6 })
+      expect(base).toEqual(baseSnapshot)
+    })
+  })
 })

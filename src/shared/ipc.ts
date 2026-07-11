@@ -489,6 +489,13 @@ export interface PrinterProfileSetActiveRequest {
   id: string
 }
 
+/** Renderer -> main: permanently remove a saved profile (WS-E follow-up - previously the panel
+ *  could list/save/set-active but never remove one, so a mis-added printer lived forever short of
+ *  hand-editing `<userData>/printer-profiles.json`). */
+export interface PrinterProfileDeleteRequest {
+  id: string
+}
+
 export interface PrinterProfileListResponse {
   profiles: PrinterProfileRef[]
   activeId: string | null
@@ -542,6 +549,7 @@ export const IPC = {
   printerProfileList: 'printerProfile:list',
   printerProfileSave: 'printerProfile:save',
   printerProfileSetActive: 'printerProfile:setActive',
+  printerProfileDelete: 'printerProfile:delete',
   printerProfileUpdated: 'printerProfile:updated'
 } as const
 
