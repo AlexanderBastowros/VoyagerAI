@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { copyFile, readFile, stat, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
@@ -50,7 +50,14 @@ import {
   AgentSession,
   BriefStore,
   ClaudeChecker,
+  copyImportSource,
+  detectImportFormat,
   EnvManager,
+  finalizeMeshImport,
+  finalizeStepImport,
+  isUnitlessFormat,
+  measureMeshImport,
+  pickUnitConfirmationAxis,
   PrinterProfileStore,
   ProjectStore,
   buildGraduationPackage,
@@ -62,6 +69,7 @@ import {
   resolveAllPartsExportSources,
   resolveExportSource,
   runPreflight,
+  slugifyForFilename,
   slugifyZipBase,
   validateParamUpdate,
   writeZip
@@ -129,6 +137,17 @@ function conformanceCheckScriptPath(): string {
     : join(__dirname, '../../packages/verify/python/conformance_check.py')
 }
 
+/** Absolute path to `packages/agent-core/remix`'s bundled `measure_mesh.py` (WS-G) - same
+ *  dev/packaged resolution as `verifyScriptPath()`, mirroring the `remix` `extraResources` entry
+ *  in `electron-builder.yml`. The only remix script `importModel.ts` invokes directly - mesh
+ *  finalize/repair and the STEP import path run a self-contained generated script instead (see
+ *  `importModel.ts`'s module doc comment for why). */
+function measureMeshScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'remix', 'measure_mesh.py')
+    : join(__dirname, '../../packages/agent-core/remix/measure_mesh.py')
+}
+
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(channel, payload)
@@ -144,6 +163,24 @@ function broadcast(channel: string, payload: unknown): void {
  * response or the app quits.
  */
 const pendingApprovals = new Map<string, (allow: boolean) => void>()
+
+/**
+ * A mesh import (STL/OBJ) awaiting the user's unit confirmation - the second `model:import` call
+ * (with `unitScaleMm` set) resumes from here rather than re-deriving anything from the request,
+ * since `ImportModelResponse.needsUnitConfirmation` carries only the measured dimension, not the
+ * import's identity (see `ImportModelRequest`'s doc comment in `src/shared/ipc.ts`). Keyed by
+ * project id so a project switch mid-confirmation can't resume into the wrong project; at most one
+ * import is ever pending per project (a second `filePath` call before confirming just overwrites
+ * it, leaving the earlier copy under `imports/` as harmless, unreferenced debris - the same
+ * never-cleaned-up-scratch tolerance `params/rerun.ts`'s `outputs/param-edits/<uuid>/` dirs have).
+ */
+interface PendingMeshImport {
+  partId: string
+  importRelPath: string
+  sourceBaseName: string
+  measuredMm: number
+}
+const pendingMeshImports = new Map<string, PendingMeshImport>()
 
 /**
  * Broadcasts an out-of-policy tool call as an inline approval card to every
@@ -878,14 +915,137 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  // -- WS-G External model import (stub - no import pipeline yet) ---------
+  // -- WS-G External model import & remix ----------------------------------
+  // Two-phase for unitless mesh formats (STL/OBJ): the first call (no `unitScaleMm`) copies +
+  // measures and, for STL/OBJ, returns `needsUnitConfirmation` instead of finalizing; the second
+  // call (`unitScaleMm` set) resumes from `pendingMeshImports` and finalizes. STEP and 3MF already
+  // carry real-world units and finalize on the first call. See `ImportModelRequest`'s doc comment
+  // in `src/shared/ipc.ts` and `importModel.ts`'s module doc comment for the full design.
 
   ipcMain.handle(
     IPC.modelImport,
-    async (_event, _request: ImportModelRequest): Promise<ImportModelResponse> => ({
-      imported: false,
-      reason: 'Model import is not implemented yet.'
-    })
+    async (event, request: ImportModelRequest): Promise<ImportModelResponse> => {
+      // Mirrors the other project-mutating handlers (param:update, part:setPlacement, ...): an
+      // import records a new iteration, so it must not race an in-flight agent turn.
+      if (agentSession.isBusy()) {
+        return { imported: false, reason: 'Voyager is still working — wait for it to finish before importing a model.' }
+      }
+
+      await projectStore.ensureProject()
+      const projectDir = projectStore.getProjectDir()
+      const projectId = projectStore.getActiveProjectId()
+      const importDeps = { pythonPath: envManager.pythonPath(), measureMeshScriptPath: measureMeshScriptPath() }
+
+      /** Records a finalized import as a new iteration and pushes it exactly like any other
+       *  displayed model (`param:update`'s handler above does the same broadcast shape). */
+      async function recordAndBroadcast(
+        partId: string,
+        result: { scriptRelPath: string; stlRelPath: string; stepRelPath?: string; summary: string }
+      ): Promise<ImportModelResponse> {
+        const iteration = await projectStore.recordIteration({
+          stlPath: result.stlRelPath,
+          stepPath: result.stepRelPath,
+          scriptPath: result.scriptRelPath,
+          summary: result.summary,
+          createdBy: 'import',
+          partId
+        })
+        const buffer = await readFile(join(projectDir, iteration.stlPath))
+        const payload: ModelDisplayedPayload = {
+          stlPath: iteration.stlPath,
+          stepPath: iteration.stepPath,
+          scriptPath: iteration.scriptPath,
+          summary: iteration.summary,
+          iteration: iteration.n,
+          stlBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+          partId,
+          createdBy: 'import'
+        }
+        broadcast(IPC.modelDisplayed, payload)
+        return { imported: true, model: payload }
+      }
+
+      // Phase 2: a mesh import awaiting the user's confirmed real-world scale.
+      if (request.unitScaleMm !== undefined) {
+        const pending = pendingMeshImports.get(projectId)
+        if (!pending) {
+          return { imported: false, reason: 'No import is awaiting a scale confirmation — pick the file again.' }
+        }
+        pendingMeshImports.delete(projectId)
+
+        const nextN = ((await projectStore.latestIteration(pending.partId))?.n ?? 0) + 1
+        const result = await finalizeMeshImport(importDeps, {
+          projectDir,
+          importRelPath: pending.importRelPath,
+          partId: pending.partId,
+          nextN,
+          scaleFactor: request.unitScaleMm / pending.measuredMm,
+          sourceBaseName: pending.sourceBaseName
+        })
+        if (!result.ok) return { imported: false, reason: result.reason }
+        return recordAndBroadcast(pending.partId, result)
+      }
+
+      // Phase 1: resolve the source path (native picker if omitted), copy it into imports/.
+      let sourcePath = request.filePath
+      if (!sourcePath) {
+        const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+        const dialogOptions: Electron.OpenDialogOptions = {
+          filters: [{ name: 'Model files', extensions: ['step', 'stp', 'stl', 'obj', '3mf'] }],
+          properties: ['openFile']
+        }
+        const picked = win ? await dialog.showOpenDialog(win, dialogOptions) : await dialog.showOpenDialog(dialogOptions)
+        if (picked.canceled || picked.filePaths.length === 0) return { imported: false }
+        sourcePath = picked.filePaths[0]
+      }
+
+      const format = detectImportFormat(sourcePath)
+      if (!format) {
+        return { imported: false, reason: 'Unsupported file type — import a STEP, STL, OBJ, or 3MF file.' }
+      }
+
+      const copyResult = await copyImportSource(projectDir, sourcePath, format)
+      if (!copyResult.ok) return { imported: false, reason: copyResult.reason }
+
+      const partId = request.partId ? slugifyForFilename(request.partId) : await projectStore.getActivePartId()
+      const sourceBaseName = basename(sourcePath)
+      const nextN = ((await projectStore.latestIteration(partId))?.n ?? 0) + 1
+
+      if (format === 'step') {
+        const result = await finalizeStepImport(importDeps, {
+          projectDir,
+          importRelPath: copyResult.importRelPath,
+          partId,
+          nextN,
+          sourceBaseName
+        })
+        if (!result.ok) return { imported: false, reason: result.reason }
+        return recordAndBroadcast(partId, result)
+      }
+
+      if (!isUnitlessFormat(format)) {
+        // 3MF already carries real-world units - finalize immediately (scaleFactor 1).
+        const result = await finalizeMeshImport(importDeps, {
+          projectDir,
+          importRelPath: copyResult.importRelPath,
+          partId,
+          nextN,
+          scaleFactor: 1,
+          sourceBaseName
+        })
+        if (!result.ok) return { imported: false, reason: result.reason }
+        return recordAndBroadcast(partId, result)
+      }
+
+      // STL/OBJ: unitless - measure and ask the user to confirm/correct one dimension before
+      // finalizing (the skill's never-guess-scale rule, enforced at the door - product doc §5.6).
+      const measured = await measureMeshImport(importDeps, projectDir, copyResult.importRelPath)
+      if (!measured.ok) return { imported: false, reason: measured.reason }
+
+      const { axis, measuredMm } = pickUnitConfirmationAxis(measured.measurement.bboxMm)
+      pendingMeshImports.set(projectId, { partId, importRelPath: copyResult.importRelPath, sourceBaseName, measuredMm })
+      return { imported: false, needsUnitConfirmation: { measuredMm, axis } }
+    }
   )
 
   // -- WS-I Multi-part projects ------------------------------------------

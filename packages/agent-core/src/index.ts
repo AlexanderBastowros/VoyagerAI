@@ -34,6 +34,27 @@ export type {
 export { bakePartTriangles, buildPlateStl, parseBinaryStl, writeBinaryStl } from './projects/plateStl'
 export type { PlacementLike, PlatePart, PlateBuildResult, StlTriangle, Vec3 } from './projects/plateStl'
 
+export {
+  copyImportSource,
+  detectImportFormat,
+  finalizeMeshImport,
+  finalizeStepImport,
+  isUnitlessFormat,
+  measureMeshImport,
+  pickUnitConfirmationAxis,
+  slugifyForFilename
+} from './projects/importModel'
+export type {
+  CopyImportSourceResult,
+  FinalizeImportResult,
+  FinalizeMeshImportOptions,
+  FinalizeStepImportOptions,
+  ImportFormat,
+  ImportModelDeps,
+  MeshMeasurement,
+  SpawnLike as ImportModelSpawnLike
+} from './projects/importModel'
+
 export { PrinterProfileStore } from './projects/printerProfiles'
 export type { PrinterProfileList, PrinterProfileStoreOptions } from './projects/printerProfiles'
 
