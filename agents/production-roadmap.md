@@ -466,8 +466,16 @@ Notes on the gates:
   nozzle/bed questions and the generated script's `BED_X/BED_Y/BED_Z/NOZZLE` constants
   match the profile.
 
-### WS-F — Graduation package + per-part export · **Status: TODO** · depends: 0a, 0b, **WS-I** (parts model)
+### WS-F — Graduation package + per-part export · **Status: TODO (partial)** · depends: 0a, 0b, **WS-I** (parts model)
 
+- **Partial (maintainer-directed fix, 2026-07-10):** the "export all parts" slice landed —
+  `model:export` now honors `partId`, and a multi-part project with no explicit part saves
+  every part's active iteration as separate `<partId>_v<N>.stl/.step` files in one zip
+  (never merged): `resolveAllPartsExportSources` in `exportResolver.ts` + a dependency-free
+  `zipWriter.ts` (node:zlib), both unit-tested. Additive `ExportModelResponse.skippedParts`
+  surfaces parts left out (no iterations / no STEP) in the success snackbar. Still open:
+  3MF, plate export, package builder (`exportPackage.ts` can reuse `writeZip`), "Export…"
+  menu, per-part export UI.
 - **Why:** architecture doc §12.1, §14 / product doc §5.3, §5.5 — anti-lock-in bundle,
   plus the fix for "everything merges into one file": exports resolve **per part**.
 - **Scope:** part-scoped export resolution (`exportResolver` generalized to an artifact
@@ -667,6 +675,25 @@ Notes on the gates:
 ## Contract change requests
 
 *(Agents: append requests here instead of editing 0b-owned files. Dispatcher triages.)*
+
+- **Multi-part viewer upgrades needed additive 0b/WS-I-surface edits — → LANDED
+  (maintainer-directed, 2026-07-10).** New `part:duplicate` channel (`PartDuplicateRequest` →
+  `PartListResponse`, busy-gated handler + `part:updated` broadcast, `ProjectStore.duplicatePart`
+  sharing the source's immutable artifacts), preload `part.duplicate`, and an
+  `appStore.gizmoMode` slice. Behavior changes on WS-I surfaces: per-part palette colors
+  (`partColorFor` in `colors.ts`, worn by viewer meshes + PartsPanel swatches), ground-*snap*
+  relaxed to ground-*clamp* (`groundClamp` in `three/placement.ts` - parts can lift vertically,
+  never sink below the plate; the gizmo's vertical translate handle is now shown), a
+  Move/Rotate toolbar toggle mirroring the g/r shortcuts, PartsPanel per-row Duplicate, and
+  Viewport lazily fetching geometry for parts that appear without a `model:displayed` push.
+
+- **WS-F all-parts zip needed two additive 0b-file edits — → LANDED (maintainer-directed,
+  2026-07-10).** `src/shared/ipc.ts`: optional `ExportModelResponse.skippedParts?: string[]`
+  plus an updated `ExportModelRequest.partId` doc (omitted on a multi-part project now means
+  "all parts as one zip of separate files", §14); `src/main/ipc.ts`: the `model:export`
+  handler body (a designated stub-replacement point) gained the zip branch and now passes
+  `request.partId` through to `activeIterationRecord`. No channel names or preload wiring
+  changed; `src/preload/api.ts` only had its `model.export` doc comment refreshed.
 
 - **WS-A needs a `brief:listVersions` channel.** `BriefStore.listVersions(projectDir)`
   (`packages/agent-core/brief/store.ts`) reads back every locked version's full snapshot from

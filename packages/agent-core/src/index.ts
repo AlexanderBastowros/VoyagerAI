@@ -4,8 +4,16 @@ export type { AgentSessionDeps, QueryFn } from './agent/session'
 export { ProjectStore, DEFAULT_AGENT_SETTINGS } from './projects/store'
 export type { ProjectStoreOptions, ProjectRecord, ProjectIteration } from './projects/store'
 
-export { resolveExportSource } from './projects/exportResolver'
-export type { ExportSourceResolution } from './projects/exportResolver'
+export { resolveAllPartsExportSources, resolveExportSource } from './projects/exportResolver'
+export type {
+  AllPartsExportResolution,
+  ExportSourceResolution,
+  PartExportSource,
+  ZipEntrySource
+} from './projects/exportResolver'
+
+export { writeZip } from './projects/zipWriter'
+export type { ZipEntry } from './projects/zipWriter'
 
 export { PrinterProfileStore } from './projects/printerProfiles'
 export type { PrinterProfileList, PrinterProfileStoreOptions } from './projects/printerProfiles'

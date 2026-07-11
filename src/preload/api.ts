@@ -18,6 +18,7 @@ import type {
   ParamGetManifestResponse,
   ParamUpdateRequest,
   ParamUpdateResponse,
+  PartDuplicateRequest,
   PartGetModelRequest,
   PartListResponse,
   PartSetActiveRequest,
@@ -76,7 +77,9 @@ export interface VoyagerApi {
     onDisplayed: (callback: (payload: ModelDisplayedPayload) => void) => () => void
     /** Subscribe to on-demand print-settings recommendations; returns an unsubscribe function. */
     onPrintSettings: (callback: (payload: PrintSettings) => void) => () => void
-    /** Prompts a native save dialog and copies the latest iteration's STL/STEP there. */
+    /** Prompts a native save dialog and saves the active iteration's STL/STEP: one file for a
+     *  single-part project (or an explicit `partId`), a zip of separate per-part files for a
+     *  multi-part project - parts are never silently merged (§14). */
     export: (request: ExportModelRequest) => Promise<ExportModelResponse>
     /** WS-G External model import/remix - stub behavior until WS-G lands (see `src/main/ipc.ts`). */
     import: (request: ImportModelRequest) => Promise<ImportModelResponse>
@@ -123,6 +126,9 @@ export interface VoyagerApi {
     setVisibility: (request: PartSetVisibilityRequest) => Promise<PartListResponse>
     /** Makes a part the active one (the user focused it); resolves with the refreshed list. */
     setActive: (request: PartSetActiveRequest) => Promise<PartListResponse>
+    /** Duplicates a part (shared immutable artifacts, offset placement, becomes active);
+     *  resolves with the refreshed list. */
+    duplicate: (request: PartDuplicateRequest) => Promise<PartListResponse>
     /** Subscribe to parts-list changes (e.g. the agent creating a new part); returns an
      *  unsubscribe function. */
     onUpdated: (callback: (response: PartListResponse) => void) => () => void

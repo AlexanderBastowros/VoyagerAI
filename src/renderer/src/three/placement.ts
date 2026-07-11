@@ -49,11 +49,26 @@ export function groundSnappedY(
 
 /**
  * Ground-snaps a placement: preserves x/z translation and rotation, but derives `y` so the part
- * rests on the plate. Called after every gizmo edit so parts never float or sink into the bed.
+ * rests on the plate exactly.
  */
 export function groundSnap(placement: Placement, localMin: THREE.Vector3, localMax: THREE.Vector3): Placement {
   return {
     position: [placement.position[0], groundSnappedY(localMin, localMax, placement.rotation), placement.position[2]],
+    rotation: placement.rotation
+  }
+}
+
+/**
+ * Ground-*clamps* a placement: like `groundSnap` but only raises `y` when the part's lowest
+ * rotated point would dip below the plate - a `y` above the resting height is preserved. This is
+ * the invariant applied on every placement edit/load: parts can be lifted vertically (assembly
+ * preview, stacking - the gizmo's vertical handle), but can never sink into the bed.
+ */
+export function groundClamp(placement: Placement, localMin: THREE.Vector3, localMax: THREE.Vector3): Placement {
+  const restingY = groundSnappedY(localMin, localMax, placement.rotation)
+  if (placement.position[1] >= restingY) return placement
+  return {
+    position: [placement.position[0], restingY, placement.position[2]],
     rotation: placement.rotation
   }
 }

@@ -293,8 +293,10 @@ export type ExportFormat = 'stl' | 'step' | '3mf' | 'plate' | 'package'
 
 export interface ExportModelRequest {
   format: ExportFormat
-  /** Which part to export (WS-0c/WS-I multi-part, §14); omit for the active/`main` part. Ignored
-   *  by `'plate'` (which spans all parts) and `'package'` (which bundles every part). */
+  /** Which part to export (WS-0c/WS-I multi-part, §14). Omitted: a single-part project exports
+   *  its one part; a multi-part project exports **every part as separate files in one zip** -
+   *  parts are never silently merged (§14/WS-F). Ignored by `'plate'` (which spans all parts)
+   *  and `'package'` (which bundles every part). */
   partId?: string
 }
 
@@ -304,12 +306,17 @@ export interface ExportModelResponse {
   path?: string
   /** Human-readable reason the export could not be saved. Omitted on user-cancel. */
   reason?: string
+  /** Display names of parts left out of an all-parts zip export (no iterations yet, or no
+   *  recorded STEP on a STEP export). Only ever set when `saved` is true and the export was
+   *  the multi-part zip; the renderer surfaces these next to the success message. */
+  skippedParts?: string[]
 }
 
 /** WS-F's graduation package export (architecture doc §12.1) - zip of STEP + 3MF + STL + script
  *  + locked brief JSON + manifest + generated README for the active (or a named) iteration. A
- *  distinct request/response from `ExportModelRequest`/`Response` (single-file export) since the
- *  package always bundles every artifact rather than picking one format. */
+ *  distinct request/response from `ExportModelRequest`/`Response` (per-part STL/STEP export - one
+ *  file, or one zip of separate per-part files on a multi-part project) since the package always
+ *  bundles every artifact rather than picking one format. */
 export interface ExportPackageRequest {
   /** Iteration to package; omit for the active iteration. */
   iteration?: number
@@ -397,6 +404,15 @@ export interface PartSetActiveRequest {
  *  megabytes of geometry; mirrors `model:loadSample`/`param:getManifest`'s fetch-when-needed shape.
  *  Resolves null if the part has no iterations yet. */
 export interface PartGetModelRequest {
+  partId: string
+}
+
+/** Renderer -> main: duplicate `partId` as a new part (print several of the same piece, or fork a
+ *  variant). The copy shares the source's immutable artifacts on disk, gets a `-copy` id/name
+ *  suffix and an offset placement, and becomes the active part. Resolves with the refreshed list
+ *  (mirrors the other part ops); the copy's geometry is fetched via `part:getModel` like any other
+ *  part the renderer hasn't loaded yet. */
+export interface PartDuplicateRequest {
   partId: string
 }
 
@@ -512,6 +528,7 @@ export const IPC = {
   partSetPlacement: 'part:setPlacement',
   partSetVisibility: 'part:setVisibility',
   partSetActive: 'part:setActive',
+  partDuplicate: 'part:duplicate',
   partUpdated: 'part:updated',
   briefGet: 'brief:get',
   briefUpdate: 'brief:update',

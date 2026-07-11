@@ -11,6 +11,8 @@ import ExploreIcon from '@mui/icons-material/Explore'
 import FileDownloadIcon from '@mui/icons-material/FileDownload'
 import GridOnIcon from '@mui/icons-material/GridOn'
 import HighlightAltIcon from '@mui/icons-material/HighlightAlt'
+import OpenWithIcon from '@mui/icons-material/OpenWith'
+import RotateRightIcon from '@mui/icons-material/RotateRight'
 import StraightenIcon from '@mui/icons-material/Straighten'
 import ViewInArIcon from '@mui/icons-material/ViewInAr'
 import type { ExportFormat } from '../../../shared/ipc'
@@ -58,6 +60,11 @@ export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JS
   const setShowAxes = useAppStore((state) => state.setShowAxes)
   const wireframe = useAppStore((state) => state.wireframe)
   const setWireframe = useAppStore((state) => state.setWireframe)
+  const parts = useAppStore((state) => state.parts)
+  const selectedPartId = useAppStore((state) => state.selectedPartId)
+  const agentBusy = useAppStore((state) => state.agentBusy)
+  const gizmoMode = useAppStore((state) => state.gizmoMode)
+  const setGizmoMode = useAppStore((state) => state.setGizmoMode)
 
   function flashStatus(message: string): void {
     setStatus(message)
@@ -110,7 +117,13 @@ export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JS
     try {
       const response = await window.voyager.model.export({ format })
       if (response.saved) {
-        flashStatus(`Saved ${format.toUpperCase()}${response.path ? ` to ${response.path}` : ''}`)
+        // A multi-part project saves every part as separate files in one zip; parts the
+        // main process had to leave out (no iterations, or no STEP) are named here.
+        const isZip = !!response.path?.endsWith('.zip')
+        const skipped = response.skippedParts?.length
+          ? ` (left out - no ${format.toUpperCase()} yet: ${response.skippedParts.join(', ')})`
+          : ''
+        flashStatus(`Saved ${format.toUpperCase()}${isZip ? ' zip' : ''}${response.path ? ` to ${response.path}` : ''}${skipped}`)
       } else if (response.reason) {
         setError(response.reason)
       }
@@ -122,9 +135,19 @@ export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JS
     }
   }
 
-  // The sample model (iteration 0) has no project-recorded STL/STEP to export.
-  const hasExportableModel = !!model && model.iteration > 0
-  const canExportStep = hasExportableModel && !!model?.stepPath
+  // The sample model (iteration 0) has no project-recorded STL/STEP to export. On a multi-part
+  // project the buttons trigger the all-parts zip, so they gate on ANY part having an iteration -
+  // not on whichever part happens to be focused. STEP availability per part isn't known renderer-
+  // side (PartRecord carries no stepPath), so multi-part STEP stays enabled and the main process
+  // reports skipped/absent STEPs itself (skippedParts / a helpful error).
+  const multiPart = parts.length > 1
+  const hasExportableModel = multiPart
+    ? parts.some((p) => p.activeIteration !== null)
+    : !!model && model.iteration > 0
+  const canExportStep = multiPart ? hasExportableModel : hasExportableModel && !!model?.stepPath
+  // The placement gizmo only exists for multi-part projects and detaches during select/measure
+  // (they share the canvas) and while the agent is busy - mirror that in the toggle.
+  const gizmoAvailable = multiPart && !!selectedPartId && !selectMode && !measureMode && !agentBusy
 
   return (
     <>
@@ -164,6 +187,33 @@ export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JS
         >
           {exporting === 'step' ? 'Exporting…' : 'Export STEP'}
         </Button>
+        {multiPart && (
+          <>
+            <Divider orientation="vertical" flexItem />
+            {/* Placement gizmo mode for the focused part (also the g/r keyboard shortcuts):
+                Move slides on the plate and lifts vertically; Rotate spins on any axis. */}
+            <ToggleButton
+              value="translate"
+              size="small"
+              selected={gizmoMode === 'translate'}
+              onChange={() => setGizmoMode('translate')}
+              disabled={!gizmoAvailable}
+            >
+              <OpenWithIcon fontSize="small" sx={{ mr: 0.5 }} />
+              Move
+            </ToggleButton>
+            <ToggleButton
+              value="rotate"
+              size="small"
+              selected={gizmoMode === 'rotate'}
+              onChange={() => setGizmoMode('rotate')}
+              disabled={!gizmoAvailable}
+            >
+              <RotateRightIcon fontSize="small" sx={{ mr: 0.5 }} />
+              Rotate
+            </ToggleButton>
+          </>
+        )}
         <Divider orientation="vertical" flexItem />
         <ToggleButton value="select" size="small" selected={selectMode} onChange={handleSelectModeChange} disabled={!model}>
           <HighlightAltIcon fontSize="small" sx={{ mr: 0.5 }} />
@@ -223,7 +273,9 @@ export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JS
       ) : (
         <Snackbar
           open={!!status}
-          autoHideDuration={4000}
+          // The skipped-parts notice is the only place the user learns a part was left out of an
+          // all-parts zip - give it long enough to actually read.
+          autoHideDuration={status?.includes('left out') ? 10000 : 4000}
           onClose={() => setStatus(null)}
           sx={{ position: 'absolute', bottom: 12, left: 12 }}
         >

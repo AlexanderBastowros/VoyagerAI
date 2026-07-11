@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
-import { copyFile, readFile } from 'node:fs/promises'
+import { copyFile, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { IPC } from '../shared/ipc'
 import type {
@@ -22,6 +22,7 @@ import type {
   ParamGetManifestResponse,
   ParamUpdateRequest,
   ParamUpdateResponse,
+  PartDuplicateRequest,
   PartGetModelRequest,
   PartListResponse,
   PartSetActiveRequest,
@@ -53,11 +54,13 @@ import {
   ProjectStore,
   readManifestForIteration,
   rerunWithParam,
+  resolveAllPartsExportSources,
   resolveExportSource,
   runPreflight,
-  validateParamUpdate
+  validateParamUpdate,
+  writeZip
 } from '@voyager/agent-core'
-import type { ProjectIteration } from '@voyager/agent-core'
+import type { PartExportSource, ProjectIteration, ZipEntry } from '@voyager/agent-core'
 import { readVerificationForIteration, runVerification, writeVerificationForIteration } from '@voyager/verify'
 
 /**
@@ -332,12 +335,77 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC.modelExport,
     async (event, request: ExportModelRequest): Promise<ExportModelResponse> => {
-      // activeIterationRecord() awaits ensureProject() internally, so getProjectDir()
-      // below is guaranteed to have a resolved project by the time we reach it. Exporting the
-      // *active* (not necessarily latest) iteration means a reverted project exports what's
-      // actually on screen.
-      const active = await projectStore.activeIterationRecord()
-      const resolved = resolveExportSource(active, projectStore.getProjectDir(), request.format)
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+      async function promptSavePath(defaultPath: string, filters: Electron.FileFilter[]): Promise<string | null> {
+        const dialogOptions = { defaultPath, filters }
+        const { canceled, filePath } = win
+          ? await dialog.showSaveDialog(win, dialogOptions)
+          : await dialog.showSaveDialog(dialogOptions)
+        return canceled || !filePath ? null : filePath
+      }
+
+      // listParts() awaits ensureProject() internally, so getProjectDir()/getActiveProjectId()
+      // below are guaranteed to have a resolved project. Exporting *active* (not necessarily
+      // latest) iterations means a reverted project exports what's actually on screen.
+      const parts = await projectStore.listParts()
+      const projectDir = projectStore.getProjectDir()
+      const activeProjectId = projectStore.getActiveProjectId()
+
+      // A stale/typo'd part id gets a precise error (matching setActivePart/setVisibility)
+      // instead of resolving as "part with no iterations" -> "No model has been generated yet."
+      if (request.partId && !parts.some((p) => p.id === request.partId)) {
+        return { saved: false, reason: `Unknown part: ${request.partId}` }
+      }
+
+      // Multi-part project with no explicit part: every part's active iteration as separate
+      // files in one zip - never a silent merge (§14/WS-F). Only for the per-part single-file
+      // formats; 'plate'/'package' keep their own (stubbed) semantics below.
+      if (!request.partId && parts.length > 1 && (request.format === 'stl' || request.format === 'step')) {
+        const sources: PartExportSource[] = []
+        for (const part of parts) {
+          sources.push({
+            id: part.id,
+            name: part.name,
+            iteration: await projectStore.activeIterationRecord(part.id)
+          })
+        }
+        const projectName = (await projectStore.listProjects()).find((p) => p.id === activeProjectId)?.name
+        // Every await above yields the event loop, so a concurrent `project:switch` may have
+        // repointed the store mid-assembly - the part list/iterations would then belong to the
+        // old project while `projectDir` paths resolve into the new one. Bail rather than mix.
+        if (projectStore.getActiveProjectId() !== activeProjectId) {
+          return { saved: false, reason: 'The active project changed while exporting - try again.' }
+        }
+        const resolved = resolveAllPartsExportSources(sources, projectDir, request.format, projectName)
+        if (!resolved.ok) return { saved: false, reason: resolved.reason }
+
+        const filePath = await promptSavePath(resolved.zipFileName, [{ name: 'ZIP archive', extensions: ['zip'] }])
+        if (!filePath) return { saved: false }
+
+        try {
+          const entries: ZipEntry[] = []
+          for (const entry of resolved.entries) {
+            entries.push({ name: entry.entryName, data: await readFile(entry.absPath) })
+          }
+          await writeFile(filePath, writeZip(entries, new Date()))
+        } catch (err) {
+          return {
+            saved: false,
+            reason: err instanceof Error ? `Could not save the file: ${err.message}` : 'Could not save the file.'
+          }
+        }
+
+        return {
+          saved: true,
+          path: filePath,
+          ...(resolved.skippedParts.length > 0 ? { skippedParts: resolved.skippedParts } : {})
+        }
+      }
+
+      // Single-file path: the requested part's active iteration (or the active part's when
+      // no partId is given - a single-part project always lands here).
+      const active = await projectStore.activeIterationRecord(request.partId)
+      const resolved = resolveExportSource(active, projectDir, request.format)
       if (!resolved.ok) return { saved: false, reason: resolved.reason }
 
       const filters =
@@ -345,12 +413,8 @@ export function registerIpcHandlers(): void {
           ? [{ name: 'STEP', extensions: ['step', 'stp'] }]
           : [{ name: 'STL', extensions: ['stl'] }]
 
-      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
-      const dialogOptions = { defaultPath: resolved.fileName, filters }
-      const { canceled, filePath } = win
-        ? await dialog.showSaveDialog(win, dialogOptions)
-        : await dialog.showSaveDialog(dialogOptions)
-      if (canceled || !filePath) return { saved: false }
+      const filePath = await promptSavePath(resolved.fileName, filters)
+      if (!filePath) return { saved: false }
 
       try {
         await copyFile(resolved.absPath, filePath)
@@ -700,6 +764,19 @@ export function registerIpcHandlers(): void {
       }
       const parts = await projectStore.setActivePart(request.partId)
       const response: PartListResponse = { parts, activePartId: request.partId }
+      broadcast(IPC.partUpdated, response)
+      return response
+    }
+  )
+
+  ipcMain.handle(
+    IPC.partDuplicate,
+    async (_event, request: PartDuplicateRequest): Promise<PartListResponse> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before duplicating parts.')
+      }
+      const parts = await projectStore.duplicatePart(request.partId)
+      const response: PartListResponse = { parts, activePartId: await projectStore.getActivePartId() }
       broadcast(IPC.partUpdated, response)
       return response
     }

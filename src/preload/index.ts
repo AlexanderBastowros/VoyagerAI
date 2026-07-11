@@ -20,6 +20,7 @@ import type {
   ParamGetManifestResponse,
   ParamUpdateRequest,
   ParamUpdateResponse,
+  PartDuplicateRequest,
   PartGetModelRequest,
   PartListResponse,
   PartSetActiveRequest,
@@ -109,6 +110,8 @@ const api: VoyagerApi = {
       ipcRenderer.invoke(IPC.partSetVisibility, request),
     setActive: (request: PartSetActiveRequest): Promise<PartListResponse> =>
       ipcRenderer.invoke(IPC.partSetActive, request),
+    duplicate: (request: PartDuplicateRequest): Promise<PartListResponse> =>
+      ipcRenderer.invoke(IPC.partDuplicate, request),
     onUpdated: (callback) => subscribe<PartListResponse>(IPC.partUpdated, callback)
   },
   param: {
