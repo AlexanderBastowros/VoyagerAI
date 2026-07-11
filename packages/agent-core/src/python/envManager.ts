@@ -49,7 +49,17 @@ interface UvInvocation {
 }
 
 const MARKER_SCHEMA_VERSION = 1
-const REQUIRED_PACKAGES = ['build123d', 'trimesh', 'numpy'] as const
+/**
+ * Eagerly installed for every project (WS-H spike, `resources/skills/printable-cad/
+ * references/gears.md` §1): `bd_warehouse` adds build123d-native, analytic-involute spur gears
+ * (`bd_warehouse.gear.SpurGear`) - small, PyPI-published, Apache-2.0, no extra heavy wheel beyond
+ * build123d's own OCP dependency, so it's safe to bake into every managed env the same way
+ * build123d/trimesh/numpy are. Broader gear-type coverage (helical/herringbone via `cq_gears`,
+ * bevel/ring/cycloid via `py_gearworks`) stays a *lazy*, on-demand `pip install` the skill
+ * documents itself - one is CadQuery-based (large OCP wheel duplicate) and the other states its
+ * own API "has no stability yet," so neither belongs in every project's default install.
+ */
+const REQUIRED_PACKAGES = ['build123d', 'trimesh', 'numpy', 'bd_warehouse'] as const
 
 interface PyEnvMarker {
   schemaVersion: number
@@ -71,6 +81,7 @@ const STAGE_PATTERNS: ReadonlyArray<{ pattern: RegExp; stage: string }> = [
   { pattern: /build123d/i, stage: 'Downloading build123d (OCP wheel is large, this can take several minutes)…' },
   { pattern: /trimesh/i, stage: 'Installing trimesh…' },
   { pattern: /\bnumpy\b/i, stage: 'Installing numpy…' },
+  { pattern: /bd_warehouse/i, stage: 'Installing bd_warehouse (gear library)…' },
   { pattern: /resolved \d+ package/i, stage: 'Resolving package versions…' },
   { pattern: /installed \d+ package/i, stage: 'Finalizing installation…' },
   { pattern: /smoke.?test/i, stage: 'Running smoke test…' }
@@ -107,7 +118,7 @@ function tail(text: string, length = 400): string {
 
 function extractPackageVersions(output: string): Record<string, string> {
   const found: Record<string, string> = {}
-  const pattern = /\b(build123d|trimesh|numpy)[-=]{1,2}([0-9][\w.]*)/gi
+  const pattern = /\b(build123d|trimesh|numpy|bd_warehouse)[-=]{1,2}([0-9][\w.]*)/gi
   let match: RegExpExecArray | null
   while ((match = pattern.exec(output))) {
     found[match[1].toLowerCase()] = match[2]
@@ -117,7 +128,7 @@ function extractPackageVersions(output: string): Record<string, string> {
 
 /**
  * Provisions and owns a Python virtual environment with build123d, trimesh,
- * and numpy installed, rooted at `options.baseDir`. Contains no top-level
+ * numpy, and bd_warehouse installed, rooted at `options.baseDir`. Contains no top-level
  * `electron` import and takes all filesystem roots + the spawn function as
  * constructor options, so it is fully unit-testable under plain Node/vitest.
  * The Electron wiring (src/main/ipc.ts) constructs this with
@@ -281,7 +292,7 @@ export class EnvManager {
 
     emit({
       state: 'in_progress',
-      detail: 'Installing build123d, trimesh, numpy (OCP wheel is large, this can take several minutes)…'
+      detail: 'Installing build123d, trimesh, numpy, bd_warehouse (OCP wheel is large, this can take several minutes)…'
     })
     const install = await this.runUv(uv, ['pip', 'install', '--python', this.pythonPath(), ...REQUIRED_PACKAGES], emit)
     return this.finishInstall(install, emit)
@@ -302,7 +313,7 @@ export class EnvManager {
 
     emit({
       state: 'in_progress',
-      detail: 'Installing build123d, trimesh, numpy (OCP wheel is large, this can take several minutes)…'
+      detail: 'Installing build123d, trimesh, numpy, bd_warehouse (OCP wheel is large, this can take several minutes)…'
     })
     // Invoke pip via `python -m pip` rather than the venv's `pip` script directly - the
     // script's shebang line can exceed OS limits when the venv lives in a deep userData path.
@@ -327,7 +338,7 @@ export class EnvManager {
     }
 
     await this.writeMarker(smoke, install.stdout + '\n' + install.stderr)
-    return emit({ state: 'ready', detail: 'Python environment ready (build123d, trimesh, numpy installed).' })
+    return emit({ state: 'ready', detail: 'Python environment ready (build123d, trimesh, numpy, bd_warehouse installed).' })
   }
 
   private async quickCheck(): Promise<SetupCheck | null> {
