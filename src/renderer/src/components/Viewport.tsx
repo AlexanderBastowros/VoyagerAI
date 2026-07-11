@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import Box from '@mui/material/Box'
 import CircularProgress from '@mui/material/CircularProgress'
@@ -10,6 +10,7 @@ import { MeasurementOverlay } from '../three/measurement'
 import { MeasurementController } from '../three/measurementController'
 import { PlacementController } from '../three/placementController'
 import { useAppStore } from '../state/appStore'
+import { partColorFor } from '../colors'
 
 interface ViewportProps {
   viewerRef: MutableRefObject<ModelViewer | null>
@@ -37,8 +38,16 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   const parts = useAppStore((state) => state.parts)
   const selectedPartId = useAppStore((state) => state.selectedPartId)
   const agentBusy = useAppStore((state) => state.agentBusy)
+  const gizmoMode = useAppStore((state) => state.gizmoMode)
   const setParts = useAppStore((state) => state.setParts)
   const setSelectedPartId = useAppStore((state) => state.setSelectedPartId)
+  /** Part ids with a `part.getModel` fetch in flight (the lazy-load effect below), so a re-run
+   *  of the effect can't double-fetch the same part's geometry. */
+  const loadingPartIdsRef = useRef<Set<string>>(new Set())
+  /** Bumped after each lazy geometry load so the focus/gizmo effects below re-run: a duplicated
+   *  part becomes selected BEFORE its mesh exists, making their first pass a no-op - without
+   *  this, the copy would show as active in the panel but never receive focus or the gizmo. */
+  const [lazyLoadTick, setLazyLoadTick] = useState(0)
 
   useEffect(() => {
     const container = containerRef.current
@@ -67,7 +76,7 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
     })
     measureControllerRef.current = measureController
 
-    // WS-I placement gizmo: persist a dragged part's ground-snapped placement, then let the store
+    // WS-I placement gizmo: persist a dragged part's ground-clamped placement, then let the store
     // update flow back to the viewer via the parts-sync effect below.
     const placementController = new PlacementController({
       getViewer: () => viewerRef.current,
@@ -91,7 +100,11 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
             cur.setParts(cur.parts.map((p) => (p.id === partId ? { ...p, placement: prev } : p)))
             viewerRef.current?.setPartPlacement(partId, prev)
           })
-      }
+      },
+      // The g/r keyboard shortcuts change the controller's mode directly - mirror them into the
+      // store so the toolbar's Move/Rotate toggle follows (the reverse direction is the gizmoMode
+      // effect below).
+      onModeChange: (mode) => useAppStore.getState().setGizmoMode(mode)
     })
     placementControllerRef.current = placementController
 
@@ -164,20 +177,47 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   useEffect(() => {
     viewerRef.current?.focusPart(selectedPartId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPartId])
+  }, [selectedPartId, lazyLoadTick])
 
-  // WS-I: mirror per-part visibility + placement from the store onto the already-loaded meshes
-  // (a visibility toggle or a placement persisted from the gizmo). Idempotent - re-applying a
-  // placement the gizmo just set is a no-op.
+  // WS-I: mirror per-part visibility + placement + color from the store onto the already-loaded
+  // meshes (a visibility toggle, a placement persisted from the gizmo, the canonical per-index
+  // palette color), and lazily fetch geometry for parts the viewer doesn't have yet - a duplicate
+  // just created, or a part recorded from another window. Idempotent - re-applying a placement
+  // the gizmo just set (or a color the mesh already wears) is a no-op.
   useEffect(() => {
     const viewer = viewerRef.current
     if (!viewer) return
-    for (const part of parts) {
-      viewer.setPartVisible(part.id, part.visible)
-      viewer.setPartPlacement(part.id, part.placement)
-    }
+    const loaded = new Set(viewer.getPartIds())
+    parts.forEach((part, index) => {
+      if (loaded.has(part.id)) {
+        viewer.setPartVisible(part.id, part.visible)
+        viewer.setPartPlacement(part.id, part.placement)
+        viewer.setPartColor(part.id, partColorFor(index))
+        return
+      }
+      if (loadingPartIdsRef.current.has(part.id)) return
+      loadingPartIdsRef.current.add(part.id)
+      void window.voyager.part
+        .getModel({ partId: part.id })
+        .then((model) => {
+          // Re-check against the CURRENT store list: the project may have switched (viewer
+          // cleared) while the fetch was in flight, and this part may no longer belong.
+          const current = useAppStore.getState().parts.find((p) => p.id === part.id)
+          if (model && current && viewerRef.current) {
+            viewerRef.current.loadPart(part.id, model.stlBuffer, current.placement, current.visible, partColorFor(index))
+            setLazyLoadTick((t) => t + 1)
+          }
+        })
+        .finally(() => loadingPartIdsRef.current.delete(part.id))
+    })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parts])
+
+  // Keep the placement gizmo's mode in step with the store (the toolbar toggle writes it; the
+  // controller's keyboard shortcuts write it back via onModeChange above).
+  useEffect(() => {
+    placementControllerRef.current?.setMode(gizmoMode)
+  }, [gizmoMode])
 
   // WS-I: the placement gizmo is available only for a multi-part project, on the focused part, when
   // neither select nor measure mode is active (they share the canvas), and not while the agent is
@@ -192,7 +232,7 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
       placement.detach()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPartId, parts, selectMode, measureMode, agentBusy])
+  }, [selectedPartId, parts, selectMode, measureMode, agentBusy, lazyLoadTick])
 
   return (
     <Box

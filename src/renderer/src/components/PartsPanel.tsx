@@ -6,11 +6,13 @@ import IconButton from '@mui/material/IconButton'
 import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
+import ContentCopyIcon from '@mui/icons-material/ContentCopy'
 import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined'
 import VisibilityIcon from '@mui/icons-material/Visibility'
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
+import { partColorFor } from '../colors'
 import { toModelInfo, useAppStore } from '../state/appStore'
 
 /** Subtle tint for the focused part row - matches the viewport marquee's accent fill. */
@@ -63,6 +65,18 @@ export function PartsPanel(): React.JSX.Element | null {
   // No parts UI for a single-part project - the parts model is invisible until a project has ≥2.
   if (parts.length <= 1) return null
 
+  /** Points the parameter/verification/history panels at `partId` (now the active part). They
+   *  watch the displayed model + iteration list, so refreshing those is all it takes. */
+  async function refreshActivePartPanels(partId: string): Promise<void> {
+    const [model, iterations] = await Promise.all([
+      window.voyager.part.getModel({ partId }),
+      window.voyager.project.listIterations()
+    ])
+    setModel(model ? toModelInfo(model) : null)
+    setIterations(iterations)
+    setActiveIteration(model?.iteration ?? null)
+  }
+
   async function focusPart(partId: string): Promise<void> {
     if (agentBusy || pending || partId === selectedPartId) return
     setPending(true)
@@ -70,17 +84,26 @@ export function PartsPanel(): React.JSX.Element | null {
       const { parts: next, activePartId } = await window.voyager.part.setActive({ partId })
       setParts(next)
       setSelectedPartId(activePartId)
-      // Point the parameter/verification/history panels at the newly-active part. They watch the
-      // displayed model + iteration list, so refreshing those is all it takes - no panel changes.
-      const [model, iterations] = await Promise.all([
-        window.voyager.part.getModel({ partId }),
-        window.voyager.project.listIterations()
-      ])
-      setModel(model ? toModelInfo(model) : null)
-      setIterations(iterations)
-      setActiveIteration(model?.iteration ?? null)
+      await refreshActivePartPanels(partId)
     } catch {
       // Busy backstop (the main process rejects part ops mid-turn) - leave the list as-is.
+    } finally {
+      setPending(false)
+    }
+  }
+
+  async function duplicatePart(partId: string): Promise<void> {
+    if (agentBusy || pending) return
+    setPending(true)
+    try {
+      const { parts: next, activePartId } = await window.voyager.part.duplicate({ partId })
+      setParts(next)
+      setSelectedPartId(activePartId)
+      // The copy became the active part; its mesh loads via the Viewport's lazy part-fetch effect,
+      // and the side panels follow it like a focus click.
+      if (activePartId) await refreshActivePartPanels(activePartId)
+    } catch {
+      // Busy backstop - ignore.
     } finally {
       setPending(false)
     }
@@ -116,7 +139,7 @@ export function PartsPanel(): React.JSX.Element | null {
       </Box>
       <Collapse in={expanded}>
         <Stack sx={{ px: 1, pb: 1 }} gap={0.5}>
-          {parts.map((part) => {
+          {parts.map((part, index) => {
             const selected = part.id === selectedPartId
             return (
               <Stack
@@ -148,12 +171,33 @@ export function PartsPanel(): React.JSX.Element | null {
                     {part.visible ? <VisibilityIcon fontSize="small" /> : <VisibilityOffIcon fontSize="small" />}
                   </IconButton>
                 </Tooltip>
+                {/* The part's viewport color (same per-index palette the meshes wear). */}
+                <Box
+                  sx={{
+                    width: 10,
+                    height: 10,
+                    borderRadius: '50%',
+                    flexShrink: 0,
+                    bgcolor: partColorFor(index)
+                  }}
+                />
                 <Typography variant="body2" noWrap sx={{ flex: 1, fontWeight: selected ? 600 : 400 }}>
                   {part.name}
                 </Typography>
                 <Typography variant="caption" color="text.secondary">
                   {part.activeIteration !== null ? `v${part.activeIteration}` : '—'}
                 </Typography>
+                <Tooltip title="Duplicate part">
+                  <IconButton
+                    size="small"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      void duplicatePart(part.id)
+                    }}
+                  >
+                    <ContentCopyIcon sx={{ fontSize: 14 }} />
+                  </IconButton>
+                </Tooltip>
               </Stack>
             )
           })}

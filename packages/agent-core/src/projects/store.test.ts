@@ -717,6 +717,83 @@ describe('ProjectStore parts (WS-I)', () => {
   })
 })
 
+describe('ProjectStore.duplicatePart', () => {
+  it('copies the part with a -copy suffix, offset placement, and the same iteration history', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await recordScript(store, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'box' })
+    await recordScript(store, { stlPath: 'outputs/box_v2.stl', scriptPath: 'outputs/box_v2.py', summary: 'box2' })
+    await store.setPlacement('main', { position: [10, 0, -5], rotation: [0, 90, 0] })
+
+    const parts = await store.duplicatePart('main')
+    expect(parts.map((p) => p.id)).toEqual(['main', 'main-copy'])
+
+    const copy = parts.find((p) => p.id === 'main-copy')
+    expect(copy?.name).toBe('Main copy')
+    expect(copy?.placement).toEqual({ position: [35, 0, 20], rotation: [0, 90, 0] })
+    expect(copy?.activeIteration).toBe(2)
+    // The full history came along, pointing at the same immutable artifacts.
+    const iterations = await store.listIterations('main-copy')
+    expect(iterations.map((it) => it.n)).toEqual([1, 2])
+    expect(iterations[1].stlPath).toBe('outputs/box_v2.stl')
+    // The duplicate becomes the active part (the user duplicates in order to work with it).
+    expect(await store.getActivePartId()).toBe('main-copy')
+  })
+
+  it('uniquifies the id and name when the part was already duplicated', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await recordScript(store, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'box' })
+
+    await store.duplicatePart('main')
+    const parts = await store.duplicatePart('main')
+    expect(parts.map((p) => p.id)).toEqual(['main', 'main-copy', 'main-copy-2'])
+    expect(parts.map((p) => p.name)).toEqual(['Main', 'Main copy', 'Main copy 2'])
+  })
+
+  it('diverges independently: recording into the copy leaves the source untouched', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await recordScript(store, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'box' })
+    await store.duplicatePart('main')
+
+    // The duplicate is active, so an unscoped record lands in it.
+    await recordScript(store, { stlPath: 'outputs/copy_v2.stl', scriptPath: 'outputs/copy_v2.py', summary: 'tweak' })
+    expect((await store.listIterations('main-copy')).map((it) => it.n)).toEqual([1, 2])
+    expect((await store.listIterations('main')).map((it) => it.n)).toEqual([1])
+  })
+
+  it('makes a hidden source\'s duplicate visible and preserves an empty history', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await store.setVisibility('main', false)
+
+    const parts = await store.duplicatePart('main')
+    const copy = parts.find((p) => p.id === 'main-copy')
+    expect(copy?.visible).toBe(true)
+    expect(copy?.activeIteration).toBeNull()
+    expect(await store.listIterations('main-copy')).toEqual([])
+  })
+
+  it('throws for an unknown part id', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await expect(store.duplicatePart('bogus')).rejects.toThrow('Unknown part: bogus')
+  })
+
+  it('survives a reload: the duplicate persists in project.json', async () => {
+    const first = makeStore()
+    await first.ensureProject()
+    await recordScript(first, { stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'box' })
+    await first.duplicatePart('main')
+
+    const reloaded = makeStore()
+    await reloaded.ensureProject()
+    expect((await reloaded.listParts()).map((p) => p.id)).toEqual(['main', 'main-copy'])
+    expect(await reloaded.getActivePartId()).toBe('main-copy')
+  })
+})
+
 describe('ProjectStore migration', () => {
   it('discovers a pre-R3 default project with no manifest and makes it active', async () => {
     const legacyDir = join(scratch, 'projects', 'default')

@@ -121,8 +121,9 @@ export interface AppState {
   iterations: IterationInfo[]
   /** The `n` of the currently-shown/exported iteration, or null before hydration / with no
    *  iterations yet. Note the agent always branches from the live conversation + on-disk files,
-   *  never from this pointer - it only governs what's displayed and what `model:export` copies
-   *  (see `ProjectStore.activeIterationRecord` in the main process). */
+   *  never from this pointer - it only governs what's displayed and what `model:export` saves
+   *  for the displayed part (a multi-part all-parts zip exports each part's own main-process
+   *  active pointer - see `ProjectStore.activeIterationRecord`). */
   activeIteration: number | null
   /** The most recent on-demand print-settings recommendation, or null if none has been requested
    *  yet for the current model. Session-only (not persisted in `project.json`) and tagged with
@@ -142,6 +143,10 @@ export interface AppState {
   showAxes: boolean
   /** True while the displayed model is rendered in wireframe rather than shaded. */
   wireframe: boolean
+  /** Which handles the multi-part placement gizmo shows: slide/lift a part or rotate it. Kept in
+   *  the store (not local to the toolbar) so the controller's g/r keyboard shortcuts and the
+   *  toolbar toggle stay in sync. */
+  gizmoMode: 'translate' | 'rotate'
   /** When on, the chat streams a fuller view of the agent's background work: bookkeeping
    *  (`routine`) tool-activity rows, each tool's inputs, and the complete thinking stream.
    *  Global display preference persisted in localStorage (survives restarts, not per-project). */
@@ -227,6 +232,7 @@ export interface AppState {
   setMeasurement: (measurement: number | null) => void
   setShowAxes: (showAxes: boolean) => void
   setWireframe: (wireframe: boolean) => void
+  setGizmoMode: (gizmoMode: 'translate' | 'rotate') => void
   /** Toggles the "full stream" display preference and persists it to localStorage. */
   setFullStream: (fullStream: boolean) => void
   setAgentBusy: (busy: boolean) => void
@@ -272,6 +278,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   measurement: null,
   showAxes: true,
   wireframe: false,
+  gizmoMode: 'translate',
   fullStream: readFullStream(),
   agentBusy: false,
   agentStreamIds: {},
@@ -380,6 +387,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setMeasurement: (measurement) => set({ measurement }),
   setShowAxes: (showAxes) => set({ showAxes }),
   setWireframe: (wireframe) => set({ wireframe }),
+  setGizmoMode: (gizmoMode) => set({ gizmoMode }),
   setFullStream: (fullStream) => {
     writeFullStream(fullStream)
     set({ fullStream })

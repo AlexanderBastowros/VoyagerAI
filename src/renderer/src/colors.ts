@@ -23,3 +23,26 @@ export const colors = {
 } as const
 
 export const fontMono = "'SF Mono', 'Menlo', 'Consolas', monospace"
+
+/**
+ * Distinct part colors for multi-part projects (WS-I, §14): part i in the store's parts list wears
+ * `partColorFor(i)` everywhere it appears - the viewport mesh and the parts-panel swatch - so
+ * "which mesh is which part" reads at a glance. Slot 0 is the accent, so a single-part project
+ * (and the first part of a multi-part one) keeps the app's classic model color. Hues are picked to
+ * stay distinguishable from each other and from the selection highlight on the dark viewport.
+ */
+export const partPalette = [
+  colors.accent, // blue (the classic model color)
+  '#ff9d5c', // orange
+  '#57c785', // green (matches `success`)
+  '#e879b9', // pink
+  '#b78bff', // purple
+  '#ffd166', // yellow
+  '#4dd0c4', // teal
+  '#e5735a' // coral (matches `danger`)
+] as const
+
+/** The color for the part at `index` in the parts list, cycling past the palette's end. */
+export function partColorFor(index: number): string {
+  return partPalette[((index % partPalette.length) + partPalette.length) % partPalette.length]
+}
