@@ -59,7 +59,7 @@ const MARKER_SCHEMA_VERSION = 1
  * documents itself - one is CadQuery-based (large OCP wheel duplicate) and the other states its
  * own API "has no stability yet," so neither belongs in every project's default install.
  */
-const REQUIRED_PACKAGES = ['build123d', 'trimesh', 'numpy', 'bd_warehouse'] as const
+const REQUIRED_PACKAGES = ['build123d', 'trimesh', 'numpy', 'bd_warehouse', 'matplotlib'] as const
 
 interface PyEnvMarker {
   schemaVersion: number
@@ -82,6 +82,7 @@ const STAGE_PATTERNS: ReadonlyArray<{ pattern: RegExp; stage: string }> = [
   { pattern: /trimesh/i, stage: 'Installing trimesh…' },
   { pattern: /\bnumpy\b/i, stage: 'Installing numpy…' },
   { pattern: /bd_warehouse/i, stage: 'Installing bd_warehouse (gear library)…' },
+  { pattern: /matplotlib/i, stage: 'Installing matplotlib (render previews)…' },
   { pattern: /resolved \d+ package/i, stage: 'Resolving package versions…' },
   { pattern: /installed \d+ package/i, stage: 'Finalizing installation…' },
   { pattern: /smoke.?test/i, stage: 'Running smoke test…' }
@@ -116,9 +117,16 @@ function tail(text: string, length = 400): string {
   return text.trim().slice(-length)
 }
 
+/** REQUIRED_PACKAGES entries the marker doesn't record - an env provisioned before those
+ *  packages joined the list (matched case-insensitively, as `extractPackageVersions` records). */
+function missingRequiredPackages(marker: PyEnvMarker): string[] {
+  const recorded = new Set(Object.keys(marker.packages).map((name) => name.toLowerCase()))
+  return REQUIRED_PACKAGES.filter((pkg) => !recorded.has(pkg.toLowerCase()))
+}
+
 function extractPackageVersions(output: string): Record<string, string> {
   const found: Record<string, string> = {}
-  const pattern = /\b(build123d|trimesh|numpy|bd_warehouse)[-=]{1,2}([0-9][\w.]*)/gi
+  const pattern = /\b(build123d|trimesh|numpy|bd_warehouse|matplotlib)[-=]{1,2}([0-9][\w.]*)/gi
   let match: RegExpExecArray | null
   while ((match = pattern.exec(output))) {
     found[match[1].toLowerCase()] = match[2]
@@ -254,6 +262,13 @@ export class EnvManager {
     if (cached) return emit(cached)
 
     try {
+      // Healthy-but-incomplete env (predates a REQUIRED_PACKAGES addition): incremental top-up,
+      // never the venv-nuking reprovision below.
+      const healthy = await this.healthyMarker()
+      if (healthy && missingRequiredPackages(healthy).length > 0) {
+        return await this.topUpInstall(healthy, emit)
+      }
+
       await mkdir(this.baseDir, { recursive: true })
       await mkdir(this.binDir, { recursive: true })
       // Clear out any partial venv left behind by a previous failed attempt.
@@ -292,7 +307,7 @@ export class EnvManager {
 
     emit({
       state: 'in_progress',
-      detail: 'Installing build123d, trimesh, numpy, bd_warehouse (OCP wheel is large, this can take several minutes)…'
+      detail: `Installing ${REQUIRED_PACKAGES.join(', ')} (OCP wheel is large, this can take several minutes)…`
     })
     const install = await this.runUv(uv, ['pip', 'install', '--python', this.pythonPath(), ...REQUIRED_PACKAGES], emit)
     return this.finishInstall(install, emit)
@@ -313,7 +328,7 @@ export class EnvManager {
 
     emit({
       state: 'in_progress',
-      detail: 'Installing build123d, trimesh, numpy, bd_warehouse (OCP wheel is large, this can take several minutes)…'
+      detail: `Installing ${REQUIRED_PACKAGES.join(', ')} (OCP wheel is large, this can take several minutes)…`
     })
     // Invoke pip via `python -m pip` rather than the venv's `pip` script directly - the
     // script's shebang line can exceed OS limits when the venv lives in a deep userData path.
@@ -323,7 +338,11 @@ export class EnvManager {
     return this.finishInstall(install, emit)
   }
 
-  private async finishInstall(install: CommandResult, emit: (c: SetupCheck) => SetupCheck): Promise<SetupCheck> {
+  private async finishInstall(
+    install: CommandResult,
+    emit: (c: SetupCheck) => SetupCheck,
+    priorPackages?: Record<string, string>
+  ): Promise<SetupCheck> {
     if (install.code !== 0) {
       return emit({
         state: 'error',
@@ -337,15 +356,46 @@ export class EnvManager {
       return emit({ state: 'error', detail: `Smoke test failed: ${smoke.error ?? 'unknown error'}` })
     }
 
-    await this.writeMarker(smoke, install.stdout + '\n' + install.stderr)
-    return emit({ state: 'ready', detail: 'Python environment ready (build123d, trimesh, numpy, bd_warehouse installed).' })
+    await this.writeMarker(smoke, install.stdout + '\n' + install.stderr, priorPackages)
+    return emit({ state: 'ready', detail: `Python environment ready (${REQUIRED_PACKAGES.join(', ')} installed).` })
   }
 
   private async quickCheck(): Promise<SetupCheck | null> {
+    const marker = await this.healthyMarker()
+    if (!marker) return null
+    // A healthy env that merely predates newer REQUIRED_PACKAGES entries (bd_warehouse,
+    // matplotlib) is NOT "ready" - runEnsureReady tops it up incrementally instead.
+    if (missingRequiredPackages(marker).length > 0) return null
+    return { state: 'ready', detail: 'Python environment ready (cached).' }
+  }
+
+  /** The marker, but only when the venv python exists and its last smoke test passed. */
+  private async healthyMarker(): Promise<PyEnvMarker | null> {
     if (!(await pathExists(this.pythonPath()))) return null
     const marker = await this.readMarker()
     if (!marker || marker.schemaVersion !== MARKER_SCHEMA_VERSION || !marker.smokeTest.ok) return null
-    return { state: 'ready', detail: 'Python environment ready (cached).' }
+    return marker
+  }
+
+  /**
+   * Installs newly-required packages into an existing healthy venv - a REQUIRED_PACKAGES
+   * addition (bd_warehouse for WS-H, matplotlib for WS-D) must not trigger the destructive
+   * full reprovision below, which re-downloads the multi-minute OCP wheel on every existing
+   * install. Merges the prior marker's package versions into the new marker, since pip/uv
+   * only name packages they actually (re)installed in their output.
+   */
+  private async topUpInstall(marker: PyEnvMarker, emit: (c: SetupCheck) => SetupCheck): Promise<SetupCheck> {
+    emit({
+      state: 'in_progress',
+      detail: `Adding newly required Python packages (${missingRequiredPackages(marker).join(', ')})…`
+    })
+    const uv = await this.detectUv()
+    const install = uv
+      ? await this.runUv(uv, ['pip', 'install', '--python', this.pythonPath(), ...REQUIRED_PACKAGES], emit)
+      : await this.run(this.pythonPath(), ['-m', 'pip', 'install', ...REQUIRED_PACKAGES], (line) =>
+          this.trackStage(line, emit)
+        )
+    return this.finishInstall(install, emit, marker.packages)
   }
 
   private async detectUv(): Promise<UvInvocation | null> {
@@ -488,14 +538,18 @@ export class EnvManager {
     }
   }
 
-  private async writeMarker(smoke: SmokeTestResult, installOutput = ''): Promise<void> {
+  private async writeMarker(
+    smoke: SmokeTestResult,
+    installOutput = '',
+    priorPackages?: Record<string, string>
+  ): Promise<void> {
     const versionResult = await this.run(this.pythonPath(), ['--version']).catch(() => null)
     const pythonVersion = versionResult ? (versionResult.stdout + versionResult.stderr).trim() : 'unknown'
     const marker: PyEnvMarker = {
       schemaVersion: MARKER_SCHEMA_VERSION,
       createdAt: new Date().toISOString(),
       pythonVersion,
-      packages: extractPackageVersions(installOutput),
+      packages: { ...priorPackages, ...extractPackageVersions(installOutput) },
       smokeTest: {
         ok: smoke.ok,
         sizeBytes: smoke.sizeBytes ?? 0,

@@ -393,7 +393,7 @@ Notes on the gates:
 - **Done when:** every new iteration gets a report; a deliberately-wrong dimension in a
   test fixture is caught by layer 3 and shown as a red row.
 
-### WS-D — Render rig + designer self-inspection · **Status: DONE (partial)** · depends: 0a, 0b
+### WS-D — Render rig + designer self-inspection · **Status: DONE** · depends: 0a, 0b
 
 - **Landed:** `packages/render-rig` (new npm workspace, mirroring `packages/verify`'s shape).
   **Rendering backend is matplotlib's Agg canvas, not pyrender/EGL** despite the scope line
@@ -1130,6 +1130,15 @@ Notes on the gates:
      `extraResources` entry (mirrors the existing `verify`/`params` entries) so packaged builds
      ship `render_views.py`.
   Until this lands, `render_views` always replies "Rendering is not available in this session."
+  **→ LANDED (maintainer-directed, 2026-07-11):** all three steps as specified (`renderScriptPath`/
+  `renderIteration` in `src/main/ipc.ts`, the `AgentSessionDeps.renderViews` field + MCP pass-through
+  + `allowedTools`/`humanizeToolUse` polish in `session.ts`, the `render-rig` `extraResources`
+  entry), plus two additions: `renderIteration` also fires from `ProjectStore.onIterationRecorded`
+  (every iteration gets a render set - the order's first done-when), and the whole pipeline is
+  **toggleable per project** via a new optional `AgentSettings.renderViews` (default on; persisted
+  as `agentRenderViews` in `project.json`; camera ToggleButton in the chat toolbar next to Full
+  stream; `renderIteration` returns an explanatory `ok: false` when off, so the tool tells the
+  agent why instead of erroring).
 
 - **WS-D needs `matplotlib` added to the managed venv's `REQUIRED_PACKAGES`
   (`packages/agent-core/src/python/envManager.ts`, owned outside this order).** The render rig's
@@ -1140,6 +1149,10 @@ Notes on the gates:
   `REQUIRED_PACKAGES` gains `'matplotlib'` (and the `STAGE_PATTERNS` progress-line matcher gains
   a `matplotlib` entry, cosmetic only). `packages/render-rig/python/requirements.txt` documents
   the same gap.
+  **→ LANDED (maintainer-directed, 2026-07-11):** `matplotlib` added to `REQUIRED_PACKAGES` + a
+  `STAGE_PATTERNS` progress line, with the install-call assertion extended in `envManager.test.ts`.
+  Existing installs pick it up on the next env repair/reinstall; until then `render_views.py`'s
+  clean missing-import error flows through the toggle-aware `renderIteration` unchanged.
 
 - **WS-D requests a new `render:list`/`render:get`-shaped channel for version-history
   thumbnails** (frozen `src/shared/ipc.ts`/preload/`src/main/ipc.ts` surface, owned outside this
@@ -1154,6 +1167,13 @@ Notes on the gates:
   would fetch one thumbnail view (e.g. `iso1`) per visible version row, lazily, the same
   on-demand shape `part:getModel` already uses instead of pushing every iteration's images
   up front.
+  **→ LANDED (maintainer-directed, 2026-07-11):** shipped as `render:get`
+  (`RenderGetRequest { partId?, n, view }` → `RenderGetResponse { dataUrl }`; `view` is a plain
+  string in the renderer-safe contract, validated main-side against `RENDER_VIEW_NAMES`), wired
+  through `src/shared/ipc.ts`/`ipc.test.ts`, preload `render.get`, and a main handler with the
+  same path-containment posture as `resolveExportSource`. `ProjectsDrawer.tsx` shows a lazy
+  `iso1` thumbnail per version row; rows without a render set (toggle off, matplotlib missing,
+  pre-WS-D iterations) simply show no image.
 - **WS-H needs a `gear` variant in `update_brief`'s patch shape
   (`packages/agent-core/brief/agentPatch.ts`, WS-A-owned).** `AgentFeatureShape` is a
   `z.discriminatedUnion('kind', [...])` covering `hole`/`pocket`/`boss`/`fillet_chamfer`/`text`/

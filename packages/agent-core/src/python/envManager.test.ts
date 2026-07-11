@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -145,6 +145,8 @@ describe('EnvManager strategy selection', () => {
     // single install call as the other always-installed packages - no separate lazy step for it.
     const pipInstallCall = calls.find((c) => c.command === 'uv' && c.args[0] === 'pip' && c.args[1] === 'install')
     expect(pipInstallCall?.args).toContain('bd_warehouse')
+    // WS-D: matplotlib rasterizes the canonical-view render set (`render_views.py`).
+    expect(pipInstallCall?.args).toContain('matplotlib')
   })
 
   it('falls back to system python3 >= 3.10 when uv is unavailable', async () => {
@@ -287,7 +289,13 @@ describe('EnvManager marker-file fast path', () => {
         schemaVersion: 1,
         createdAt: new Date().toISOString(),
         pythonVersion: 'Python 3.11.7',
-        packages: { build123d: '0.8.0', trimesh: '4.0.0', numpy: '1.26.0' },
+        packages: {
+          build123d: '0.8.0',
+          trimesh: '4.0.0',
+          numpy: '1.26.0',
+          bd_warehouse: '0.2.0',
+          matplotlib: '3.9.0'
+        },
         smokeTest: { ok: true, sizeBytes: 1500, watertight: true, at: new Date().toISOString() }
       })
     )
@@ -299,6 +307,48 @@ describe('EnvManager marker-file fast path', () => {
 
     expect(result.state).toBe('ready')
     expect(calls.length).toBe(0)
+  })
+
+  it('tops up a healthy pre-WS-D env with newly required packages instead of reprovisioning', async () => {
+    const { baseDir, binDir, venvPython } = await makeDirs()
+    await mkdir(join(baseDir, 'venv', 'bin'), { recursive: true })
+    await writeFile(venvPython, '#!/bin/sh\n')
+    // A healthy marker from before bd_warehouse/matplotlib joined REQUIRED_PACKAGES.
+    await writeFile(
+      join(baseDir, 'pyenv.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        pythonVersion: 'Python 3.11.7',
+        packages: { build123d: '0.8.0', trimesh: '4.0.0', numpy: '1.26.0' },
+        smokeTest: { ok: true, sizeBytes: 1500, watertight: true, at: new Date().toISOString() }
+      })
+    )
+
+    const { spawnFn, calls } = makeFakeSpawn((command, args) => {
+      if (command === 'uv') {
+        if (args[0] === '--version') return { code: 0, stdoutLines: ['uv 0.4.0'] }
+        if (args[0] === 'pip') return { code: 0, stdoutLines: ['Installed 2 packages: bd_warehouse==0.2.0 matplotlib==3.9.0'] }
+      }
+      if (command === venvPython) {
+        if (args[0] === '--version') return { code: 0, stdoutLines: ['Python 3.11.7'] }
+        return smokeTestOutcome(args[1])
+      }
+      return { enoent: true }
+    })
+    const envManager = new EnvManager({ baseDir, binDir, smokeTestScriptPath: '/fake/smoke_test.py', spawn: spawnFn })
+
+    const result = await envManager.ensureReady()
+    expect(result.state).toBe('ready')
+
+    // Incremental: pip install ran, but the venv was never recreated.
+    expect(calls.some((c) => c.command === 'uv' && c.args[0] === 'pip' && c.args.includes('matplotlib'))).toBe(true)
+    expect(calls.some((c) => c.args[0] === 'venv')).toBe(false)
+
+    // The rewritten marker merges prior versions with the newly installed ones, so the next
+    // launch takes the pure cached fast path.
+    const marker = JSON.parse(await readFile(join(baseDir, 'pyenv.json'), 'utf-8'))
+    expect(marker.packages).toMatchObject({ build123d: '0.8.0', bd_warehouse: '0.2.0', matplotlib: '3.9.0' })
   })
 
   it('falls through to full provisioning when the marker is missing even if the venv python exists', async () => {

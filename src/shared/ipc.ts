@@ -107,6 +107,11 @@ export type AgentModel = 'claude-opus-4-8' | 'claude-sonnet-5' | 'claude-haiku-4
 export interface AgentSettings {
   model: AgentModel
   effort: AgentEffort
+  /** Whether the designer renders + inspects the 8 canonical views (WS-D): backs the
+   *  `render_views` tool and the automatic per-iteration render set. Omitted = enabled;
+   *  toggleable per project from the chat toolbar (rendering costs a few seconds of
+   *  matplotlib work per iteration, so slow machines can turn it off). */
+  renderViews?: boolean
 }
 
 export type AgentEvent =
@@ -416,6 +421,25 @@ export interface PartDuplicateRequest {
   partId: string
 }
 
+/** Renderer -> main: fetch one canonical-view PNG of an iteration's render set (WS-D) as a data
+ *  URL, for version-history thumbnails. On-demand per visible row (mirrors `part:getModel`'s
+ *  fetch-when-needed shape) rather than pushing every iteration's images up front. `view` is one
+ *  of the 8 canonical view names (`front`/`back`/`left`/`right`/`top`/`bottom`/`iso1`/`iso2` -
+ *  kept a plain string here so this renderer-safe module doesn't import `@voyager/render-rig`,
+ *  which would drag node builtins into the renderer bundle; the main handler validates it). */
+export interface RenderGetRequest {
+  /** Which part's history `n` indexes; omit for the active part. */
+  partId?: string
+  n: number
+  view: string
+}
+
+export interface RenderGetResponse {
+  /** `data:image/png;base64,...`, or null when that iteration has no render set (yet) - e.g.
+   *  recorded while render previews were toggled off, or before matplotlib was installed. */
+  dataUrl: string | null
+}
+
 // ---------------------------------------------------------------------------
 // Design Brief (WS-A - architecture doc §6)
 // ---------------------------------------------------------------------------
@@ -537,6 +561,7 @@ export const IPC = {
   partSetActive: 'part:setActive',
   partDuplicate: 'part:duplicate',
   partUpdated: 'part:updated',
+  renderGet: 'render:get',
   briefGet: 'brief:get',
   briefUpdate: 'brief:update',
   briefLock: 'brief:lock',

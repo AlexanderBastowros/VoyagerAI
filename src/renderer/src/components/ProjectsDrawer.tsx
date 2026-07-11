@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { MutableRefObject } from 'react'
 import Alert from '@mui/material/Alert'
+import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
 import Divider from '@mui/material/Divider'
@@ -53,6 +54,72 @@ export function ProjectsDrawer({ open, onClose, viewerRef }: ProjectsDrawerProps
   const projects = useAppStore((state) => state.projects)
   const activeProjectId = useAppStore((state) => state.activeProjectId)
   const iterations = useAppStore((state) => state.iterations)
+  const selectedPartId = useAppStore((state) => state.selectedPartId)
+  /** WS-D: version-row thumbnails, keyed `project/part/n` (never bare `n` - every project has a
+   *  v1, so an unscoped key would show the previous project's model on the new project's rows
+   *  during a switch). Entries are only ever fetched-and-kept; rows without a render set
+   *  (previews toggled off, matplotlib not installed, pre-WS-D iterations) simply stay absent. */
+  const [renderThumbs, setRenderThumbs] = useState<Record<string, string>>({})
+  /** Keys already fetched (skip) or currently fetching (don't double-fetch) - refs so the
+   *  fetch effect doesn't need the state map in its closure/deps. */
+  const knownThumbKeysRef = useRef<Set<string>>(new Set())
+  const inFlightThumbKeysRef = useRef<Set<string>>(new Set())
+
+  const thumbKey = (n: number): string => `${activeProjectId ?? 'none'}/${selectedPartId ?? 'active'}/${n}`
+
+  // Leaving a project drops its cached thumbnails: keys are project-scoped (no visual bleed
+  // either way), this just keeps long multi-project sessions from accumulating every project's
+  // full-size data URLs in renderer memory.
+  useEffect(() => {
+    setRenderThumbs({})
+    knownThumbKeysRef.current.clear()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeProjectId])
+
+  // Fetch only when the drawer is actually open, only keys not already fetched, newest rows
+  // first, surfacing each thumbnail as it resolves rather than after the whole list. A render
+  // set can lag its iteration by a few seconds (renderIteration is fire-and-forget in the main
+  // process, and no render-updated push exists), so rows still missing after a pass get a few
+  // spaced retries instead of polling forever - previews toggled off must stay cheap.
+  useEffect(() => {
+    if (!open || iterations.length === 0) return
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let retriesLeft = 3
+
+    const fetchMissing = async (): Promise<void> => {
+      let anyMissing = false
+      for (const iteration of [...iterations].reverse()) {
+        if (cancelled) return
+        const key = thumbKey(iteration.n)
+        if (knownThumbKeysRef.current.has(key) || inFlightThumbKeysRef.current.has(key)) continue
+        inFlightThumbKeysRef.current.add(key)
+        try {
+          const { dataUrl } = await window.voyager.render.get({ n: iteration.n, view: 'iso1' })
+          if (cancelled) return
+          if (dataUrl) {
+            knownThumbKeysRef.current.add(key)
+            setRenderThumbs((prev) => ({ ...prev, [key]: dataUrl }))
+          } else {
+            anyMissing = true
+          }
+        } finally {
+          inFlightThumbKeysRef.current.delete(key)
+        }
+      }
+      if (anyMissing && !cancelled && retriesLeft > 0) {
+        retriesLeft -= 1
+        retryTimer = setTimeout(() => void fetchMissing(), 12_000)
+      }
+    }
+
+    void fetchMissing()
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [iterations, open, activeProjectId, selectedPartId])
   const activeIteration = useAppStore((state) => state.activeIteration)
   const agentBusy = useAppStore((state) => state.agentBusy)
   const hydrateProject = useAppStore((state) => state.hydrateProject)
@@ -262,6 +329,25 @@ export function ProjectsDrawer({ open, onClose, viewerRef }: ProjectsDrawerProps
                     }
                   }}
                 >
+                  {renderThumbs[thumbKey(iteration.n)] && (
+                    <Box
+                      component="img"
+                      src={renderThumbs[thumbKey(iteration.n)]}
+                      alt={`v${iteration.n} render preview`}
+                      sx={{
+                        width: 40,
+                        height: 40,
+                        mr: 1,
+                        mt: 0.25,
+                        flexShrink: 0,
+                        borderRadius: 0.5,
+                        border: 1,
+                        borderColor: colors.borderSubtle,
+                        bgcolor: colors.bgApp,
+                        objectFit: 'cover'
+                      }}
+                    />
+                  )}
                   <ListItemText
                     primary={
                       <Stack direction="row" alignItems="center" spacing={0.75}>

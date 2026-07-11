@@ -18,6 +18,7 @@ import type {
 import type { ProjectIteration, ProjectStore } from '../projects/store'
 import { BriefStore } from '../../brief/store'
 import { createVoyagerMcpServer } from '../../tools'
+import type { RenderIterationOutcome } from '../../tools'
 import type { VoyagerMcpEmission, VoyagerPrinterProfileStore } from '../../tools'
 import { decideToolPermission } from './permissions'
 import { buildUserMessage, formatArrangementContext, formatRevertContext, systemPromptAppend } from './prompts'
@@ -116,6 +117,14 @@ export interface AgentSessionDeps {
    * present, backs the `run_verification` on-demand MCP tool.
    */
   runVerification?: (iteration: ProjectIteration) => Promise<VerificationReport>
+  /**
+   * Renders one iteration's canonical view set (WS-D) - the same `renderIteration` function
+   * `src/main/ipc.ts` fires from `ProjectStore.onIterationRecorded` for the automatic path.
+   * Optional so existing test harnesses don't need to wire one up; when present, backs the
+   * `render_views` on-demand MCP tool. Honors the per-project render-previews toggle
+   * (`AgentSettings.renderViews`) inside the implementation, not here.
+   */
+  renderViews?: (iteration: ProjectIteration) => Promise<RenderIterationOutcome>
   /** Pushed whenever `run_verification` recomputes a report - optional, mirrors `emitBriefUpdated`. */
   emitVerificationUpdated?: (payload: VerificationReport) => void
   /**
@@ -251,6 +260,8 @@ export function humanizeToolUse(name: string, input: Record<string, unknown>): T
       return activity('Displaying the model in the viewport')
     case 'mcp__voyager__recommend_print_settings':
       return activity('Recommending print settings')
+    case 'mcp__voyager__render_views':
+      return activity('Rendering canonical views')
     case 'mcp__voyager__set_status':
       return null // the tool handler itself emits the (better) status text
     case 'mcp__voyager__update_brief':
@@ -623,6 +634,7 @@ export class AgentSession {
           projectStore: this.deps.projectStore,
           briefStore: this.briefStore,
           runVerification: this.deps.runVerification,
+          renderViews: this.deps.renderViews,
           printerProfiles: this.deps.printerProfiles,
           emit: (emission) => this.handleEmission(emission)
         })
@@ -640,6 +652,7 @@ export class AgentSession {
         'TodoWrite',
         'mcp__voyager__display_model',
         'mcp__voyager__recommend_print_settings',
+        'mcp__voyager__render_views',
         'mcp__voyager__run_verification',
         'mcp__voyager__save_printer_profile',
         'mcp__voyager__set_status',

@@ -73,6 +73,8 @@ export interface ProjectRecord {
   sessionId?: string
   agentModel?: AgentSettings['model']
   agentEffort?: AgentSettings['effort']
+  /** WS-D render-previews toggle; undefined (all pre-WS-D records) means enabled. */
+  agentRenderViews?: boolean
   /**
    * The project's parts (WS-I, §14) - always ≥1 after migration. Replaces the pre-WS-I flat
    * top-level `iterations`/`activeIteration`, which `readRecord()` migrates into a single `main`
@@ -102,7 +104,7 @@ interface LegacyProjectRecord extends Omit<ProjectRecord, 'parts' | 'activePartI
 
 /** Applied whenever a project has no explicit model/effort recorded yet - matches the MVP's
  *  original hardcoded Opus + xhigh behavior. */
-export const DEFAULT_AGENT_SETTINGS: AgentSettings = { model: 'claude-opus-4-8', effort: 'xhigh' }
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = { model: 'claude-opus-4-8', effort: 'xhigh', renderViews: true }
 
 export interface ProjectStoreOptions {
   /** Root directory all projects live under, e.g. `<userData>/projects`. */
@@ -500,6 +502,7 @@ export class ProjectStore {
     const record = await this.requireRecord()
     record.agentModel = settings.model
     record.agentEffort = settings.effort
+    record.agentRenderViews = settings.renderViews ?? true
     await this.writeRecord(this.dirFor(record.id), record)
   }
 
@@ -508,7 +511,8 @@ export class ProjectStore {
     const record = await this.requireRecord()
     return {
       model: record.agentModel ?? DEFAULT_AGENT_SETTINGS.model,
-      effort: record.agentEffort ?? DEFAULT_AGENT_SETTINGS.effort
+      effort: record.agentEffort ?? DEFAULT_AGENT_SETTINGS.effort,
+      renderViews: record.agentRenderViews ?? DEFAULT_AGENT_SETTINGS.renderViews
     }
   }
 
@@ -770,6 +774,7 @@ function migrateRecord(parsed: LegacyProjectRecord): ProjectRecord {
       sessionId: parsed.sessionId,
       agentModel: parsed.agentModel,
       agentEffort: parsed.agentEffort,
+      agentRenderViews: parsed.agentRenderViews,
       parts,
       activePartId: parsed.activePartId ?? parts[0].id,
       messages
@@ -793,6 +798,7 @@ function migrateRecord(parsed: LegacyProjectRecord): ProjectRecord {
     sessionId: parsed.sessionId,
     agentModel: parsed.agentModel,
     agentEffort: parsed.agentEffort,
+    agentRenderViews: parsed.agentRenderViews,
     parts: [mainPart],
     activePartId: MAIN_PART_ID,
     messages

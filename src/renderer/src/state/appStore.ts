@@ -77,7 +77,7 @@ function initialSetupStatus(): SetupStatus {
 
 /** Placeholder shown before `window.voyager.agent.getSettings()` resolves on mount - matches
  *  the main process's own default (see `DEFAULT_AGENT_SETTINGS` in `projects/store.ts`). */
-const DEFAULT_AGENT_SETTINGS: AgentSettings = { model: 'claude-opus-4-8', effort: 'xhigh' }
+const DEFAULT_AGENT_SETTINGS: AgentSettings = { model: 'claude-opus-4-8', effort: 'xhigh', renderViews: true }
 
 let messageSequence = 0
 function createMessageId(): string {

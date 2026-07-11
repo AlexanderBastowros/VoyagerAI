@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { copyFile, readFile, stat, writeFile } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { basename, isAbsolute, join, relative } from 'node:path'
 import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
@@ -33,6 +33,8 @@ import type {
   PermissionRespondResponse,
   PrinterProfileDeleteRequest,
   PrinterProfileListResponse,
+  RenderGetRequest,
+  RenderGetResponse,
   PrinterProfileSaveRequest,
   PrinterProfileSetActiveRequest,
   PrintSettings,
@@ -85,6 +87,8 @@ import type {
   ZipEntry
 } from '@voyager/agent-core'
 import { readVerificationForIteration, runVerification, writeVerificationForIteration } from '@voyager/verify'
+import { RENDER_VIEW_NAMES, renderDirForStl, renderViews as executeRenderViews } from '@voyager/render-rig'
+import type { RenderViewName } from '@voyager/render-rig'
 
 /**
  * Resolves a path under the app's `resources/` directory, in both dev (where
@@ -157,6 +161,14 @@ function partInterferenceScriptPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'verify', 'part_interference.py')
     : join(__dirname, '../../packages/verify/python/part_interference.py')
+}
+
+/** WS-D: the canonical-view renderer's script - same dev/packaged resolution as the scripts
+ *  above, mirroring the `render-rig` `extraResources` entry in `electron-builder.yml`. */
+function renderScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'render-rig', 'render_views.py')
+    : join(__dirname, '../../packages/render-rig/python/render_views.py')
 }
 
 function broadcast(channel: string, payload: unknown): void {
@@ -355,18 +367,94 @@ export function registerIpcHandlers(): void {
     return report
   }
 
+  /** Deliberate skips of `renderIteration` (vs genuine failures, which get logged by the
+   *  automatic hook): the per-project toggle is off, or the recording project was switched
+   *  away from mid-flight. Compared by identity in `onIterationRecorded` below. */
+  const RENDER_SKIPPED_TOGGLE_OFF =
+    'Render previews are turned off for this project (chat-toolbar toggle) - skipping.'
+  const RENDER_SKIPPED_PROJECT_SWITCHED = 'The active project changed before rendering started - skipping.'
+
+  /**
+   * Renders one iteration's canonical view set (WS-D) into the sibling `<stl>.renders/` dir.
+   * Two call sites feed this, mirroring `verifyIteration` exactly: `ProjectStore`'s
+   * `onIterationRecorded` hook below (every iteration gets a render set on disk) and
+   * `AgentSession`'s `renderViews` dep (the on-demand `render_views` MCP tool). Honors the
+   * per-project render-previews toggle (`AgentSettings.renderViews`) so users on slow machines
+   * can turn the whole pipeline off - the tool then explains itself rather than erroring.
+   */
+  async function renderIteration(
+    iteration: ProjectIteration,
+    projectDir: string
+  ): Promise<
+    | { ok: true; dir: string; views: Partial<Record<string, string>>; widthMm: number; heightMm: number; depthMm: number }
+    | { ok: false; error: string }
+  > {
+    // The fire-and-forget hook can outlive a project:switch (switching is only blocked while the
+    // agent is busy, and param:update records without the agent). getAgentSettings() below reads
+    // the ACTIVE project, so a switched-away recording just skips its render rather than being
+    // gated by (or writing under) the wrong project.
+    if (projectStore.getProjectDir() !== projectDir) {
+      return { ok: false, error: RENDER_SKIPPED_PROJECT_SWITCHED }
+    }
+    const settings = await projectStore.getAgentSettings()
+    if (settings.renderViews === false) {
+      return { ok: false, error: RENDER_SKIPPED_TOGGLE_OFF }
+    }
+    // Same containment posture as resolveExportSource, on the WRITE side too: a hand-edited
+    // project.json must not let render_views.py read an arbitrary STL or create a `.renders/`
+    // directory outside the project.
+    const stlAbs = containedAbsPath(projectDir, iteration.stlPath)
+    const outDir = containedAbsPath(projectDir, renderDirForStl(iteration.stlPath))
+    if (!stlAbs || !outDir) {
+      return { ok: false, error: 'The recorded STL path resolves outside the project directory and was rejected.' }
+    }
+    const result = await executeRenderViews({
+      pythonPath: envManager.pythonPath(),
+      scriptPath: renderScriptPath(),
+      stlPath: stlAbs,
+      outDir
+    })
+    if (!result.ok) return result
+    return {
+      ok: true,
+      dir: outDir,
+      views: result.views,
+      widthMm: result.widthMm,
+      heightMm: result.heightMm,
+      depthMm: result.depthMm
+    }
+  }
+
   const projectStore = new ProjectStore({
     baseDir: join(app.getPath('userData'), 'projects'),
     skillSourceDir: resourcePath('skills', 'printable-cad'),
     verifyScriptPath: verifyScriptPath(),
     extractParamsScriptPath: extractParamsScriptPath(),
-    // Fire-and-forget: a slow or failing verification run must never block or fail the display
-    // path (see `ProjectStoreOptions.onIterationRecorded`'s doc comment).
+    // Fire-and-forget: a slow or failing verification/render run must never block or fail the
+    // display path (see `ProjectStoreOptions.onIterationRecorded`'s doc comment).
     onIterationRecorded: (iteration, projectDir) => {
       void verifyIteration(iteration, projectDir)
         .then((report) => broadcast(IPC.verificationUpdated, report))
         .catch((err) => {
           console.error('Verification failed for iteration', iteration.n, err)
+        })
+      // WS-D: every recorded iteration gets its canonical render set (thumbnails + the agent's
+      // self-inspection both read it back later). renderIteration never rejects in practice -
+      // every failure (matplotlib missing, corrupt STL, script crash) comes back as `ok: false` -
+      // so log those too; a silently-broken render pipeline would be indistinguishable from the
+      // toggle being off. Deliberate skips (toggle off, project switched) stay quiet.
+      void renderIteration(iteration, projectDir)
+        .then((result) => {
+          if (
+            !result.ok &&
+            result.error !== RENDER_SKIPPED_TOGGLE_OFF &&
+            result.error !== RENDER_SKIPPED_PROJECT_SWITCHED
+          ) {
+            console.warn('Render set failed for iteration', iteration.n, '-', result.error)
+          }
+        })
+        .catch((err) => {
+          console.error('Render set failed for iteration', iteration.n, err)
         })
     }
   })
@@ -375,6 +463,7 @@ export function registerIpcHandlers(): void {
     projectStore,
     briefStore,
     runVerification: (iteration) => verifyIteration(iteration, projectStore.getProjectDir()),
+    renderViews: (iteration) => renderIteration(iteration, projectStore.getProjectDir()),
     printerProfiles: printerProfileStore,
     pythonPath: () => envManager.pythonPath(),
     claudeCliPath: () => claudeChecker.cliPath(),
@@ -1186,4 +1275,28 @@ export function registerIpcHandlers(): void {
       return response
     }
   )
+
+  // -- WS-D canonical-view renders ----------------------------------------
+
+  // One view PNG of one iteration's render set, as a data URL, for version-history thumbnails.
+  // Null (never an error) for anything absent: unknown view name, unknown iteration, a render
+  // set that was never produced (toggle off / matplotlib missing), or a recorded STL path that
+  // escapes the project dir (same containment posture as `resolveExportSource`).
+  ipcMain.handle(IPC.renderGet, async (_event, request: RenderGetRequest): Promise<RenderGetResponse> => {
+    if (!(RENDER_VIEW_NAMES as readonly string[]).includes(request.view)) return { dataUrl: null }
+    const iteration = (await projectStore.listIterations(request.partId)).find((it) => it.n === request.n)
+    if (!iteration) return { dataUrl: null }
+
+    const projectDir = projectStore.getProjectDir()
+    const abs = join(projectDir, renderDirForStl(iteration.stlPath), `${request.view as RenderViewName}.png`)
+    const rel = relative(projectDir, abs)
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return { dataUrl: null }
+
+    try {
+      const bytes = await readFile(abs)
+      return { dataUrl: `data:image/png;base64,${bytes.toString('base64')}` }
+    } catch {
+      return { dataUrl: null }
+    }
+  })
 }

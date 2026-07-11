@@ -68,6 +68,7 @@ describe('IPC channel names', () => {
     expect(IPC.partSetActive).toBe('part:setActive')
     expect(IPC.partDuplicate).toBe('part:duplicate')
     expect(IPC.partUpdated).toBe('part:updated')
+    expect(IPC.renderGet).toBe('render:get')
     expect(IPC.briefListVersions).toBe('brief:listVersions')
   })
 })

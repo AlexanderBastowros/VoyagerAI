@@ -29,6 +29,8 @@ import type {
   PermissionRespondResponse,
   PrinterProfileDeleteRequest,
   PrinterProfileListResponse,
+  RenderGetRequest,
+  RenderGetResponse,
   PrinterProfileSaveRequest,
   PrinterProfileSetActiveRequest,
   PrintSettings,
@@ -133,6 +135,12 @@ export interface VoyagerApi {
     /** Subscribe to parts-list changes (e.g. the agent creating a new part); returns an
      *  unsubscribe function. */
     onUpdated: (callback: (response: PartListResponse) => void) => () => void
+  }
+  /** WS-D canonical-view renders. */
+  render: {
+    /** One canonical-view PNG of an iteration's render set as a data URL, or null when that
+     *  iteration has no render set (toggle was off / matplotlib missing / never rendered). */
+    get: (request: RenderGetRequest) => Promise<RenderGetResponse>
   }
   /** WS-B Parameter panel - stub behavior until WS-B lands (see `src/main/ipc.ts`). */
   param: {
