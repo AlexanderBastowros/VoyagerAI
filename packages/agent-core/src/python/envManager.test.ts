@@ -91,6 +91,7 @@ describe('parseProgressLine', () => {
     expect(parseProgressLine('Building wheel for OCP (pyproject.toml)')).toMatch(/build123d/)
     expect(parseProgressLine('Downloaded trimesh==4.0.1')).toBe('Installing trimesh…')
     expect(parseProgressLine('Downloaded numpy==1.26.4')).toBe('Installing numpy…')
+    expect(parseProgressLine('Downloaded bd_warehouse==0.2.0')).toMatch(/bd_warehouse/)
     expect(parseProgressLine('Resolved 12 packages in 340ms')).toBe('Resolving package versions…')
     expect(parseProgressLine('Installed 12 packages in 2.1s')).toBe('Finalizing installation…')
   })
@@ -140,6 +141,10 @@ describe('EnvManager strategy selection', () => {
     expect(calls.some((c) => c.command === 'uv' && c.args[0] === 'venv')).toBe(true)
     expect(calls.some((c) => c.command === 'uv' && c.args[0] === 'pip')).toBe(true)
     expect(progress.some((p) => p.detail.includes('Creating virtual environment'))).toBe(true)
+    // WS-H: bd_warehouse (spur-gear library, `references/gears.md` §1) rides along in the same
+    // single install call as the other always-installed packages - no separate lazy step for it.
+    const pipInstallCall = calls.find((c) => c.command === 'uv' && c.args[0] === 'pip' && c.args[1] === 'install')
+    expect(pipInstallCall?.args).toContain('bd_warehouse')
   })
 
   it('falls back to system python3 >= 3.10 when uv is unavailable', async () => {

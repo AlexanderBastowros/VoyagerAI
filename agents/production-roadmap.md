@@ -60,9 +60,9 @@ WS-0a (extract agent-core) ── DONE
           ├─► WS-D  Render rig + self-inspect  ├─ parallel, disjoint file footprints
           ├─► WS-E  Printer profiles ── DONE   ┘
           └─► WS-0c (contract addendum: import/parts/gears) ── DONE
-                 ├─► WS-G  External model import/remix  ┐
-                 ├─► WS-H  Gear generation              ├─ parallel (H's verify checks after WS-C)
-                 └─► WS-I  Multi-part & placement ── DONE ┘
+                 ├─► WS-G  External model import/remix       ┐
+                 ├─► WS-H  Gear generation ── DONE-partial    ├─ parallel (H's verify checks after WS-C)
+                 └─► WS-I  Multi-part & placement ── DONE     ┘
                         └─► WS-F  Graduation package + per-part export (needs WS-I)
 Then: M1 integration pass (dispatcher-led).
 M2+ (Bedrock, multi-model, plugins) — sketched only; decomposed when a trigger fires.
@@ -632,8 +632,118 @@ Notes on the gates:
   STEP; an import that fails watertightness gets a repair pass with a report of what
   changed.
 
-### WS-H — Gear generation (mechanisms v1) · **Status: TODO** · depends: 0a, 0b, **0c** (gear-spec verify checks additionally wait for WS-C)
+### WS-H — Gear generation (mechanisms v1) · **Status: DONE-partial** · depends: 0a, 0b, **0c** (gear-spec verify checks additionally wait for WS-C)
 
+- **Landed:** all four scope items below, plus the library-spike verdict this order asks to be
+  recorded here.
+  - **1. Library spike (WebSearch/WebFetch research against each project's README/docs — none
+    of the three pip-installs in this sandbox, per this order's own constraint).** Verdict, per
+    gear type:
+    - **Spur (default) → `bd_warehouse.gear.SpurGear`.** build123d-native (Gumyr, the build123d
+      author), plain PyPI package (`pip install bd_warehouse`), Apache-2.0, actively maintained
+      (v0.2.0, Feb 2026, 225 commits). Its `InvoluteToothProfile` generates the analytic involute
+      curve directly from module/pressure-angle/tooth-count — no spline approximation. Coverage
+      is spur-only (no helical/bevel/ring/planetary in the gear module) and it has no
+      bore/hub constructor args — cut those with an ordinary build123d boolean, same as any hole.
+    - **Helical / herringbone → `cq_gears` (CadQuery).** The only candidate with herringbone
+      (and helical ring-gear) coverage at all — required because this order's own "done when"
+      example specifies a herringbone pair. Apache-2.0; involute math is adapted from the
+      long-standing `gears.scad`/`involute_gears.scad` OpenSCAD lineage, specifically
+      battle-tested in the FDM/hobbyist gear-printing community (a real trust signal for this
+      product's users). **Risk:** last tagged release is `v0.45-alpha` (Aug 2021), README says
+      "work in progress... might be unstable," not on PyPI (git-install only). Broadest raw
+      coverage of the three (spur/helical/herringbone/ring incl. helical+herringbone
+      ring/planetary/straight+helical bevel/racks) but the least maintained.
+    - **Bevel / (external) ring / cycloid → `py_gearworks`** (renamed from `gggears`;
+      `import py_gearworks`). build123d-native (no CadQuery bridge), Apache-2.0, more actively
+      maintained than `cq_gears` (v0.0.18, Jan 2026, 221 commits), and ships a `mesh_to()` helper
+      that places a mate at the correct center distance — directly useful for this order's
+      center-distance check. **Risk:** the project states its own API "has no stability yet";
+      not on PyPI (git-install only). No herringbone/planetary/worm coverage.
+    - **Planetary gearsets, racks → `cq_gears`** — only candidate with explicit builders for
+      either.
+    - **Worm gears → none of the three.** Not covered by any candidate's gear module. Flagged
+      as a v1 gap (skill says so explicitly rather than hand-modeling one) — see Known gaps.
+    - **No framework switch**, per the constraint: a CadQuery-built gear wraps into build123d at
+      the OCP shape level (`Solid(cq_shape.val().wrapped)`), STEP round-trip as the documented
+      fallback if that misbehaves for a given library version.
+  - **2. Env (`packages/agent-core/src/python/envManager.ts` — the roadmap's "package list"
+    scope; the file has no separate `src/`-less path, same shorthand slip WS-A/WS-E's entries
+    already noted):** `REQUIRED_PACKAGES` gained `bd_warehouse` only — `['build123d', 'trimesh',
+    'numpy', 'bd_warehouse']` — installed eagerly in the same single pip/uv call as the other
+    three (small, PyPI, no extra heavy wheel beyond build123d's own OCP dependency).
+    `extractPackageVersions`'s regex and `STAGE_PATTERNS`/progress-message strings were extended
+    to recognize it so the marker file and setup-screen progress text stay accurate. **Deliberate
+    deviation from a literal reading of "CadQuery-based libs install lazily":** `py_gearworks` is
+    build123d-native (not CadQuery-based) but was *also* kept lazy/optional rather than added to
+    `REQUIRED_PACKAGES`, because the project states outright that its API "has no stability yet."
+    Baking a pre-1.0, git-only dependency into every project's environment (gear or not) seemed
+    like the wrong risk trade for a feature most projects won't touch; `cq_gears` and
+    `py_gearworks` are both pip-installed **on demand**, pinned to a tag (`@v0.45-alpha` /
+    `@v0.0.18`, not `@main`) — documented in `references/gears.md` §1, mirroring the skill's
+    existing CadQuery lazy-install path. New/updated tests:
+    `packages/agent-core/src/python/envManager.test.ts` asserts `bd_warehouse` is actually in the
+    combined install call's args and that its progress-line pattern classifies.
+  - **3. Skill:** new `resources/skills/printable-cad/references/gears.md` — the library table
+    above, the CadQuery→build123d handoff snippet, the meshing math to confirm before generating
+    (module/PA/helix match across a pair, center distance `m·(z₁+z₂)/2` with the transverse-module
+    correction for helical, the undercut-minimum formula `2/sin(PA)²` — and its helical
+    "virtual tooth count" variant `teeth/cos(helix)³`), the gear `PARAMS` convention
+    (`MODULE`/`TEETH`/`PRESSURE_ANGLE`/`HELIX_ANGLE`/`BORE_D`/`BACKLASH`, exact constant names so
+    a future automated reader doesn't have to guess), the sibling-parts convention (§4: one
+    `display_model` call per gear, distinct `part` slugs, never a unioned/co-located multi-body
+    file), and the Phase-2 clarify questions ("what does it mesh with?" as mandatory as "what's
+    the hole for?", module-vs-DP, pressure angle default, spur/helical/herringbone tradeoffs,
+    bore/keyway, load-bearing, replacing-an-existing-gear caliper cross-check).
+  - **4. Verification:** `packages/verify/src/gearsSpecCheck.ts` (+ colocated
+    `gearsSpecCheck.test.ts`, 26 tests, all hand-computed fixture numbers — no python subprocess,
+    no live env needed, since every check here is a pure formula over the brief's `gear` features
+    plus (optionally) the modeled arrangement) implements `runGearSpecCheck`: matched
+    module/pressure-angle/helix-magnitude across each declared `meshesWith` pair (`blocking` on
+    mismatch — physically can't mesh), center distance vs. the modeled arrangement (`blocking`
+    when it deviates from `m·(z₁+z₂)/2` beyond a placement-precision tolerance, either direction —
+    same "hard conformance" treatment as layer 3's envelope/hole rows), backlash within a DFM
+    allowance (`suggestion` — see the contract-change below, the allowance itself doesn't exist
+    yet so this degrades to an `info` finding rather than inventing a number), and an
+    undercut-minimum-teeth warning (`suggestion`, using the helical "virtual tooth count" so a
+    helical gear isn't falsely flagged at a real tooth count that would undercut as a spur). Also
+    catches a dangling/asymmetric `meshesWith` and a same-hand helix pair (likely a crossed-axis
+    mix-up). Exported pure helpers (`minTeethToAvoidUndercut`, `virtualToothCount`,
+    `theoreticalCenterDistanceMm`) are unit-tested directly against the textbook figures (~17
+    teeth @ 20° PA, ~32 @ 14.5° PA) so the math itself is checkable independent of the finding
+    plumbing. **Not wired into `runVerification.ts`/`verifyIteration`** — see below.
+- **What's still open, and why it's a contract-change rather than WS-H code** (every one of these
+  sits in a file WS-H doesn't own per the Ground rules):
+  1. **The gear-spec check isn't wired into the live pipeline yet.** `runVerification.ts` (WS-C,
+     frozen) runs per-iteration/per-part; the gear-spec check needs the *whole* locked brief's
+     gear features plus every gear part's `Placement` at once (closer to WS-I's still-pending
+     cross-part interference check than to a per-part layer). Filed below with the exact proposed
+     wiring — it can share the same "assemble every part's placement" plumbing that interference
+     check needs.
+  2. **The agent has no way to author a `gear` feature into the brief at all.**
+     `packages/agent-core/brief/agentPatch.ts`'s `AgentFeatureShape` (WS-A-owned) only has
+     `hole`/`pocket`/`boss`/`fillet_chamfer`/`text`/`insert` variants — `update_brief` will reject
+     a gear patch outright. This is more load-bearing than it looks: product doc §5.7's "gears are
+     brief-first-class" doesn't hold until this lands. Filed below.
+  3. **Gear DFM numbers** (min module vs. nozzle, herringbone preference for FDM, backlash
+     allowance) **and a `SKILL.md` pointer line** — both `design-for-printing.md`/`SKILL.md`,
+     WS-B-owned. Filed below (this order's required coordination note).
+  4. A dedicated `'gear-spec'` `VerificationLayer` value (`src/shared/verification.ts`,
+     WS-0b-owned/frozen) would let `VerificationPanel.tsx` group these findings distinctly instead
+     of folding them into `'brief-conformance'` (the `runGearSpecCheck` `layer` option already
+     takes any `VerificationLayer` and defaults there, so re-tagging later is a one-line change at
+     the call site, not a `gearsSpecCheck.ts` rewrite).
+- **Known gaps (v1 scope, not contract-change-blocked — just not built):** worm gears (no
+  candidate library covers them; the skill says so rather than hand-modeling one); profile-shifted
+  gears (addendum modification shifts center distance; `gears.md`/`gearsSpecCheck.ts` both flag
+  this as unhandled rather than silently ignoring a requested shift); the center-distance check
+  assumes parallel, vertical(Z) bore axes (the normal flat-print orientation for a spur/helical
+  pair) and doesn't apply to bevel/crossed-axis arrangements — `pressureAngleDeg`/`moduleMm`
+  checks still run for a bevel pair, center-distance doesn't; and — the sandbox gap this order
+  itself anticipated — no live env here to pip-install any of the three libraries, so the actual
+  *generated* tooth profile (library output vs. the analytic involute curve) is spike-research-only
+  (README/docs claims), never runtime-verified against a real export, the same gap WS-C/WS-E/WS-I
+  each noted for their own sandbox-unreachable pieces.
 - **Why:** product doc §5.7 / architecture doc §13 — gears are a top functional-print
   request and the sharpest "properly" test: library-generated involutes with checkable
   meshing math, never hand-modeled teeth. Fully CLI-phase.
@@ -952,3 +1062,91 @@ Notes on the gates:
   would fetch one thumbnail view (e.g. `iso1`) per visible version row, lazily, the same
   on-demand shape `part:getModel` already uses instead of pushing every iteration's images
   up front.
+- **WS-H needs a `gear` variant in `update_brief`'s patch shape
+  (`packages/agent-core/brief/agentPatch.ts`, WS-A-owned).** `AgentFeatureShape` is a
+  `z.discriminatedUnion('kind', [...])` covering `hole`/`pocket`/`boss`/`fillet_chamfer`/`text`/
+  `insert` - there's no `gear` arm, even though `src/shared/brief.ts`'s `FeatureSchema` has had a
+  `gear` variant since WS-0c. Concrete consequence: the agent has **no way to call `update_brief`
+  with a gear feature at all** - product doc §5.7's "gears are brief-first-class" doesn't hold
+  today, and `packages/agent-core/brief/completeness.ts`'s existing `gear` handling (bore > 0) can
+  never be exercised end-to-end. Proposed shape, mirroring the existing arms' `_mm` naming and
+  `toInferredDim` wrapping:
+  ```ts
+  z.object({
+    kind: z.literal('gear'),
+    id: z.string(),
+    label: z.string().optional(),
+    module_mm: z.number().positive(),
+    teeth: z.number().int().positive(),
+    pressure_angle_deg: z.number().positive(),
+    helix_deg: z.number().optional(),
+    bore_mm: z.number(),
+    bore_tolerance_mm: z.number().optional(),
+    hub_diameter_mm: z.number().optional(),
+    hub_height_mm: z.number().optional(),
+    meshes_with: z.string().optional()
+  })
+  ```
+  `toDomainFeature`'s `gear` arm wraps `bore_mm`/`hub_*` with `toInferredDim` like every other
+  `Dim` field and passes `module_mm`/`teeth`/`pressure_angle_deg`/`helix_deg`/`meshes_with`
+  straight through (they're plain numbers/strings on `Feature`'s `gear` variant, not `Dim`s - see
+  `src/shared/brief.ts`'s own doc comment on why). While in that file: `completeness.ts` could
+  additionally check that a `meshesWith`-declared pair has matching module/PA (WS-0c's own comment
+  on `featureCheck` anticipated this: *"WS-H may layer on gear-specific completeness"*) - not
+  required to unblock generation, just a nicer completeness meter.
+
+- **WS-H needs `runVerification`/`verifyIteration` wiring for the new gear-spec check**
+  (`packages/verify/src/runVerification.ts` is WS-C-owned/frozen; `verifyIteration` lives in
+  `src/main/ipc.ts`). `packages/verify/src/gearsSpecCheck.ts`'s `runGearSpecCheck` is complete and
+  unit-tested (26 tests, `packages/verify/src/gearsSpecCheck.test.ts`) but isn't called from
+  anywhere yet - it needs data `runVerification` doesn't currently receive: every `gear` feature
+  across the **whole locked brief** (not just the active part) plus every gear part's
+  `PartRecord.placement.position` (`packages/agent-core/src/projects/store.ts`'s `listParts()`).
+  This is the same shape of gap as WS-I's still-open cross-part interference request just above -
+  both need `verifyIteration` to assemble a `partId → placement` map from the store before calling
+  into `packages/verify`, so land them together if both are in flight. Proposed: `verifyIteration`
+  builds `Array<{ featureId: string; axisPositionMm: [number,number,number] }>` by matching each
+  locked-brief `gear` feature's owning part (a `Feature.id` → `partId` correspondence doesn't exist
+  yet either - the simplest option is one gear feature per part, matched by naming convention or a
+  new optional `Feature.partId`/`PartRecord.featureId` back-reference; a fancier option ties into
+  whatever manifest-driven `featureId` ↔ part mapping the parts-vocabulary prompt work
+  (`prompts.ts`, still-open per the WS-I coordination note above) ends up needing anyway - worth
+  designing once, not twice), then calls `runGearSpecCheck` and folds its `findings`/`conformance`
+  into the report alongside layers 1-3. Backlash needs each gear part's manifest `BACKLASH`
+  `ParamEntry` too (`params/` extraction already handles arbitrary `PARAMS` names generically - no
+  extractor change needed, just reading the value at the call site).
+
+- **WS-H requests gear DFM numbers in `design-for-printing.md` and a pointer line in `SKILL.md`
+  (both WS-B-owned).** `references/gears.md` (new, WS-H-owned) covers the *math* (module/PA/helix
+  matching, center distance, undercut) but explicitly punts the *DFM* numbers to
+  `design-for-printing.md` per this repo's "never invent thresholds" convention - that file has no
+  gear section at all yet. Needed, per architecture doc §13: **minimum module vs. nozzle diameter**
+  (an FDM nozzle can't resolve arbitrarily fine teeth - needs a floor analogous to `MIN_WALL`),
+  **print-flat orientation guidance** (teeth-up, to keep the involute profile in-plane rather than
+  built from stepped layers - `gears.md` already states this but the authoritative number/rule
+  belongs in the DFM doc), **herringbone preference for FDM** (avoids the thrust-bearing need a
+  plain helical gear has, worth calling out as the "prefer this when in doubt" default), and a
+  **backlash allowance range** (min/max mm) - the last one is the blocking gap for
+  `gearsSpecCheck.ts`'s backlash check, which currently only emits an `info` "not checked yet"
+  finding because there's no number to check against. Once landed, `SKILL.md`'s reference-files
+  list (§"Reference files") should also gain a one-line pointer to `references/gears.md`, matching
+  how it lists `clarify-checklist.md`/`design-for-printing.md`/`build123d.md`/`cadquery.md` today.
+
+- **WS-H suggests a dedicated `'gear-spec'` `VerificationLayer` value**
+  (`src/shared/verification.ts`'s `VerificationLayerSchema`, WS-0b-owned/frozen - additive,
+  non-breaking per that file's own doc comment anticipating exactly this kind of later-milestone
+  layer addition). `gearsSpecCheck.ts`'s findings currently tag themselves `'brief-conformance'` by
+  default (closest existing semantic fit - spec vs. modeled, same as envelope/hole checks) via a
+  `layer` option that already accepts any `VerificationLayer`, so this is a one-line change at
+  whichever call site eventually wires it in (see the `runVerification` request above), not a
+  `gearsSpecCheck.ts` rewrite. Worth doing once `VerificationPanel.tsx` needs to group these
+  findings distinctly from layer 3's brief-conformance rows.
+
+- **WS-H notes layer 3's hole-conformance matching excludes gear bores.**
+  `runVerification.ts`'s layer-3 branch builds its `holes` array via
+  `.filter((feature) => feature.kind === 'hole')` - a gear's `bore` (a `Dim`, same shape as a
+  hole's `diameter`) is never included, so a gear's declared bore diameter is never checked against
+  the measured bore in the exported STEP. Proposed: either widen that filter to also map
+  `kind === 'gear'` features' `bore` into a `HoleSpec`, or note it as intentionally out of scope
+  (gears already get their own bore-adjacent checks in `gearsSpecCheck.ts` once wired in) - a
+  decision for whoever owns `runVerification.ts`'s wiring next, not a hard requirement.
