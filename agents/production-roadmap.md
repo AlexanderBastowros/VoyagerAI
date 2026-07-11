@@ -1090,7 +1090,16 @@ Notes on the gates:
   `PrinterProfileListResponse` (active pointer moves to `null` when the active profile is
   deleted), wired like `printerProfile:setActive`, plus a delete affordance in
   `PrinterProfilesPanel.tsx` (WS-E-owned, trivial once the channel exists).
-<<<<<<< HEAD
+  **→ LANDED (contracts follow-up, 2026-07-11):** the shape above, shipped as `printerProfile:delete`
+  (`src/shared/ipc.ts`/`ipc.test.ts`, `src/preload/api.ts`/`index.ts`), `PrinterProfileStore.delete`
+  (unit-tested: unknown-id throw, active-pointer-to-null, non-active delete leaves the pointer
+  alone, persists across store instances), a main handler gated on `agentSession.isBusy()` (unlike
+  `save`/`setActive`, since deleting the *active* profile out from under an in-flight turn would
+  invalidate that turn's already-baked-in system-prompt printer context) that broadcasts
+  `printerProfile:updated`, and a delete icon next to each profile's edit affordance in
+  `PrinterProfilesPanel.tsx` (confirms via `window.confirm` before calling it - no destructive
+  action anywhere else in the app to match an existing pattern against, so this is deliberately
+  the simplest thing that works).
 
 - **WS-D needs `render_views` threaded through `src/main/ipc.ts` + `session.ts` to actually run**
   (neither file is in WS-D's "Files owned" line, and this order's brief was explicit to touch
@@ -1257,15 +1266,3 @@ Notes on the gates:
   `webUtils.getPathForFile` in `src/preload/index.ts`, then `ImportDialog.tsx`'s `handleDrop` swaps
   its `(file as unknown as { path?: string }).path` probe for the new bridge call (a small,
   WS-G-owned follow-up once the bridge exists).
-=======
-  **→ LANDED (contracts follow-up, 2026-07-11):** the shape above, shipped as `printerProfile:delete`
-  (`src/shared/ipc.ts`/`ipc.test.ts`, `src/preload/api.ts`/`index.ts`), `PrinterProfileStore.delete`
-  (unit-tested: unknown-id throw, active-pointer-to-null, non-active delete leaves the pointer
-  alone, persists across store instances), a main handler gated on `agentSession.isBusy()` (unlike
-  `save`/`setActive`, since deleting the *active* profile out from under an in-flight turn would
-  invalidate that turn's already-baked-in system-prompt printer context) that broadcasts
-  `printerProfile:updated`, and a delete icon next to each profile's edit affordance in
-  `PrinterProfilesPanel.tsx` (confirms via `window.confirm` before calling it - no destructive
-  action anywhere else in the app to match an existing pattern against, so this is deliberately
-  the simplest thing that works).
->>>>>>> claude/ws-contracts-followups
