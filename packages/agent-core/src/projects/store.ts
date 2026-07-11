@@ -368,6 +368,49 @@ export class ProjectStore {
   }
 
   /**
+   * Duplicates a part: a new part with a `-copy` id/name suffix (uniqued against existing ids),
+   * a deep copy of the source's iteration history and active-iteration pointer, and a placement
+   * offset on the plate so the copy doesn't sit inside its source. The copied iteration records
+   * reference the *same* on-disk artifacts as the source - safe because iterations are immutable
+   * (never overwritten or deleted), so a duplicate costs no file copies. From there the copy's
+   * history diverges independently (a param edit or agent refinement records into the copy only).
+   * The duplicate becomes the active part (the user duplicates in order to arrange/refine it
+   * next) and is always born visible, even from a hidden source. Throws if `partId` isn't known.
+   */
+  async duplicatePart(partId: string): Promise<PartRecord[]> {
+    const record = await this.requireRecord()
+    const source = record.parts.find((p) => p.id === partId)
+    if (!source) throw new Error(`Unknown part: ${partId}`)
+
+    const existingIds = new Set(record.parts.map((p) => p.id))
+    let id = `${source.id}-copy`
+    let name = `${source.name} copy`
+    for (let n = 2; existingIds.has(id); n++) {
+      id = `${source.id}-copy-${n}`
+      name = `${source.name} copy ${n}`
+    }
+
+    const copy: StoredPart = {
+      id,
+      name,
+      createdAt: new Date().toISOString(),
+      iterations: structuredClone(source.iterations),
+      activeIteration: source.activeIteration,
+      // Diagonal plate offset (world x/z; index 1 is the ground-clamped height) so the duplicate
+      // appears next to its source instead of z-fighting inside it.
+      placement: {
+        position: [source.placement.position[0] + 25, source.placement.position[1], source.placement.position[2] + 25],
+        rotation: [source.placement.rotation[0], source.placement.rotation[1], source.placement.rotation[2]]
+      },
+      visible: true
+    }
+    record.parts.push(copy)
+    record.activePartId = id
+    await this.writeRecord(this.dirFor(record.id), record)
+    return record.parts.map(toPartRecord)
+  }
+
+  /**
    * Records a new versioned iteration for a part (called by the `display_model`
    * MCP tool once an export validates, and by WS-B's `param:update`). The part
    * is `entry.partId` (created on first use with `entry.partName`), or the

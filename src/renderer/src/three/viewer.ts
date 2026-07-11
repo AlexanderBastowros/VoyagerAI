@@ -3,12 +3,11 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import type { Placement } from '../../../shared/ipc'
 import { MAIN_PART_ID } from '../../../shared/ipc'
-import { colors } from '../colors'
-import { applyPlacement, groundSnap } from './placement'
+import { colors, partColorFor, partPalette } from '../colors'
+import { applyPlacement, groundClamp } from './placement'
 import { easeInOutCubic, upForDirection, ViewCubeGizmo, type ViewRegion } from './viewCube'
 
 const BACKGROUND_COLOR = colors.bgApp
-const MODEL_COLOR = colors.accent
 /** Length (mm) of each axis line drawn by the orientation gizmo - large enough to read against
  *  the 200mm grid without dwarfing small parts. */
 const AXES_SIZE = 35
@@ -24,12 +23,14 @@ interface ViewTween {
   startTime: number
 }
 
-/** One rendered part (WS-I): its mesh, current placement, and visibility. The mesh's transform is
- *  the placement (layout only - the geometry itself is never modified). */
+/** One rendered part (WS-I): its mesh, current placement, visibility, and color. The mesh's
+ *  transform is the placement (layout only - the geometry itself is never modified). */
 interface PartView {
   mesh: THREE.Mesh
   placement: Placement
   visible: boolean
+  /** The part's material color - one distinct palette hue per part in a multi-part project. */
+  color: string
 }
 
 /**
@@ -179,7 +180,7 @@ export class ModelViewer {
    *  origin (so an identity-placement part rests on the grid in the +X/+Y/+Z octant and its local
    *  coords equal world coords - what selection/measurement assume); the *placement* is then applied
    *  as the mesh transform, never baked into the geometry (layout != geometry, §14). */
-  private buildMesh(buffer: ArrayBuffer): THREE.Mesh {
+  private buildMesh(buffer: ArrayBuffer, color: string): THREE.Mesh {
     const loader = new STLLoader()
     const geometry = loader.parse(buffer)
     geometry.computeVertexNormals()
@@ -192,12 +193,23 @@ export class ModelViewer {
     geometry.computeBoundingSphere()
 
     const material = new THREE.MeshStandardMaterial({
-      color: MODEL_COLOR,
+      color,
       metalness: 0.1,
       roughness: 0.65,
       wireframe: this.wireframe
     })
     return new THREE.Mesh(geometry, material)
+  }
+
+  /** The lowest palette slot no loaded part is wearing - so a part loaded before the store's parts
+   *  list arrives (e.g. a fresh `model:displayed`) still gets a distinct color. The parts-sync
+   *  effect then re-applies canonical per-index colors via `setPartColor`. */
+  private nextFreeColor(): string {
+    const used = new Set([...this.parts.values()].map((view) => view.color))
+    for (let i = 0; i < partPalette.length; i++) {
+      if (!used.has(partColorFor(i))) return partColorFor(i)
+    }
+    return partColorFor(this.parts.size)
   }
 
   /**
@@ -206,7 +218,7 @@ export class ModelViewer {
    * part loaded becomes focused and frames the camera; additional parts leave the camera put so the
    * view doesn't jump around as a multi-part project fills in.
    */
-  loadPart(partId: string, buffer: ArrayBuffer, placement?: Placement, visible = true): void {
+  loadPart(partId: string, buffer: ArrayBuffer, placement?: Placement, visible = true, color?: string): void {
     // Selection/measurement overlays refer to the old geometry - drop them on any (re)load.
     this.setHighlightObject(null)
     this.setMeasurementObject(null)
@@ -214,20 +226,23 @@ export class ModelViewer {
     const existing = this.parts.get(partId)
     const requested = placement ?? existing?.placement ?? { position: [0, 0, 0], rotation: [0, 0, 0] }
     const resolvedVisible = existing ? existing.visible : visible
+    // A re-displayed (refined) part keeps the color it already wears; a new part takes the
+    // caller's color (syncParts passes the canonical per-index one) or the next free palette hue.
+    const resolvedColor = existing?.color ?? color ?? this.nextFreeColor()
     if (existing) this.disposeMesh(existing.mesh)
 
-    const mesh = this.buildMesh(buffer)
-    // Ground-snap against THIS geometry's bounds: a re-displayed (refined) part reuses its prior
-    // placement, whose resting y was computed for the old geometry - re-deriving y here keeps the
-    // part resting on the plate instead of floating/sinking. Ground-snap is thus the invariant
-    // everywhere a placement is applied (here + setPartPlacement), so the store-sync effect can't
-    // un-rest a part either.
+    const mesh = this.buildMesh(buffer, resolvedColor)
+    // Ground-clamp against THIS geometry's bounds: a re-displayed (refined) part reuses its prior
+    // placement, whose height was derived for the old geometry - re-clamping here keeps the part
+    // from ever sinking below the plate, while preserving any deliberate vertical lift. The clamp
+    // is the invariant everywhere a placement is applied (here + setPartPlacement), so the
+    // store-sync effect can't sink a part either.
     const box = mesh.geometry.boundingBox
-    const resolvedPlacement = box ? groundSnap(requested, box.min, box.max) : requested
+    const resolvedPlacement = box ? groundClamp(requested, box.min, box.max) : requested
     applyPlacement(mesh, resolvedPlacement)
     mesh.visible = resolvedVisible
     this.scene.add(mesh)
-    this.parts.set(partId, { mesh, placement: resolvedPlacement, visible: resolvedVisible })
+    this.parts.set(partId, { mesh, placement: resolvedPlacement, visible: resolvedVisible, color: resolvedColor })
 
     if (!this.focusedPartId || !this.parts.has(this.focusedPartId)) this.focusedPartId = partId
     if (this.parts.size === 1) this.frameCameraOn(mesh.geometry.boundingSphere)
@@ -246,16 +261,17 @@ export class ModelViewer {
     else this.clear()
   }
 
-  /** Updates a part's placement (layout only), ground-snapped so the part rests on the plate for its
-   *  current geometry (see `loadPart`). No-op for an unknown part. */
+  /** Updates a part's placement (layout only), ground-clamped so the part never sinks below the
+   *  plate for its current geometry, while a deliberate vertical lift is preserved (see
+   *  `loadPart`). No-op for an unknown part. */
   setPartPlacement(partId: string, placement: Placement): void {
     const view = this.parts.get(partId)
     if (!view) return
     view.mesh.geometry.computeBoundingBox()
     const box = view.mesh.geometry.boundingBox
-    const snapped = box ? groundSnap(placement, box.min, box.max) : placement
-    view.placement = snapped
-    applyPlacement(view.mesh, snapped)
+    const clamped = box ? groundClamp(placement, box.min, box.max) : placement
+    view.placement = clamped
+    applyPlacement(view.mesh, clamped)
   }
 
   /** Shows/hides a part. No-op for an unknown part. */
@@ -264,6 +280,15 @@ export class ModelViewer {
     if (!view) return
     view.visible = visible
     view.mesh.visible = visible
+  }
+
+  /** Recolors a part's material (the parts-sync effect applies the canonical per-index palette
+   *  color once the store's parts list is known). No-op for an unknown part. */
+  setPartColor(partId: string, color: string): void {
+    const view = this.parts.get(partId)
+    if (!view || view.color === color) return
+    view.color = color
+    ;(view.mesh.material as THREE.MeshStandardMaterial).color.set(color)
   }
 
   /** Removes and disposes a part's mesh. Refocuses another part if the removed one was focused. */

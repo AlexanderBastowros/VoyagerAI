@@ -86,4 +86,12 @@ scoping properly before committing to a design.
   the whole agent loop (`src/main/agent/session.ts`) is built around the Claude Agent SDK's tool
   calling, permission model, and streaming events — a different provider likely means either an
   adapter layer that normalizes to the SDK's event shape, or accepting reduced functionality
-  (no custom tools/MCP) for non-Anthropic providers. Worth a design spike before implementation.
+  (no custom tools/MCP) for non-Anthropic providers. Worth a design spike before implementation.- **Path-containment guards are lexical only — symlinks inside the project dir escape them.**
+  `containedAbsPath`/`resolveExportSource` (`packages/agent-core/src/projects/exportResolver.ts`)
+  and `resolveWithinProject` (`src/main/agent/mcpTools.ts` / `packages/agent-core/src/agent/paths.ts`)
+  all do `resolve()`+`relative()` string checks with no `realpath`/`lstat`, and the export/read
+  paths then follow symlinks. An agent-session `ln -s ~/.ssh/id_rsa outputs/part.stl` recorded via
+  `display_model` would flow out through a later export. Confirmed by adversarial review of the
+  WS-F all-parts zip (2026-07-10); pre-existing pattern codebase-wide, so fix it centrally: add a
+  `realpath`-based containment check at one choke point (e.g. a shared `resolveWithinProject`)
+  rather than per caller.

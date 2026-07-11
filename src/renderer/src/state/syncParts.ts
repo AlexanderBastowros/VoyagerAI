@@ -1,4 +1,5 @@
 import type { ModelViewer } from '../three/viewer'
+import { partColorFor } from '../colors'
 import { useAppStore } from './appStore'
 
 /**
@@ -18,9 +19,11 @@ export async function syncViewportParts(viewer: ModelViewer | null): Promise<voi
   // the gizmo detached and focus a no-op until the user manually re-selects a part.
   if (viewer) {
     viewer.clear()
-    for (const part of parts) {
+    for (const [index, part] of parts.entries()) {
       const model = await window.voyager.part.getModel({ partId: part.id })
-      if (model) viewer.loadPart(part.id, model.stlBuffer, part.placement, part.visible)
+      // Each part wears its list-position palette color (distinct hues in a multi-part project;
+      // index 0 is the accent, so a single-part project keeps the classic model color).
+      if (model) viewer.loadPart(part.id, model.stlBuffer, part.placement, part.visible, partColorFor(index))
     }
     if (activePartId) viewer.focusPart(activePartId)
     viewer.frameAll()
