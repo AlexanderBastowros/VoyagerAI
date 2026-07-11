@@ -161,6 +161,7 @@ export function ChatPanel(): React.JSX.Element {
   const setFullStream = useAppStore((state) => state.setFullStream)
   const activeProjectId = useAppStore((state) => state.activeProjectId)
   const projects = useAppStore((state) => state.projects)
+  const selectedPartId = useAppStore((state) => state.selectedPartId)
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const [stopping, setStopping] = useState(false)
@@ -236,7 +237,8 @@ export function ChatPanel(): React.JSX.Element {
       const response = await window.voyager.agent.sendMessage({
         text,
         selectionContext: selectionAtSend,
-        attachments: attachmentsAtSend
+        attachments: attachmentsAtSend,
+        focusedPartId: selectedPartId ?? undefined
       })
       if (!response.accepted) {
         setAgentBusy(false)

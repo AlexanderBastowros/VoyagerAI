@@ -27,8 +27,10 @@ import type {
   PartSetActiveRequest,
   PartSetPlacementRequest,
   PartSetVisibilityRequest,
+  Placement,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrinterProfileDeleteRequest,
   PrinterProfileListResponse,
   PrinterProfileSaveRequest,
   PrinterProfileSetActiveRequest,
@@ -111,6 +113,15 @@ function conformanceCheckScriptPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'verify', 'conformance_check.py')
     : join(__dirname, '../../packages/verify/python/conformance_check.py')
+}
+
+/** WS-I follow-up: the cross-part interference check's script - same dev/packaged resolution as
+ *  the other `packages/verify` scripts above (the existing `verify` extraResources entry already
+ *  copies the whole `packages/verify/python` directory, so this needed no build-config change). */
+function partInterferenceScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'verify', 'part_interference.py')
+    : join(__dirname, '../../packages/verify/python/part_interference.py')
 }
 
 function broadcast(channel: string, payload: unknown): void {
@@ -237,6 +248,22 @@ export function registerIpcHandlers(): void {
     // recorded a printer falls back to the app-level active profile (WS-E - "verification layer 2
     // reads them"). Merged only into this run's input, never persisted onto the brief.
     const activeProfile = brief.printer ? null : await printerProfileStore.getActive()
+
+    // WS-I follow-up: assemble every part's active-iteration STL + placement so layer 2 can also
+    // check the *placed* multi-part arrangement for interpenetration, not just this one part's own
+    // mesh. `runVerification` no-ops the check itself below 2 parts, so a single-part project (the
+    // common case) pays no extra cost beyond this cheap `listParts()`/`activeIterationRecord()` read.
+    const parts = await projectStore.listParts()
+    const partEntries = (
+      await Promise.all(
+        parts.map(async (part): Promise<{ partId: string; stlPath: string; placement: Placement } | null> => {
+          const active = await projectStore.activeIterationRecord(part.id)
+          if (!active) return null
+          return { partId: part.id, stlPath: join(projectDir, active.stlPath), placement: part.placement }
+        })
+      )
+    ).filter((entry): entry is { partId: string; stlPath: string; placement: Placement } => entry !== null)
+
     const report = await runVerification({
       iteration: iteration.n,
       pythonPath: envManager.pythonPath(),
@@ -244,6 +271,8 @@ export function registerIpcHandlers(): void {
       geometryReportScriptPath: geometryReportScriptPath(),
       conformanceCheckScriptPath: conformanceCheckScriptPath(),
       extractParamsScriptPath: extractParamsScriptPath(),
+      partInterferenceScriptPath: partInterferenceScriptPath(),
+      parts: partEntries,
       scriptPath: join(projectDir, iteration.scriptSnapshotPath ?? iteration.scriptPath),
       stlPath: join(projectDir, iteration.stlPath),
       stepPath: iteration.stepPath ? join(projectDir, iteration.stepPath) : undefined,
@@ -385,7 +414,12 @@ export function registerIpcHandlers(): void {
       const notReady = setupIncompleteReason()
       if (notReady) return { accepted: false, reason: notReady }
 
-      return agentSession.sendMessage(request.text, request.selectionContext ?? null, request.attachments)
+      return agentSession.sendMessage(
+        request.text,
+        request.selectionContext ?? null,
+        request.attachments,
+        request.focusedPartId
+      )
     }
   )
 
@@ -580,11 +614,15 @@ export function registerIpcHandlers(): void {
   })
 
   // -- WS-E Printer profiles ------------------------------------------------
-  // App-level (see printerProfileStore above), so unlike the project-mutating handlers these
-  // don't need the isBusy() gate - the agent only ever reads profiles (at query start) or writes
-  // through the same serialized store. Mutations broadcast printerProfile:updated so every
-  // window's panel stays in sync (the agent's save_printer_profile tool broadcasts via the
-  // emitPrinterProfilesUpdated dep above).
+  // App-level (see printerProfileStore above), so unlike the project-mutating handlers list/save/
+  // setActive don't need the isBusy() gate - the agent only ever reads profiles (at query start) or
+  // writes through the same serialized store. `delete` is gated (WS-E follow-up): removing the
+  // *active* profile out from under an in-flight turn would invalidate the printer context already
+  // baked into that turn's system prompt (see `formatPrinterProfileContext`), which only gets
+  // re-read on the next `ensureStarted()` - the same reasoning the part-mutating handlers below use
+  // for their own isBusy() gates. Mutations broadcast printerProfile:updated so every window's panel
+  // stays in sync (the agent's save_printer_profile tool broadcasts via the emitPrinterProfilesUpdated
+  // dep above).
 
   ipcMain.handle(
     IPC.printerProfileList,
@@ -604,6 +642,18 @@ export function registerIpcHandlers(): void {
     IPC.printerProfileSetActive,
     async (_event, request: PrinterProfileSetActiveRequest): Promise<PrinterProfileListResponse> => {
       const response = await printerProfileStore.setActive(request.id)
+      broadcast(IPC.printerProfileUpdated, response)
+      return response
+    }
+  )
+
+  ipcMain.handle(
+    IPC.printerProfileDelete,
+    async (_event, request: PrinterProfileDeleteRequest): Promise<PrinterProfileListResponse> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before deleting a printer profile.')
+      }
+      const response = await printerProfileStore.delete(request.id)
       broadcast(IPC.printerProfileUpdated, response)
       return response
     }

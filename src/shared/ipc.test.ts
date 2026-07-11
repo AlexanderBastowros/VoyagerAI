@@ -57,6 +57,7 @@ describe('IPC channel names', () => {
     expect(IPC.printerProfileList).toBe('printerProfile:list')
     expect(IPC.printerProfileSave).toBe('printerProfile:save')
     expect(IPC.printerProfileSetActive).toBe('printerProfile:setActive')
+    expect(IPC.printerProfileDelete).toBe('printerProfile:delete')
     expect(IPC.printerProfileUpdated).toBe('printerProfile:updated')
     expect(IPC.modelExportPackage).toBe('model:exportPackage')
     expect(IPC.modelImport).toBe('model:import')

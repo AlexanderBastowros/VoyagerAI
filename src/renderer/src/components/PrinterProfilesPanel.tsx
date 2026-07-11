@@ -9,6 +9,7 @@ import TextField from '@mui/material/TextField'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import AddIcon from '@mui/icons-material/Add'
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined'
 import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
@@ -157,6 +158,24 @@ export function PrinterProfilesPanel(): React.JSX.Element {
     }
   }
 
+  async function deleteProfile(profile: PrinterProfileRef): Promise<void> {
+    if (busy) return
+    if (!window.confirm(`Delete the printer profile "${profile.name}"? This can't be undone.`)) return
+    setBusy(true)
+    setError(null)
+    try {
+      const response = await window.voyager.printerProfile.delete({ id: profile.id })
+      setPrinterProfiles(response.profiles, response.activeId)
+      // The form was open on the profile just deleted - drop it rather than leave a stale edit
+      // buffer pointing at an id that no longer exists.
+      setDraft((prev) => (prev?.id === profile.id ? null : prev))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete the printer profile.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   function openForm(profile: PrinterProfileRef | null): void {
     setDraft(profile ? draftFromProfile(profile) : EMPTY_DRAFT)
     setError(null)
@@ -250,6 +269,21 @@ export function PrinterProfilesPanel(): React.JSX.Element {
                           }}
                         >
                           <EditOutlinedIcon sx={{ fontSize: 16 }} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                    <Tooltip title={`Delete ${profile.name}`}>
+                      <span>
+                        <IconButton
+                          size="small"
+                          aria-label={`Delete ${profile.name}`}
+                          disabled={busy}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            void deleteProfile(profile)
+                          }}
+                        >
+                          <DeleteOutlineIcon sx={{ fontSize: 16 }} />
                         </IconButton>
                       </span>
                     </Tooltip>

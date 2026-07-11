@@ -98,7 +98,22 @@ export const briefAgentPatchShape = {
   features: z
     .array(AgentFeatureShape)
     .optional()
-    .describe('Features to add or revise (matched by `id`) - holes, pockets, bosses, fillets/chamfers, text, inserts.')
+    .describe('Features to add or revise (matched by `id`) - holes, pockets, bosses, fillets/chamfers, text, inserts.'),
+  // WS-E follow-up: lets the agent record the project's actual printer into the brief - e.g. when
+  // the user says "this project is for a different printer" - so `verifyIteration`'s
+  // brief-printer-first logic (src/main/ipc.ts) judges bed-fit against the right printer instead
+  // of the app-level active saved profile. Any one field is enough to start/extend the brief's
+  // `printer` record; `mergeAgentPatch` fills the rest from what's already there (or 0/'' the
+  // first time), mirroring how every other patch field only touches what's present.
+  printer_name: z.string().optional().describe("The printer's name, e.g. \"Prusa MK4\"."),
+  printer_bed_x_mm: z.number().optional().describe('Printer bed width (X) in millimeters.'),
+  printer_bed_y_mm: z.number().optional().describe('Printer bed depth (Y) in millimeters.'),
+  printer_bed_z_mm: z.number().optional().describe('Printer bed height (Z) in millimeters.'),
+  printer_nozzle_mm: z.number().optional().describe('Nozzle diameter in millimeters.'),
+  printer_materials: z
+    .array(z.string())
+    .optional()
+    .describe('Replaces the full list of materials on hand for this printer.')
 }
 
 const BriefAgentPatchSchema = z.object(briefAgentPatchShape)
@@ -202,6 +217,33 @@ export function mergeAgentPatch(base: DesignBrief, patch: BriefAgentPatch): Desi
   if (patch.load_bearing !== undefined) next.constraints.loadBearing = patch.load_bearing
   if (patch.exclusions !== undefined) next.exclusions = patch.exclusions
   if (patch.acceptance !== undefined) next.acceptance = patch.acceptance
+
+  // WS-E follow-up: any printer field present starts/extends `next.printer` (a full
+  // `PrinterProfileRef`, not toleranced `Dim`s - it has no provenance concept, like the other
+  // plain scalar fields above). Fields the patch doesn't mention fall back to whatever the brief
+  // already had recorded, so the agent can e.g. record just the nozzle without clobbering a bed
+  // size set earlier in the conversation. `id` is left as whatever the brief already carries (or
+  // empty for a brand-new record) - this is the project's ad-hoc printer, not a pointer at a saved
+  // profile, and nothing downstream reads it.
+  const printerPatchPresent =
+    patch.printer_name !== undefined ||
+    patch.printer_bed_x_mm !== undefined ||
+    patch.printer_bed_y_mm !== undefined ||
+    patch.printer_bed_z_mm !== undefined ||
+    patch.printer_nozzle_mm !== undefined ||
+    patch.printer_materials !== undefined
+  if (printerPatchPresent) {
+    const existing = base.printer
+    next.printer = {
+      id: existing?.id ?? '',
+      name: patch.printer_name ?? existing?.name ?? '',
+      bedXMm: patch.printer_bed_x_mm ?? existing?.bedXMm ?? 0,
+      bedYMm: patch.printer_bed_y_mm ?? existing?.bedYMm ?? 0,
+      bedZMm: patch.printer_bed_z_mm ?? existing?.bedZMm ?? 0,
+      nozzleDiameterMm: patch.printer_nozzle_mm ?? existing?.nozzleDiameterMm ?? 0,
+      materials: patch.printer_materials ?? existing?.materials ?? []
+    }
+  }
 
   if (patch.features) {
     for (const featureInput of patch.features) {

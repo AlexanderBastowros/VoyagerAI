@@ -140,6 +140,29 @@ export class PrinterProfileStore {
     })
   }
 
+  /**
+   * Removes a saved profile. Throws on an unknown id (mirrors `setActive`) - a mis-added printer
+   * previously had no escape hatch short of hand-editing `printer-profiles.json` (WS-E follow-up).
+   * The active pointer moves to `null` when the deleted profile was the active one - it never
+   * silently promotes some other profile to active in its place, so the system prompt's
+   * "ask, then offer to save" path (see `formatPrinterProfileContext`) picks back up cleanly rather
+   * than the agent silently continuing under a profile the user never chose.
+   */
+  async delete(id: string): Promise<PrinterProfileList> {
+    return this.enqueue(async () => {
+      const current = await this.readForMutation()
+      if (!current.profiles.some((profile) => profile.id === id)) {
+        throw new Error(`Unknown printer profile: ${id}`)
+      }
+      const next: PrinterProfileList = {
+        profiles: current.profiles.filter((profile) => profile.id !== id),
+        activeId: current.activeId === id ? null : current.activeId
+      }
+      await this.write(next)
+      return next
+    })
+  }
+
   // -- internal -------------------------------------------------------------
 
   /** Runs mutations one at a time, in call order, regardless of earlier failures. */

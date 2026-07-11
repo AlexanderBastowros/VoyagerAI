@@ -26,6 +26,7 @@ import type {
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrinterProfileDeleteRequest,
   PrinterProfileListResponse,
   PrinterProfileSaveRequest,
   PrinterProfileSetActiveRequest,
@@ -143,6 +144,9 @@ export interface VoyagerApi {
     list: () => Promise<PrinterProfileListResponse>
     save: (request: PrinterProfileSaveRequest) => Promise<PrinterProfileListResponse>
     setActive: (request: PrinterProfileSetActiveRequest) => Promise<PrinterProfileListResponse>
+    /** Permanently removes a saved profile; the active pointer moves to null if it was active.
+     *  Rejects if Voyager is mid-turn - stop or wait first. */
+    delete: (request: PrinterProfileDeleteRequest) => Promise<PrinterProfileListResponse>
     /** Subscribe to profile-list changes; returns an unsubscribe function. */
     onUpdated: (callback: (response: PrinterProfileListResponse) => void) => () => void
   }

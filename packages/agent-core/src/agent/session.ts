@@ -20,7 +20,7 @@ import { BriefStore } from '../../brief/store'
 import { createVoyagerMcpServer } from '../../tools'
 import type { VoyagerMcpEmission, VoyagerPrinterProfileStore } from '../../tools'
 import { decideToolPermission } from './permissions'
-import { buildUserMessage, formatRevertContext, systemPromptAppend } from './prompts'
+import { buildUserMessage, formatArrangementContext, formatRevertContext, systemPromptAppend } from './prompts'
 
 /** Denial message returned to Claude on a declined/timed-out/aborted approval request - steers it
  *  toward the always-allowed path (./outputs/ inside the project dir) instead of retrying blindly. */
@@ -444,11 +444,17 @@ export class AgentSession {
   /**
    * Accepts one user turn. Returns `accepted: false` (with a reason the
    * renderer displays) instead of throwing for all expected refusals.
+   *
+   * `focusedPartId` (WS-I multi-part follow-up, architecture doc §14) is the part the user has
+   * focused in the parts panel/viewport when sending, if any - passed through to the "Part
+   * arrangement" context block (see `formatArrangementContext`) so the agent knows which part an
+   * otherwise-ambiguous change targets.
    */
   async sendMessage(
     text: string,
     selectionContext?: SelectionSummary | null,
-    attachments?: ChatAttachment[]
+    attachments?: ChatAttachment[],
+    focusedPartId?: string
   ): Promise<SendMessageResponse> {
     if (this.busy) {
       return {
@@ -489,18 +495,28 @@ export class AgentSession {
     // recorded iteration - inject a "Reverted model" block so the agent branches from that
     // version's snapshotted script rather than the later versions it produced. Stateless: once the
     // agent regenerates, `recordIteration` sets activeIteration == latest and this stops injecting.
-    const [active, latest] = await Promise.all([
+    const [active, latest, parts] = await Promise.all([
       this.deps.projectStore.activeIterationRecord(),
-      this.deps.projectStore.latestIteration()
+      this.deps.projectStore.latestIteration(),
+      this.deps.projectStore.listParts()
     ])
     const revertContext =
       active && latest && active.n < latest.n ? formatRevertContext(active, latest.n) : null
+    // Only worth surfacing once a project actually has more than one part - a single-part project
+    // has nothing to disambiguate, and the block would just be noise (see `formatArrangementContext`).
+    const arrangementContext =
+      parts.length > 1
+        ? formatArrangementContext(
+            parts.map((part) => ({ id: part.id, name: part.name, placement: part.placement })),
+            focusedPartId ?? null
+          )
+        : null
 
     this.queue?.push({
       type: 'user',
       message: {
         role: 'user',
-        content: buildUserMessage(text, selectionContext, attachments, revertContext)
+        content: buildUserMessage(text, selectionContext, attachments, revertContext, arrangementContext)
       },
       parent_tool_use_id: null
     })
