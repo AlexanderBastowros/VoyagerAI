@@ -466,7 +466,7 @@ Notes on the gates:
   nozzle/bed questions and the generated script's `BED_X/BED_Y/BED_Z/NOZZLE` constants
   match the profile.
 
-### WS-F — Graduation package + per-part export · **Status: TODO (partial)** · depends: 0a, 0b, **WS-I** (parts model)
+### WS-F — Graduation package + per-part export · **Status: DONE** · depends: 0a, 0b, **WS-I** (parts model)
 
 - **Partial (maintainer-directed fix, 2026-07-10):** the "export all parts" slice landed —
   `model:export` now honors `partId`, and a multi-part project with no explicit part saves
@@ -476,6 +476,41 @@ Notes on the gates:
   surfaces parts left out (no iterations / no STEP) in the success snackbar. Still open:
   3MF, plate export, package builder (`exportPackage.ts` can reuse `writeZip`), "Export…"
   menu, per-part export UI.
+- **Landed (2026-07-11):** the remainder. **3MF** resolves per part exactly like STL/STEP now
+  (`resolveExportSource`/`resolveAllPartsExportSources` widened to `SingleFileExportFormat =
+  'stl'|'step'|'3mf'`) via a convention-derived sibling path (`deriveThreeMfPath`, same
+  "no new field needed" pattern `manifestPathForStl` already uses) that `src/main/ipc.ts`
+  probes for with a real `stat()` before trusting it - degrades to the existing "no export"
+  messaging when absent, since `ProjectIteration` has no `threeMfPath` field (SKILL.md only
+  "offers" 3MF today; see the contract-change request below). **Plate export** (new
+  `packages/agent-core/src/projects/plateStl.ts`, dependency-free, unit-tested): a pure
+  binary-STL parser/writer plus a hand-rolled XYZ-Euler rotation matrix (bit-for-bit the same
+  formula as three.js's `Matrix4.makeRotationFromEuler`, so agent-core takes no `three`
+  dependency) that origin-aligns each part's geometry, ground-clamps against *that*
+  iteration's own bounds (mirrors `loadPart()`'s re-clamp-on-load reasoning - a stale
+  persisted `placement.position[1]` can't sink a refined part below the plate), then merges
+  every **visible** part into one binary STL; wired into `model:export`'s `'plate'` branch
+  (`partId` ignored, parts without a visible iteration reported via `skippedParts`).
+  **Package builder** (new `packages/agent-core/src/projects/exportPackage.ts`, pure logic
+  with injected `PackageFsDeps` so it unit-tests against an in-memory fake): per-part
+  `{part}_v{N}.step/.3mf/.stl/.py` sections (bundling only what `fileExists` confirms -
+  format-honesty degrade, mirroring mesh-lineage parts having no STEP), one combined
+  `manifest.json` (keyed by part id), the project's *currently* locked brief as a single
+  `brief.v{K}.json` (omitted if never locked), and a generated `README.md` (re-run with
+  `pip install build123d`, import instructions, per-part gaps, which locked brief version
+  each part was generated against) - wired into the `model:exportPackage` stub-replacement
+  point in `src/main/ipc.ts`. **"Export…" menu** in `ViewportControls.tsx` replaces the two
+  STL/STEP buttons with one dropdown: "This part" (STL/STEP/3MF, scoped to the focused part)
+  and "All parts" (STL/STEP/3MF zips) sections on a multi-part project, plus "Export plate"
+  and "Export package" always - same "Exporting …"/silent-cancel/verbatim-error conventions.
+  Quality gate green: 474 tests (27 new: 6 more `exportResolver` 3MF cases, 10 new
+  `exportPackage.test.ts`, 11 new `plateStl.test.ts`), typecheck, build. Also validated with
+  real tools in scratch (not committed) integration tests: a generated package zip passed
+  `unzip -t`/`-l` and round-tripped its STL byte-for-byte through a real `unzip -o` extract;
+  a two-part plate STL was written to disk and its binary header/triangle count re-parsed
+  independently, confirming both parts' geometry rests on the plate after a 45° rotation.
+  Not runtime-verified in a live Electron window in this sandbox (same CLI/Python-env gap
+  WS-B/C/I noted).
 - **Why:** architecture doc §12.1, §14 / product doc §5.3, §5.5 — anti-lock-in bundle,
   plus the fix for "everything merges into one file": exports resolve **per part**.
 - **Scope:** part-scoped export resolution (`exportResolver` generalized to an artifact
@@ -486,8 +521,11 @@ Notes on the gates:
   generated README); "Export…" menu in `ViewportControls` (per part / all / plate /
   package); skill note ensuring 3MF is always produced.
 - **Files owned:** `packages/agent-core/projects/exportResolver.ts`,
-  `packages/agent-core/projects/exportPackage.ts`,
-  `src/renderer/src/components/ViewportControls.tsx` (export menu only).
+  `packages/agent-core/projects/exportPackage.ts`, `packages/agent-core/projects/plateStl.ts`
+  (new sibling file for the plate-export STL transform/merge, per this order's own text),
+  `src/renderer/src/components/ViewportControls.tsx` (export menu only), plus the
+  `model:export`/`model:exportPackage` handler bodies (designated stub-replacement points) in
+  `src/main/ipc.ts` and additive `packages/agent-core/src/index.ts` exports.
 - **Done when:** a two-part project exports each part as its own file, "all parts" as a
   zip of separate files, and a plate STL matching the viewport arrangement; the exported
   package opens: STEP imports into Fusion/Onshape, script re-runs with
@@ -694,6 +732,22 @@ Notes on the gates:
   handler body (a designated stub-replacement point) gained the zip branch and now passes
   `request.partId` through to `activeIterationRecord`. No channel names or preload wiring
   changed; `src/preload/api.ts` only had its `model.export` doc comment refreshed.
+
+- **WS-F 3MF export needs a SKILL.md Phase 4 change (WS-B-owned) — always produce 3MF, not just
+  "offer" it.** `resolveExportSource`/`resolveAllPartsExportSources`/`exportPackage.ts` (WS-F,
+  2026-07-11) now resolve a part's 3MF export the same way as STL/STEP - but purely by
+  *convention*: `deriveThreeMfPath` computes the sibling path (`<part>_vN.3mf` beside the STL,
+  same pattern `manifestPathForStl` already uses), and `src/main/ipc.ts` probes for it with a
+  real `stat()` before trusting it, since `ProjectIteration` carries no `threeMfPath` field (no
+  contract change needed for the *resolution* mechanism itself). SKILL.md's Phase 4 currently
+  says only "Offer **3MF** as well when the user's slicer prefers it" (a conditional, model-
+  discretion action) - so a real project mostly won't have the sibling file, and every 3MF
+  export/package section quietly degrades to "no 3MF export" even though the mechanism is fully
+  wired end-to-end. Proposed change (WS-B-owned `resources/skills/printable-cad/SKILL.md`):
+  change Phase 4's export step to *always* run `export_3mf(...)` alongside STL/STEP (mirroring
+  `build123d.md`'s already-documented `export_3mf` call), versioned identically
+  (`<part>_vN.3mf`) - not left conditional on the user's slicer preference. Filing here rather
+  than editing SKILL.md directly (WS-B ownership).
 
 - **WS-A needs a `brief:listVersions` channel.** `BriefStore.listVersions(projectDir)`
   (`packages/agent-core/brief/store.ts`) reads back every locked version's full snapshot from

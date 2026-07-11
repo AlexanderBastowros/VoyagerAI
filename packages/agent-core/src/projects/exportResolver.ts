@@ -1,5 +1,4 @@
-import { basename, isAbsolute, relative, resolve } from 'node:path'
-import type { ExportFormat } from '@shared/ipc'
+import { basename, dirname, isAbsolute, relative, resolve } from 'node:path'
 import type { ProjectIteration } from './store'
 
 /**
@@ -22,32 +21,65 @@ export type ExportSourceResolution =
   | { ok: true; absPath: string; fileName: string }
   | { ok: false; reason: string }
 
+/** The single-file formats this module resolves - `'plate'` (bakes every part's placement into
+ *  one merged STL) and `'package'` (bundles every artifact) have their own resolution paths and
+ *  never reach these functions (§14/WS-F). */
+export type SingleFileExportFormat = 'stl' | 'step' | '3mf'
+
 /** Resolves `candidate` against `projectDir`, or null if it escapes the project directory
- *  (or is the directory itself) - the containment guard described above. */
-function containedAbsPath(projectDir: string, candidate: string): string | null {
+ *  (or is the directory itself) - the containment guard described above. Exported so
+ *  `exportPackage.ts`'s graduation-package builder (which reads several more artifacts per
+ *  part - STEP/3MF/script/manifest) applies the identical guard rather than duplicating it. */
+export function containedAbsPath(projectDir: string, candidate: string): string | null {
   const abs = resolve(projectDir, candidate)
   const rel = relative(projectDir, abs)
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null
   return abs
 }
 
+/**
+ * The conventional 3MF sibling of a recorded STL path: same directory/basename, `.3mf` extension
+ * in place of `.stl` - mirrors `manifestPathForStl`'s "no new field on `ProjectIteration` needed"
+ * convention (`packages/agent-core/params/manifestConvention.ts`), since the skill already keeps
+ * `script.py`/`.stl`/`.step` co-located and identically named per version (SKILL.md Phase 4).
+ * `ProjectIteration` has no `threeMfPath` field - a 3MF is only ever "offered" by the skill today,
+ * not always produced (a contract-change request for that lives in the roadmap) - so callers must
+ * still probe whether the derived path actually exists on disk before trusting it; this function
+ * stays pure (no I/O) and only computes where it *would* be.
+ */
+export function deriveThreeMfPath(stlPath: string): string {
+  const dir = dirname(stlPath)
+  const base = basename(stlPath).replace(/\.stl$/i, '')
+  return dir === '.' ? `${base}.3mf` : `${dir}/${base}.3mf`
+}
+
+/** Human-readable label for an error message, e.g. `'3mf' -> '3MF'`, `'step' -> 'STEP'`. */
+function formatLabel(format: SingleFileExportFormat): string {
+  return format.toUpperCase()
+}
+
 export function resolveExportSource(
-  activeIteration: Pick<ProjectIteration, 'stlPath' | 'stepPath'> | null,
+  activeIteration: (Pick<ProjectIteration, 'stlPath' | 'stepPath'> & { threeMfPath?: string }) | null,
   projectDir: string,
-  format: ExportFormat
+  format: SingleFileExportFormat
 ): ExportSourceResolution {
   if (!activeIteration) {
     return { ok: false, reason: 'No model has been generated yet.' }
   }
 
-  const candidate = format === 'step' ? activeIteration.stepPath : activeIteration.stlPath
+  const candidate =
+    format === 'step'
+      ? activeIteration.stepPath
+      : format === '3mf'
+        ? activeIteration.threeMfPath
+        : activeIteration.stlPath
   if (!candidate) {
     return {
       ok: false,
       reason:
-        format === 'step'
-          ? 'This model has no STEP export - ask Voyager to export STEP, or use "Export STL" instead.'
-          : 'This model has no STL export.'
+        format === 'stl'
+          ? 'This model has no STL export.'
+          : `This model has no ${formatLabel(format)} export - ask Voyager to export ${formatLabel(format)}, or use "Export STL" instead.`
     }
   }
 
@@ -55,7 +87,7 @@ export function resolveExportSource(
   if (!abs) {
     return {
       ok: false,
-      reason: `The recorded ${format.toUpperCase()} path resolves outside the project directory and was rejected.`
+      reason: `The recorded ${formatLabel(format)} path resolves outside the project directory and was rejected.`
     }
   }
 
@@ -71,7 +103,7 @@ export function resolveExportSource(
 export interface PartExportSource {
   id: string
   name: string
-  iteration: Pick<ProjectIteration, 'n' | 'stlPath' | 'stepPath'> | null
+  iteration: (Pick<ProjectIteration, 'n' | 'stlPath' | 'stepPath'> & { threeMfPath?: string }) | null
 }
 
 export interface ZipEntrySource {
@@ -93,14 +125,14 @@ export type AllPartsExportResolution =
  * containment violation on any part still fails the whole export, since a corrupted
  * record must never leak a file from outside the project directory.
  *
- * Only meaningful for `'stl' | 'step'` (the per-part single-file formats); `'plate'`
+ * Meaningful for the per-part single-file formats (`'stl' | 'step' | '3mf'`); `'plate'`
  * intentionally merges and `'package'` has its own builder, so the type narrows to keep
  * those from ending up here.
  */
 export function resolveAllPartsExportSources(
   parts: PartExportSource[],
   projectDir: string,
-  format: 'stl' | 'step',
+  format: SingleFileExportFormat,
   zipBaseName?: string
 ): AllPartsExportResolution {
   const entries: ZipEntrySource[] = []
@@ -113,7 +145,8 @@ export function resolveAllPartsExportSources(
       continue
     }
     sawIteration = true
-    const candidate = format === 'step' ? part.iteration.stepPath : part.iteration.stlPath
+    const candidate =
+      format === 'step' ? part.iteration.stepPath : format === '3mf' ? part.iteration.threeMfPath : part.iteration.stlPath
     if (!candidate) {
       skippedParts.push(part.name)
       continue
@@ -122,7 +155,7 @@ export function resolveAllPartsExportSources(
     if (!abs) {
       return {
         ok: false,
-        reason: `The recorded ${format.toUpperCase()} path for part "${part.name}" resolves outside the project directory and was rejected.`
+        reason: `The recorded ${formatLabel(format)} path for part "${part.name}" resolves outside the project directory and was rejected.`
       }
     }
     entries.push({ absPath: abs, entryName: `${part.id}_v${part.iteration.n}.${format}` })
@@ -133,9 +166,9 @@ export function resolveAllPartsExportSources(
     return {
       ok: false,
       reason:
-        format === 'step'
-          ? 'None of the parts has a STEP export - ask Voyager to export STEP, or use "Export STL" instead.'
-          : 'None of the parts has an STL export.'
+        format === 'stl'
+          ? 'None of the parts has an STL export.'
+          : `None of the parts has a ${formatLabel(format)} export - ask Voyager to export ${formatLabel(format)}, or use "Export STL" instead.`
     }
   }
 
@@ -144,8 +177,8 @@ export function resolveAllPartsExportSources(
 }
 
 /** Filesystem-safe zip base name from a project's display name (same character policy as
- *  `slugifyPartId`, local to keep this module dependency-free). */
-function slugifyZipBase(raw: string): string {
+ *  `slugifyPartId`); exported so `exportPackage.ts`'s package builder names its zip the same way. */
+export function slugifyZipBase(raw: string): string {
   return raw
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
