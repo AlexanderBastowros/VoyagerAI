@@ -478,6 +478,50 @@ describe('AgentSession', () => {
     expect(content).toBe('keep going')
   })
 
+  it('does not inject a "Part arrangement" block for a single-part project', async () => {
+    const h = makeHarness()
+    const { dir } = await h.store.ensureProject()
+    await writeFile(join(dir, 'outputs', 'main_v1.py'), '# v1')
+    await h.store.recordIteration({ stlPath: 'outputs/main_v1.stl', scriptPath: 'outputs/main_v1.py', summary: 'v1' })
+
+    await h.session.sendMessage('keep going')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    const content = h.inputs[0].message.content as string
+    expect(content).toBe('keep going')
+    expect(content).not.toContain('Part arrangement')
+  })
+
+  it('injects a "Part arrangement" block naming every part once a project has more than one', async () => {
+    const h = makeHarness()
+    const { dir } = await h.store.ensureProject()
+    await writeFile(join(dir, 'outputs', 'box_v1.py'), '# v1')
+    await h.store.recordIteration({ stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'v1', partId: 'box', partName: 'Box' })
+    await writeFile(join(dir, 'outputs', 'lid_v1.py'), '# v1')
+    await h.store.recordIteration({ stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'v1', partId: 'lid', partName: 'Lid' })
+
+    await h.session.sendMessage('make the lid taller')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    const content = h.inputs[0].message.content as string
+    expect(content).toContain('Part arrangement')
+    expect(content).toContain('"Box" (part: box)')
+    expect(content).toContain('"Lid" (part: lid)')
+  })
+
+  it('passes focusedPartId through to the "Part arrangement" block as the focused part', async () => {
+    const h = makeHarness()
+    const { dir } = await h.store.ensureProject()
+    await writeFile(join(dir, 'outputs', 'box_v1.py'), '# v1')
+    await h.store.recordIteration({ stlPath: 'outputs/box_v1.stl', scriptPath: 'outputs/box_v1.py', summary: 'v1', partId: 'box', partName: 'Box' })
+    await writeFile(join(dir, 'outputs', 'lid_v1.py'), '# v1')
+    await h.store.recordIteration({ stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'v1', partId: 'lid', partName: 'Lid' })
+
+    await h.session.sendMessage('make it taller', null, undefined, 'lid')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    const content = h.inputs[0].message.content as string
+    expect(content).toContain('"Lid" (part: lid) [currently focused]')
+    expect(content).toMatch(/user has "lid" focused/i)
+  })
+
   it('enables adaptive thinking with visible summaries on the query() options', async () => {
     const h = makeHarness()
     await h.session.sendMessage('hello')

@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
-import { copyFile, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { copyFile, readFile, stat, writeFile } from 'node:fs/promises'
+import { basename, isAbsolute, join, relative } from 'node:path'
 import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
@@ -28,9 +28,13 @@ import type {
   PartSetActiveRequest,
   PartSetPlacementRequest,
   PartSetVisibilityRequest,
+  Placement,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrinterProfileDeleteRequest,
   PrinterProfileListResponse,
+  RenderGetRequest,
+  RenderGetResponse,
   PrinterProfileSaveRequest,
   PrinterProfileSetActiveRequest,
   PrintSettings,
@@ -38,6 +42,7 @@ import type {
   ProjectSummary,
   RenameProjectRequest,
   RevertToRequest,
+  ScriptManifest,
   SendMessageRequest,
   SendMessageResponse,
   SetupStatus,
@@ -49,19 +54,41 @@ import {
   AgentSession,
   BriefStore,
   ClaudeChecker,
+  copyImportSource,
+  detectImportFormat,
   EnvManager,
+  finalizeMeshImport,
+  finalizeStepImport,
+  isUnitlessFormat,
+  measureMeshImport,
+  pickUnitConfirmationAxis,
   PrinterProfileStore,
   ProjectStore,
+  buildGraduationPackage,
+  buildPlateStl,
+  containedAbsPath,
+  deriveThreeMfPath,
   readManifestForIteration,
   rerunWithParam,
   resolveAllPartsExportSources,
   resolveExportSource,
   runPreflight,
+  slugifyForFilename,
+  slugifyZipBase,
   validateParamUpdate,
   writeZip
 } from '@voyager/agent-core'
-import type { PartExportSource, ProjectIteration, ZipEntry } from '@voyager/agent-core'
+import type {
+  PackageFsDeps,
+  PackagePartInput,
+  PartExportSource,
+  PlatePart,
+  ProjectIteration,
+  ZipEntry
+} from '@voyager/agent-core'
 import { readVerificationForIteration, runVerification, writeVerificationForIteration } from '@voyager/verify'
+import { RENDER_VIEW_NAMES, renderDirForStl, renderViews as executeRenderViews } from '@voyager/render-rig'
+import type { RenderViewName } from '@voyager/render-rig'
 
 /**
  * Resolves a path under the app's `resources/` directory, in both dev (where
@@ -116,6 +143,34 @@ function conformanceCheckScriptPath(): string {
     : join(__dirname, '../../packages/verify/python/conformance_check.py')
 }
 
+/** Absolute path to `packages/agent-core/remix`'s bundled `measure_mesh.py` (WS-G) - same
+ *  dev/packaged resolution as `verifyScriptPath()`, mirroring the `remix` `extraResources` entry
+ *  in `electron-builder.yml`. The only remix script `importModel.ts` invokes directly - mesh
+ *  finalize/repair and the STEP import path run a self-contained generated script instead (see
+ *  `importModel.ts`'s module doc comment for why). */
+function measureMeshScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'remix', 'measure_mesh.py')
+    : join(__dirname, '../../packages/agent-core/remix/measure_mesh.py')
+}
+
+/** WS-I follow-up: the cross-part interference check's script - same dev/packaged resolution as
+ *  the other `packages/verify` scripts above (the existing `verify` extraResources entry already
+ *  copies the whole `packages/verify/python` directory, so this needed no build-config change). */
+function partInterferenceScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'verify', 'part_interference.py')
+    : join(__dirname, '../../packages/verify/python/part_interference.py')
+}
+
+/** WS-D: the canonical-view renderer's script - same dev/packaged resolution as the scripts
+ *  above, mirroring the `render-rig` `extraResources` entry in `electron-builder.yml`. */
+function renderScriptPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'render-rig', 'render_views.py')
+    : join(__dirname, '../../packages/render-rig/python/render_views.py')
+}
+
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(channel, payload)
@@ -131,6 +186,24 @@ function broadcast(channel: string, payload: unknown): void {
  * response or the app quits.
  */
 const pendingApprovals = new Map<string, (allow: boolean) => void>()
+
+/**
+ * A mesh import (STL/OBJ) awaiting the user's unit confirmation - the second `model:import` call
+ * (with `unitScaleMm` set) resumes from here rather than re-deriving anything from the request,
+ * since `ImportModelResponse.needsUnitConfirmation` carries only the measured dimension, not the
+ * import's identity (see `ImportModelRequest`'s doc comment in `src/shared/ipc.ts`). Keyed by
+ * project id so a project switch mid-confirmation can't resume into the wrong project; at most one
+ * import is ever pending per project (a second `filePath` call before confirming just overwrites
+ * it, leaving the earlier copy under `imports/` as harmless, unreferenced debris - the same
+ * never-cleaned-up-scratch tolerance `params/rerun.ts`'s `outputs/param-edits/<uuid>/` dirs have).
+ */
+interface PendingMeshImport {
+  partId: string
+  importRelPath: string
+  sourceBaseName: string
+  measuredMm: number
+}
+const pendingMeshImports = new Map<string, PendingMeshImport>()
 
 /**
  * Broadcasts an out-of-policy tool call as an inline approval card to every
@@ -153,6 +226,26 @@ function toIterationInfo(iteration: ProjectIteration): IterationInfo {
     at: iteration.at,
     hasStep: Boolean(iteration.stepPath),
     createdBy: iteration.createdBy
+  }
+}
+
+/**
+ * Probes whether a 3MF was actually produced for the iteration that recorded `stlPath`, at the
+ * conventional sibling path `deriveThreeMfPath` computes - SKILL.md's Phase 4 currently only
+ * "offers" 3MF on request rather than always producing it (a contract-change request for that is
+ * filed in the roadmap), so it's absent more often than not. `resolveExportSource`/
+ * `resolveAllPartsExportSources` stay pure (no filesystem I/O), so this real `stat` call lives
+ * here - applying the same containment guard those functions use before ever touching disk.
+ */
+async function resolveThreeMfPath(projectDir: string, stlPath: string): Promise<string | undefined> {
+  const candidate = deriveThreeMfPath(stlPath)
+  const abs = containedAbsPath(projectDir, candidate)
+  if (!abs) return undefined
+  try {
+    await stat(abs)
+    return candidate
+  } catch {
+    return undefined
   }
 }
 
@@ -240,6 +333,22 @@ export function registerIpcHandlers(): void {
     // recorded a printer falls back to the app-level active profile (WS-E - "verification layer 2
     // reads them"). Merged only into this run's input, never persisted onto the brief.
     const activeProfile = brief.printer ? null : await printerProfileStore.getActive()
+
+    // WS-I follow-up: assemble every part's active-iteration STL + placement so layer 2 can also
+    // check the *placed* multi-part arrangement for interpenetration, not just this one part's own
+    // mesh. `runVerification` no-ops the check itself below 2 parts, so a single-part project (the
+    // common case) pays no extra cost beyond this cheap `listParts()`/`activeIterationRecord()` read.
+    const parts = await projectStore.listParts()
+    const partEntries = (
+      await Promise.all(
+        parts.map(async (part): Promise<{ partId: string; stlPath: string; placement: Placement } | null> => {
+          const active = await projectStore.activeIterationRecord(part.id)
+          if (!active) return null
+          return { partId: part.id, stlPath: join(projectDir, active.stlPath), placement: part.placement }
+        })
+      )
+    ).filter((entry): entry is { partId: string; stlPath: string; placement: Placement } => entry !== null)
+
     const report = await runVerification({
       iteration: iteration.n,
       pythonPath: envManager.pythonPath(),
@@ -247,6 +356,8 @@ export function registerIpcHandlers(): void {
       geometryReportScriptPath: geometryReportScriptPath(),
       conformanceCheckScriptPath: conformanceCheckScriptPath(),
       extractParamsScriptPath: extractParamsScriptPath(),
+      partInterferenceScriptPath: partInterferenceScriptPath(),
+      parts: partEntries,
       scriptPath: join(projectDir, iteration.scriptSnapshotPath ?? iteration.scriptPath),
       stlPath: join(projectDir, iteration.stlPath),
       stepPath: iteration.stepPath ? join(projectDir, iteration.stepPath) : undefined,
@@ -256,18 +367,94 @@ export function registerIpcHandlers(): void {
     return report
   }
 
+  /** Deliberate skips of `renderIteration` (vs genuine failures, which get logged by the
+   *  automatic hook): the per-project toggle is off, or the recording project was switched
+   *  away from mid-flight. Compared by identity in `onIterationRecorded` below. */
+  const RENDER_SKIPPED_TOGGLE_OFF =
+    'Render previews are turned off for this project (chat-toolbar toggle) - skipping.'
+  const RENDER_SKIPPED_PROJECT_SWITCHED = 'The active project changed before rendering started - skipping.'
+
+  /**
+   * Renders one iteration's canonical view set (WS-D) into the sibling `<stl>.renders/` dir.
+   * Two call sites feed this, mirroring `verifyIteration` exactly: `ProjectStore`'s
+   * `onIterationRecorded` hook below (every iteration gets a render set on disk) and
+   * `AgentSession`'s `renderViews` dep (the on-demand `render_views` MCP tool). Honors the
+   * per-project render-previews toggle (`AgentSettings.renderViews`) so users on slow machines
+   * can turn the whole pipeline off - the tool then explains itself rather than erroring.
+   */
+  async function renderIteration(
+    iteration: ProjectIteration,
+    projectDir: string
+  ): Promise<
+    | { ok: true; dir: string; views: Partial<Record<string, string>>; widthMm: number; heightMm: number; depthMm: number }
+    | { ok: false; error: string }
+  > {
+    // The fire-and-forget hook can outlive a project:switch (switching is only blocked while the
+    // agent is busy, and param:update records without the agent). getAgentSettings() below reads
+    // the ACTIVE project, so a switched-away recording just skips its render rather than being
+    // gated by (or writing under) the wrong project.
+    if (projectStore.getProjectDir() !== projectDir) {
+      return { ok: false, error: RENDER_SKIPPED_PROJECT_SWITCHED }
+    }
+    const settings = await projectStore.getAgentSettings()
+    if (settings.renderViews === false) {
+      return { ok: false, error: RENDER_SKIPPED_TOGGLE_OFF }
+    }
+    // Same containment posture as resolveExportSource, on the WRITE side too: a hand-edited
+    // project.json must not let render_views.py read an arbitrary STL or create a `.renders/`
+    // directory outside the project.
+    const stlAbs = containedAbsPath(projectDir, iteration.stlPath)
+    const outDir = containedAbsPath(projectDir, renderDirForStl(iteration.stlPath))
+    if (!stlAbs || !outDir) {
+      return { ok: false, error: 'The recorded STL path resolves outside the project directory and was rejected.' }
+    }
+    const result = await executeRenderViews({
+      pythonPath: envManager.pythonPath(),
+      scriptPath: renderScriptPath(),
+      stlPath: stlAbs,
+      outDir
+    })
+    if (!result.ok) return result
+    return {
+      ok: true,
+      dir: outDir,
+      views: result.views,
+      widthMm: result.widthMm,
+      heightMm: result.heightMm,
+      depthMm: result.depthMm
+    }
+  }
+
   const projectStore = new ProjectStore({
     baseDir: join(app.getPath('userData'), 'projects'),
     skillSourceDir: resourcePath('skills', 'printable-cad'),
     verifyScriptPath: verifyScriptPath(),
     extractParamsScriptPath: extractParamsScriptPath(),
-    // Fire-and-forget: a slow or failing verification run must never block or fail the display
-    // path (see `ProjectStoreOptions.onIterationRecorded`'s doc comment).
+    // Fire-and-forget: a slow or failing verification/render run must never block or fail the
+    // display path (see `ProjectStoreOptions.onIterationRecorded`'s doc comment).
     onIterationRecorded: (iteration, projectDir) => {
       void verifyIteration(iteration, projectDir)
         .then((report) => broadcast(IPC.verificationUpdated, report))
         .catch((err) => {
           console.error('Verification failed for iteration', iteration.n, err)
+        })
+      // WS-D: every recorded iteration gets its canonical render set (thumbnails + the agent's
+      // self-inspection both read it back later). renderIteration never rejects in practice -
+      // every failure (matplotlib missing, corrupt STL, script crash) comes back as `ok: false` -
+      // so log those too; a silently-broken render pipeline would be indistinguishable from the
+      // toggle being off. Deliberate skips (toggle off, project switched) stay quiet.
+      void renderIteration(iteration, projectDir)
+        .then((result) => {
+          if (
+            !result.ok &&
+            result.error !== RENDER_SKIPPED_TOGGLE_OFF &&
+            result.error !== RENDER_SKIPPED_PROJECT_SWITCHED
+          ) {
+            console.warn('Render set failed for iteration', iteration.n, '-', result.error)
+          }
+        })
+        .catch((err) => {
+          console.error('Render set failed for iteration', iteration.n, err)
         })
     }
   })
@@ -276,6 +463,7 @@ export function registerIpcHandlers(): void {
     projectStore,
     briefStore,
     runVerification: (iteration) => verifyIteration(iteration, projectStore.getProjectDir()),
+    renderViews: (iteration) => renderIteration(iteration, projectStore.getProjectDir()),
     printerProfiles: printerProfileStore,
     pythonPath: () => envManager.pythonPath(),
     claudeCliPath: () => claudeChecker.cliPath(),
@@ -335,6 +523,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     IPC.modelExport,
     async (event, request: ExportModelRequest): Promise<ExportModelResponse> => {
+      const { format, partId } = request
       const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
       async function promptSavePath(defaultPath: string, filters: Electron.FileFilter[]): Promise<string | null> {
         const dialogOptions = { defaultPath, filters }
@@ -351,23 +540,83 @@ export function registerIpcHandlers(): void {
       const projectDir = projectStore.getProjectDir()
       const activeProjectId = projectStore.getActiveProjectId()
 
+      if (format === 'package') {
+        return {
+          saved: false,
+          reason: 'Use "Export package" instead - graduation packages have their own export.'
+        }
+      }
+
+      if (format === 'plate') {
+        // Bakes every VISIBLE part's current placement into one merged STL, matching the
+        // viewport arrangement (§14/WS-F) - spans every part, so `partId` is ignored.
+        const plateParts: PlatePart[] = []
+        const skippedParts: string[] = []
+        for (const part of parts) {
+          if (!part.visible) {
+            skippedParts.push(part.name)
+            continue
+          }
+          const iteration = await projectStore.activeIterationRecord(part.id)
+          if (!iteration) {
+            skippedParts.push(part.name)
+            continue
+          }
+          const abs = containedAbsPath(projectDir, iteration.stlPath)
+          if (!abs) {
+            return {
+              saved: false,
+              reason: `The recorded STL path for part "${part.name}" resolves outside the project directory and was rejected.`
+            }
+          }
+          plateParts.push({ name: part.name, stlBuffer: await readFile(abs), placement: part.placement })
+        }
+        // Every await above yields the event loop - mirrors the all-parts zip branch below's
+        // concurrent-project-switch guard, since a plate mixing one project's STL bytes with
+        // another's placements would be silently wrong rather than just stale.
+        if (projectStore.getActiveProjectId() !== activeProjectId) {
+          return { saved: false, reason: 'The active project changed while exporting - try again.' }
+        }
+
+        const built = buildPlateStl(plateParts)
+        if (!built.ok) return { saved: false, reason: built.reason }
+
+        const projectName = (await projectStore.listProjects()).find((p) => p.id === activeProjectId)?.name
+        const defaultName = `${slugifyZipBase(projectName ?? '') || 'plate'}-plate.stl`
+        const filePath = await promptSavePath(defaultName, [{ name: 'STL', extensions: ['stl'] }])
+        if (!filePath) return { saved: false }
+
+        try {
+          await writeFile(filePath, built.stlBuffer)
+        } catch (err) {
+          return {
+            saved: false,
+            reason: err instanceof Error ? `Could not save the file: ${err.message}` : 'Could not save the file.'
+          }
+        }
+
+        return {
+          saved: true,
+          path: filePath,
+          ...(skippedParts.length > 0 ? { skippedParts } : {})
+        }
+      }
+
       // A stale/typo'd part id gets a precise error (matching setActivePart/setVisibility)
       // instead of resolving as "part with no iterations" -> "No model has been generated yet."
-      if (request.partId && !parts.some((p) => p.id === request.partId)) {
-        return { saved: false, reason: `Unknown part: ${request.partId}` }
+      if (partId && !parts.some((p) => p.id === partId)) {
+        return { saved: false, reason: `Unknown part: ${partId}` }
       }
 
       // Multi-part project with no explicit part: every part's active iteration as separate
-      // files in one zip - never a silent merge (§14/WS-F). Only for the per-part single-file
-      // formats; 'plate'/'package' keep their own (stubbed) semantics below.
-      if (!request.partId && parts.length > 1 && (request.format === 'stl' || request.format === 'step')) {
+      // files in one zip - never a silent merge (§14/WS-F).
+      if (!partId && parts.length > 1) {
         const sources: PartExportSource[] = []
         for (const part of parts) {
-          sources.push({
-            id: part.id,
-            name: part.name,
-            iteration: await projectStore.activeIterationRecord(part.id)
-          })
+          const iteration = await projectStore.activeIterationRecord(part.id)
+          const threeMfPath =
+            format === '3mf' && iteration ? await resolveThreeMfPath(projectDir, iteration.stlPath) : undefined
+          sources.push({ id: part.id, name: part.name, iteration: iteration ? { ...iteration, threeMfPath } : null })
         }
         const projectName = (await projectStore.listProjects()).find((p) => p.id === activeProjectId)?.name
         // Every await above yields the event loop, so a concurrent `project:switch` may have
@@ -376,7 +625,7 @@ export function registerIpcHandlers(): void {
         if (projectStore.getActiveProjectId() !== activeProjectId) {
           return { saved: false, reason: 'The active project changed while exporting - try again.' }
         }
-        const resolved = resolveAllPartsExportSources(sources, projectDir, request.format, projectName)
+        const resolved = resolveAllPartsExportSources(sources, projectDir, format, projectName)
         if (!resolved.ok) return { saved: false, reason: resolved.reason }
 
         const filePath = await promptSavePath(resolved.zipFileName, [{ name: 'ZIP archive', extensions: ['zip'] }])
@@ -404,14 +653,17 @@ export function registerIpcHandlers(): void {
 
       // Single-file path: the requested part's active iteration (or the active part's when
       // no partId is given - a single-part project always lands here).
-      const active = await projectStore.activeIterationRecord(request.partId)
-      const resolved = resolveExportSource(active, projectDir, request.format)
+      const active = await projectStore.activeIterationRecord(partId)
+      const threeMfPath = format === '3mf' && active ? await resolveThreeMfPath(projectDir, active.stlPath) : undefined
+      const resolved = resolveExportSource(active ? { ...active, threeMfPath } : null, projectDir, format)
       if (!resolved.ok) return { saved: false, reason: resolved.reason }
 
       const filters =
-        request.format === 'step'
+        format === 'step'
           ? [{ name: 'STEP', extensions: ['step', 'stp'] }]
-          : [{ name: 'STL', extensions: ['stl'] }]
+          : format === '3mf'
+            ? [{ name: '3MF', extensions: ['3mf'] }]
+            : [{ name: 'STL', extensions: ['stl'] }]
 
       const filePath = await promptSavePath(resolved.fileName, filters)
       if (!filePath) return { saved: false }
@@ -449,7 +701,12 @@ export function registerIpcHandlers(): void {
       const notReady = setupIncompleteReason()
       if (notReady) return { accepted: false, reason: notReady }
 
-      return agentSession.sendMessage(request.text, request.selectionContext ?? null, request.attachments)
+      return agentSession.sendMessage(
+        request.text,
+        request.selectionContext ?? null,
+        request.attachments,
+        request.focusedPartId
+      )
     }
   )
 
@@ -644,11 +901,15 @@ export function registerIpcHandlers(): void {
   })
 
   // -- WS-E Printer profiles ------------------------------------------------
-  // App-level (see printerProfileStore above), so unlike the project-mutating handlers these
-  // don't need the isBusy() gate - the agent only ever reads profiles (at query start) or writes
-  // through the same serialized store. Mutations broadcast printerProfile:updated so every
-  // window's panel stays in sync (the agent's save_printer_profile tool broadcasts via the
-  // emitPrinterProfilesUpdated dep above).
+  // App-level (see printerProfileStore above), so unlike the project-mutating handlers list/save/
+  // setActive don't need the isBusy() gate - the agent only ever reads profiles (at query start) or
+  // writes through the same serialized store. `delete` is gated (WS-E follow-up): removing the
+  // *active* profile out from under an in-flight turn would invalidate the printer context already
+  // baked into that turn's system prompt (see `formatPrinterProfileContext`), which only gets
+  // re-read on the next `ensureStarted()` - the same reasoning the part-mutating handlers below use
+  // for their own isBusy() gates. Mutations broadcast printerProfile:updated so every window's panel
+  // stays in sync (the agent's save_printer_profile tool broadcasts via the emitPrinterProfilesUpdated
+  // dep above).
 
   ipcMain.handle(
     IPC.printerProfileList,
@@ -673,24 +934,257 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  // -- WS-F Graduation package export (stub - no package builder yet) ----
+  ipcMain.handle(
+    IPC.printerProfileDelete,
+    async (_event, request: PrinterProfileDeleteRequest): Promise<PrinterProfileListResponse> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before deleting a printer profile.')
+      }
+      const response = await printerProfileStore.delete(request.id)
+      broadcast(IPC.printerProfileUpdated, response)
+      return response
+    }
+  )
+
+  // -- WS-F Graduation package export --------------------------------------
+  // Replaces the WS-0b stub at this designated stub-replacement point - the `IPC.modelExportPackage`
+  // channel wiring above is unchanged.
 
   ipcMain.handle(
     IPC.modelExportPackage,
-    async (_event, _request: ExportPackageRequest): Promise<ExportPackageResponse> => ({
-      saved: false,
-      reason: 'Package export is not implemented yet.'
-    })
+    async (event, request: ExportPackageRequest): Promise<ExportPackageResponse> => {
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+      const parts = await projectStore.listParts()
+      const projectDir = projectStore.getProjectDir()
+      const activeProjectId = projectStore.getActiveProjectId()
+
+      // A stale/typo'd part id gets a precise error, matching `model:export`'s convention.
+      if (request.partId && !parts.some((p) => p.id === request.partId)) {
+        return { saved: false, reason: `Unknown part: ${request.partId}` }
+      }
+      // Iteration numbers are per-part - an explicit iteration with no part to scope it to is
+      // ambiguous across a multi-part project rather than silently picking one.
+      if (request.iteration !== undefined && !request.partId) {
+        return { saved: false, reason: 'An iteration number requires a specific part - pass partId too.' }
+      }
+
+      const scoped = request.partId ? parts.filter((p) => p.id === request.partId) : parts
+
+      const packageParts: PackagePartInput[] = []
+      const manifests: Record<string, ScriptManifest | null> = {}
+      for (const part of scoped) {
+        let iteration: ProjectIteration | null
+        if (request.partId && request.iteration !== undefined) {
+          const history = await projectStore.listIterations(part.id)
+          iteration = history.find((it) => it.n === request.iteration) ?? null
+          if (!iteration) {
+            return { saved: false, reason: `Unknown iteration: v${request.iteration}` }
+          }
+        } else {
+          iteration = await projectStore.activeIterationRecord(part.id)
+        }
+        // No model yet for this part - left out of the bundle (format-honesty degrade, mirrors
+        // `resolveAllPartsExportSources`' `skippedParts`); `buildGraduationPackage` itself fails
+        // if this leaves every part out.
+        if (!iteration) continue
+
+        packageParts.push({
+          id: part.id,
+          name: part.name,
+          iteration: {
+            n: iteration.n,
+            stlPath: iteration.stlPath,
+            stepPath: iteration.stepPath,
+            scriptPath: iteration.scriptPath,
+            scriptSnapshotPath: iteration.scriptSnapshotPath,
+            briefVersion: iteration.briefVersion
+          }
+        })
+        manifests[part.id] = await readManifestForIteration(projectDir, iteration)
+      }
+
+      // Every await above yields the event loop - the same concurrent-project-switch guard
+      // `model:export`'s branches use, since mixing one project's artifacts with another's brief/
+      // manifests would be silently wrong.
+      if (projectStore.getActiveProjectId() !== activeProjectId) {
+        return { saved: false, reason: 'The active project changed while exporting - try again.' }
+      }
+
+      // The package always bundles the project's *currently* locked brief (a project-level
+      // artifact), not a per-iteration lookup - see `BuildGraduationPackageInput.lockedBrief`'s
+      // doc comment. Omitted entirely if the project has never locked one.
+      const brief = await briefStore.get(projectDir)
+      const lockedBrief = brief.lockedAt
+        ? { version: brief.version, json: JSON.stringify(brief, null, 2) }
+        : undefined
+
+      const projectName =
+        (await projectStore.listProjects()).find((p) => p.id === activeProjectId)?.name ?? 'Voyager project'
+
+      const fsDeps: PackageFsDeps = {
+        readFile: (absPath) => readFile(absPath),
+        fileExists: (absPath) => stat(absPath).then(() => true, () => false)
+      }
+
+      const result = await buildGraduationPackage(
+        { projectDir, projectName, parts: packageParts, lockedBrief, manifests },
+        fsDeps
+      )
+      if (!result.ok) return { saved: false, reason: result.reason }
+
+      const dialogOptions = {
+        defaultPath: result.zipFileName,
+        filters: [{ name: 'ZIP archive', extensions: ['zip'] }]
+      }
+      const { canceled, filePath } = win
+        ? await dialog.showSaveDialog(win, dialogOptions)
+        : await dialog.showSaveDialog(dialogOptions)
+      if (canceled || !filePath) return { saved: false }
+
+      try {
+        await writeFile(filePath, result.zipBuffer)
+      } catch (err) {
+        return {
+          saved: false,
+          reason: err instanceof Error ? `Could not save the file: ${err.message}` : 'Could not save the file.'
+        }
+      }
+
+      return { saved: true, path: filePath }
+    }
   )
 
-  // -- WS-G External model import (stub - no import pipeline yet) ---------
+  // -- WS-G External model import & remix ----------------------------------
+  // Two-phase for unitless mesh formats (STL/OBJ): the first call (no `unitScaleMm`) copies +
+  // measures and, for STL/OBJ, returns `needsUnitConfirmation` instead of finalizing; the second
+  // call (`unitScaleMm` set) resumes from `pendingMeshImports` and finalizes. STEP and 3MF already
+  // carry real-world units and finalize on the first call. See `ImportModelRequest`'s doc comment
+  // in `src/shared/ipc.ts` and `importModel.ts`'s module doc comment for the full design.
 
   ipcMain.handle(
     IPC.modelImport,
-    async (_event, _request: ImportModelRequest): Promise<ImportModelResponse> => ({
-      imported: false,
-      reason: 'Model import is not implemented yet.'
-    })
+    async (event, request: ImportModelRequest): Promise<ImportModelResponse> => {
+      // Mirrors the other project-mutating handlers (param:update, part:setPlacement, ...): an
+      // import records a new iteration, so it must not race an in-flight agent turn.
+      if (agentSession.isBusy()) {
+        return { imported: false, reason: 'Voyager is still working — wait for it to finish before importing a model.' }
+      }
+
+      await projectStore.ensureProject()
+      const projectDir = projectStore.getProjectDir()
+      const projectId = projectStore.getActiveProjectId()
+      const importDeps = { pythonPath: envManager.pythonPath(), measureMeshScriptPath: measureMeshScriptPath() }
+
+      /** Records a finalized import as a new iteration and pushes it exactly like any other
+       *  displayed model (`param:update`'s handler above does the same broadcast shape). */
+      async function recordAndBroadcast(
+        partId: string,
+        result: { scriptRelPath: string; stlRelPath: string; stepRelPath?: string; summary: string }
+      ): Promise<ImportModelResponse> {
+        const iteration = await projectStore.recordIteration({
+          stlPath: result.stlRelPath,
+          stepPath: result.stepRelPath,
+          scriptPath: result.scriptRelPath,
+          summary: result.summary,
+          createdBy: 'import',
+          partId
+        })
+        const buffer = await readFile(join(projectDir, iteration.stlPath))
+        const payload: ModelDisplayedPayload = {
+          stlPath: iteration.stlPath,
+          stepPath: iteration.stepPath,
+          scriptPath: iteration.scriptPath,
+          summary: iteration.summary,
+          iteration: iteration.n,
+          stlBuffer: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+          partId,
+          createdBy: 'import'
+        }
+        broadcast(IPC.modelDisplayed, payload)
+        return { imported: true, model: payload }
+      }
+
+      // Phase 2: a mesh import awaiting the user's confirmed real-world scale.
+      if (request.unitScaleMm !== undefined) {
+        const pending = pendingMeshImports.get(projectId)
+        if (!pending) {
+          return { imported: false, reason: 'No import is awaiting a scale confirmation — pick the file again.' }
+        }
+        pendingMeshImports.delete(projectId)
+
+        const nextN = ((await projectStore.latestIteration(pending.partId))?.n ?? 0) + 1
+        const result = await finalizeMeshImport(importDeps, {
+          projectDir,
+          importRelPath: pending.importRelPath,
+          partId: pending.partId,
+          nextN,
+          scaleFactor: request.unitScaleMm / pending.measuredMm,
+          sourceBaseName: pending.sourceBaseName
+        })
+        if (!result.ok) return { imported: false, reason: result.reason }
+        return recordAndBroadcast(pending.partId, result)
+      }
+
+      // Phase 1: resolve the source path (native picker if omitted), copy it into imports/.
+      let sourcePath = request.filePath
+      if (!sourcePath) {
+        const win = BrowserWindow.fromWebContents(event.sender) ?? undefined
+        const dialogOptions: Electron.OpenDialogOptions = {
+          filters: [{ name: 'Model files', extensions: ['step', 'stp', 'stl', 'obj', '3mf'] }],
+          properties: ['openFile']
+        }
+        const picked = win ? await dialog.showOpenDialog(win, dialogOptions) : await dialog.showOpenDialog(dialogOptions)
+        if (picked.canceled || picked.filePaths.length === 0) return { imported: false }
+        sourcePath = picked.filePaths[0]
+      }
+
+      const format = detectImportFormat(sourcePath)
+      if (!format) {
+        return { imported: false, reason: 'Unsupported file type — import a STEP, STL, OBJ, or 3MF file.' }
+      }
+
+      const copyResult = await copyImportSource(projectDir, sourcePath, format)
+      if (!copyResult.ok) return { imported: false, reason: copyResult.reason }
+
+      const partId = request.partId ? slugifyForFilename(request.partId) : await projectStore.getActivePartId()
+      const sourceBaseName = basename(sourcePath)
+      const nextN = ((await projectStore.latestIteration(partId))?.n ?? 0) + 1
+
+      if (format === 'step') {
+        const result = await finalizeStepImport(importDeps, {
+          projectDir,
+          importRelPath: copyResult.importRelPath,
+          partId,
+          nextN,
+          sourceBaseName
+        })
+        if (!result.ok) return { imported: false, reason: result.reason }
+        return recordAndBroadcast(partId, result)
+      }
+
+      if (!isUnitlessFormat(format)) {
+        // 3MF already carries real-world units - finalize immediately (scaleFactor 1).
+        const result = await finalizeMeshImport(importDeps, {
+          projectDir,
+          importRelPath: copyResult.importRelPath,
+          partId,
+          nextN,
+          scaleFactor: 1,
+          sourceBaseName
+        })
+        if (!result.ok) return { imported: false, reason: result.reason }
+        return recordAndBroadcast(partId, result)
+      }
+
+      // STL/OBJ: unitless - measure and ask the user to confirm/correct one dimension before
+      // finalizing (the skill's never-guess-scale rule, enforced at the door - product doc §5.6).
+      const measured = await measureMeshImport(importDeps, projectDir, copyResult.importRelPath)
+      if (!measured.ok) return { imported: false, reason: measured.reason }
+
+      const { axis, measuredMm } = pickUnitConfirmationAxis(measured.measurement.bboxMm)
+      pendingMeshImports.set(projectId, { partId, importRelPath: copyResult.importRelPath, sourceBaseName, measuredMm })
+      return { imported: false, needsUnitConfirmation: { measuredMm, axis } }
+    }
   )
 
   // -- WS-I Multi-part projects ------------------------------------------
@@ -781,4 +1275,28 @@ export function registerIpcHandlers(): void {
       return response
     }
   )
+
+  // -- WS-D canonical-view renders ----------------------------------------
+
+  // One view PNG of one iteration's render set, as a data URL, for version-history thumbnails.
+  // Null (never an error) for anything absent: unknown view name, unknown iteration, a render
+  // set that was never produced (toggle off / matplotlib missing), or a recorded STL path that
+  // escapes the project dir (same containment posture as `resolveExportSource`).
+  ipcMain.handle(IPC.renderGet, async (_event, request: RenderGetRequest): Promise<RenderGetResponse> => {
+    if (!(RENDER_VIEW_NAMES as readonly string[]).includes(request.view)) return { dataUrl: null }
+    const iteration = (await projectStore.listIterations(request.partId)).find((it) => it.n === request.n)
+    if (!iteration) return { dataUrl: null }
+
+    const projectDir = projectStore.getProjectDir()
+    const abs = join(projectDir, renderDirForStl(iteration.stlPath), `${request.view as RenderViewName}.png`)
+    const rel = relative(projectDir, abs)
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return { dataUrl: null }
+
+    try {
+      const bytes = await readFile(abs)
+      return { dataUrl: `data:image/png;base64,${bytes.toString('base64')}` }
+    } catch {
+      return { dataUrl: null }
+    }
+  })
 }

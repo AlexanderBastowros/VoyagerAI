@@ -15,6 +15,7 @@ import ToggleButton from '@mui/material/ToggleButton'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import AttachFileIcon from '@mui/icons-material/AttachFile'
+import CameraAltOutlinedIcon from '@mui/icons-material/CameraAltOutlined'
 import HighlightAltIcon from '@mui/icons-material/HighlightAlt'
 import SendIcon from '@mui/icons-material/Send'
 import StopIcon from '@mui/icons-material/Stop'
@@ -161,6 +162,7 @@ export function ChatPanel(): React.JSX.Element {
   const setFullStream = useAppStore((state) => state.setFullStream)
   const activeProjectId = useAppStore((state) => state.activeProjectId)
   const projects = useAppStore((state) => state.projects)
+  const selectedPartId = useAppStore((state) => state.selectedPartId)
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const [stopping, setStopping] = useState(false)
@@ -236,7 +238,8 @@ export function ChatPanel(): React.JSX.Element {
       const response = await window.voyager.agent.sendMessage({
         text,
         selectionContext: selectionAtSend,
-        attachments: attachmentsAtSend
+        attachments: attachmentsAtSend,
+        focusedPartId: selectedPartId ?? undefined
       })
       if (!response.accepted) {
         setAgentBusy(false)
@@ -355,6 +358,31 @@ export function ChatPanel(): React.JSX.Element {
                 ))}
               </Select>
             </span>
+          </Tooltip>
+          <Tooltip
+            title={`Render previews: ${agentSettings.renderViews !== false ? 'on' : 'off'} — Voyager renders 8 canonical views of each iteration and inspects them before showing you a model (adds a few seconds per iteration)`}
+          >
+            <ToggleButton
+              value="renderViews"
+              size="small"
+              selected={agentSettings.renderViews !== false}
+              onChange={() => void updateAgentSettings({ renderViews: !(agentSettings.renderViews !== false) })}
+              aria-label="Render previews"
+              sx={{
+                flexShrink: 0,
+                p: 0.5,
+                color: 'text.secondary',
+                borderColor: colors.borderStrong,
+                '& .MuiSvgIcon-root': { fontSize: 18 },
+                '&.Mui-selected': {
+                  color: colors.onAccent,
+                  bgcolor: colors.accent,
+                  '&:hover': { bgcolor: colors.accent }
+                }
+              }}
+            >
+              <CameraAltOutlinedIcon />
+            </ToggleButton>
           </Tooltip>
           <Tooltip title={`Full stream: ${fullStream ? 'on' : 'off'} — show all of Voyager's background activity (tool calls, inputs, and full thinking)`}>
             <ToggleButton

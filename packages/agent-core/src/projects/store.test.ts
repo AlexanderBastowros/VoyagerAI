@@ -369,7 +369,7 @@ describe('ProjectStore.getAgentSettings / setAgentSettings', () => {
     const store = makeStore()
     await store.ensureProject()
 
-    expect(await store.getAgentSettings()).toEqual({ model: 'claude-opus-4-8', effort: 'xhigh' })
+    expect(await store.getAgentSettings()).toEqual({ model: 'claude-opus-4-8', effort: 'xhigh', renderViews: true })
   })
 
   it('persists a choice across reloads', async () => {
@@ -379,7 +379,21 @@ describe('ProjectStore.getAgentSettings / setAgentSettings', () => {
 
     const reloaded = makeStore()
     await reloaded.ensureProject()
-    expect(await reloaded.getAgentSettings()).toEqual({ model: 'claude-sonnet-5', effort: 'low' })
+    // renderViews omitted on write normalizes to enabled (the pre-WS-D default).
+    expect(await reloaded.getAgentSettings()).toEqual({ model: 'claude-sonnet-5', effort: 'low', renderViews: true })
+  })
+
+  it('persists the render-previews toggle off and back on (WS-D)', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await store.setAgentSettings({ model: 'claude-sonnet-5', effort: 'low', renderViews: false })
+
+    const reloaded = makeStore()
+    await reloaded.ensureProject()
+    expect((await reloaded.getAgentSettings()).renderViews).toBe(false)
+
+    await reloaded.setAgentSettings({ model: 'claude-sonnet-5', effort: 'low', renderViews: true })
+    expect((await reloaded.getAgentSettings()).renderViews).toBe(true)
   })
 })
 
@@ -446,11 +460,11 @@ describe('ProjectStore multi-project support', () => {
 
     await store.createProject('Second')
     expect(await store.getSessionId()).toBeUndefined()
-    expect(await store.getAgentSettings()).toEqual({ model: 'claude-opus-4-8', effort: 'xhigh' })
+    expect(await store.getAgentSettings()).toEqual({ model: 'claude-opus-4-8', effort: 'xhigh', renderViews: true })
 
     await store.switchProject(firstId)
     expect(await store.getSessionId()).toBe('session-a')
-    expect(await store.getAgentSettings()).toEqual({ model: 'claude-sonnet-5', effort: 'low' })
+    expect(await store.getAgentSettings()).toEqual({ model: 'claude-sonnet-5', effort: 'low', renderViews: true })
   })
 })
 

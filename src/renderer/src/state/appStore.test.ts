@@ -31,7 +31,7 @@ function resetStore(): void {
   useAppStore.setState({
     messages: [],
     model: null,
-    agentSettings: { model: 'claude-opus-4-8', effort: 'xhigh' },
+    agentSettings: { model: 'claude-opus-4-8', effort: 'xhigh', renderViews: true },
     projects: [],
     activeProjectId: null,
     iterations: [],
@@ -141,10 +141,22 @@ describe('appStore', () => {
   })
 
   it('replaces the model/effort choice wholesale via setAgentSettings', () => {
-    expect(useAppStore.getState().agentSettings).toEqual({ model: 'claude-opus-4-8', effort: 'xhigh' })
+    expect(useAppStore.getState().agentSettings).toEqual({
+      model: 'claude-opus-4-8',
+      effort: 'xhigh',
+      renderViews: true
+    })
 
     useAppStore.getState().setAgentSettings({ model: 'claude-sonnet-5', effort: 'medium' })
     expect(useAppStore.getState().agentSettings).toEqual({ model: 'claude-sonnet-5', effort: 'medium' })
+  })
+
+  it('carries the render-previews toggle through setAgentSettings (WS-D)', () => {
+    useAppStore.getState().setAgentSettings({ model: 'claude-opus-4-8', effort: 'xhigh', renderViews: false })
+    expect(useAppStore.getState().agentSettings.renderViews).toBe(false)
+
+    useAppStore.getState().setAgentSettings({ model: 'claude-opus-4-8', effort: 'xhigh', renderViews: true })
+    expect(useAppStore.getState().agentSettings.renderViews).toBe(true)
   })
 
   it('toggles selectMode independently of other state', () => {
@@ -373,7 +385,7 @@ describe('appStore', () => {
             attachments: [{ name: 'ref.png', mediaType: 'image/png' }]
           }
         ],
-        agentSettings: { model: 'claude-sonnet-5', effort: 'medium' },
+        agentSettings: { model: 'claude-sonnet-5', effort: 'medium', renderViews: false },
         model: {
           stlPath: 'outputs/part_v1.stl',
           stepPath: 'outputs/part_v1.step',
@@ -389,7 +401,7 @@ describe('appStore', () => {
       const state = useAppStore.getState()
       expect(state.activeProjectId).toBe('proj-b')
       expect(state.projects.map((p) => p.id)).toEqual(['proj-a', 'proj-b'])
-      expect(state.agentSettings).toEqual({ model: 'claude-sonnet-5', effort: 'medium' })
+      expect(state.agentSettings).toEqual({ model: 'claude-sonnet-5', effort: 'medium', renderViews: false })
       expect(state.model).toMatchObject({ name: 'part_v1.stl', iteration: 1, stepPath: 'outputs/part_v1.step' })
       expect(state.messages).toHaveLength(2)
       expect(state.messages[0]).toMatchObject({ id: 'm1', role: 'user', text: 'hi' })

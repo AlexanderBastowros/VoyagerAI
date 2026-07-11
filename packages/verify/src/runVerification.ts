@@ -4,6 +4,8 @@ import type { ExecFileFn } from './execJson'
 import { runLayer1StaticScript } from './layer1StaticScript'
 import { runLayer2Geometry } from './layer2Geometry'
 import { runLayer3BriefConformance } from './layer3BriefConformance'
+import { runPartInterferenceCheck } from './layerPartInterference'
+import type { PartInterferenceEntry } from './layerPartInterference'
 
 export interface RunVerificationOptions {
   /** Iteration number this report is for - stamped onto the returned `VerificationReport`. */
@@ -24,6 +26,13 @@ export interface RunVerificationOptions {
   brief?: DesignBrief | null
   /** Overrides `brief.printer.nozzleDiameterMm` when no printer profile is set. */
   nozzleMm?: number
+  /** Absolute path to the bundled `part_interference.py` (WS-I follow-up) - omit to skip the
+   *  cross-part check (e.g. test harnesses/callers that don't exercise multi-part projects). */
+  partInterferenceScriptPath?: string
+  /** Every part in the active project (active-iteration STL + placement, WS-I follow-up,
+   *  architecture doc §14), for the cross-part interference check on the placed arrangement.
+   *  Omitted, empty, or a single part - the check is skipped, there's nothing to interfere with. */
+  parts?: PartInterferenceEntry[]
 }
 
 function computeBadge(findings: VerificationFinding[], conformance: ConformanceRow[]): VerificationBadge {
@@ -33,15 +42,17 @@ function computeBadge(findings: VerificationFinding[], conformance: ConformanceR
 }
 
 /**
- * Orchestrates verification layers 1-3 (architecture doc §5) for one recorded iteration.
- * Layer 1 always runs (a script is always present); layer 2 runs whenever an STL export exists;
- * layer 3 runs only once a STEP export exists and the brief is locked - see each layer's own
- * module for what it checks and why. None of the three reads another's output, so they run
- * concurrently (each is its own `execFile`/python-process round trip) rather than paying the sum
- * of three process-startup times on every automatic `recordIteration` verification. Stamps
- * `iteration`/`generatedAt`/`badge`, so callers only need to persist and broadcast the result
- * (see `agents/production-roadmap.md`'s WS-C entry for where this is wired into
- * `ProjectStore.recordIteration`'s hook).
+ * Orchestrates verification layers 1-3 (architecture doc §5) for one recorded iteration, plus the
+ * WS-I follow-up cross-part interference check (still tagged onto layer 2's 'geometry' bucket -
+ * see `layerPartInterference.ts`). Layer 1 always runs (a script is always present); layer 2 runs
+ * whenever an STL export exists; layer 3 runs only once a STEP export exists and the brief is
+ * locked; the cross-part check runs only when the caller supplies 2+ parts (single-part projects
+ * have nothing to interfere with) - see each layer's own module for what it checks and why. None
+ * of these reads another's output, so they all run concurrently (each is its own
+ * `execFile`/python-process round trip) rather than paying the sum of their process-startup times
+ * on every automatic `recordIteration` verification. Stamps `iteration`/`generatedAt`/`badge`, so
+ * callers only need to persist and broadcast the result (see `agents/production-roadmap.md`'s
+ * WS-C entry for where this is wired into `ProjectStore.recordIteration`'s hook).
  */
 export async function runVerification(
   options: RunVerificationOptions,
@@ -102,9 +113,26 @@ export async function runVerification(
           conformance: []
         })
 
-  const [layer1Findings, layer2Findings, layer3] = await Promise.all([layer1Promise, layer2Promise, layer3Promise])
+  const partInterferencePromise =
+    options.partInterferenceScriptPath && options.parts && options.parts.length > 1
+      ? runPartInterferenceCheck(
+          {
+            pythonPath: options.pythonPath,
+            partInterferenceScriptPath: options.partInterferenceScriptPath,
+            parts: options.parts
+          },
+          execFileFn
+        )
+      : Promise.resolve<VerificationFinding[]>([])
 
-  const findings = [...layer1Findings, ...layer2Findings, ...layer3.findings]
+  const [layer1Findings, layer2Findings, layer3, partInterferenceFindings] = await Promise.all([
+    layer1Promise,
+    layer2Promise,
+    layer3Promise,
+    partInterferencePromise
+  ])
+
+  const findings = [...layer1Findings, ...layer2Findings, ...layer3.findings, ...partInterferenceFindings]
   const conformance = [...layer3.conformance]
 
   return {

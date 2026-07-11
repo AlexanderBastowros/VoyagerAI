@@ -49,6 +49,12 @@ function patch(overrides: Partial<BriefAgentPatch>): UpdateBriefArgs {
     exclusions: undefined,
     acceptance: undefined,
     features: undefined,
+    printer_name: undefined,
+    printer_bed_x_mm: undefined,
+    printer_bed_y_mm: undefined,
+    printer_bed_z_mm: undefined,
+    printer_nozzle_mm: undefined,
+    printer_materials: undefined,
     ...overrides
   }
 }

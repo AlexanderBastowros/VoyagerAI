@@ -195,3 +195,48 @@ describe('PrinterProfileStore.getActive', () => {
     expect(await store.getActive()).toBeNull()
   })
 })
+
+describe('PrinterProfileStore.delete', () => {
+  it('removes the profile from the list', async () => {
+    await store.save(profile({ name: 'First' }))
+    await store.save(profile({ name: 'Second' }))
+    const result = await store.delete('first')
+    expect(result.profiles.map((p) => p.id)).toEqual(['second'])
+  })
+
+  it('throws on an unknown id, leaving the store untouched', async () => {
+    await store.save(profile({ name: 'First' }))
+    await expect(store.delete('nope')).rejects.toThrow('Unknown printer profile: nope')
+    expect((await store.list()).profiles.map((p) => p.id)).toEqual(['first'])
+  })
+
+  it('moves the active pointer to null when the deleted profile was active', async () => {
+    await store.save(profile({ name: 'First' }))
+    expect((await store.list()).activeId).toBe('first')
+    const result = await store.delete('first')
+    expect(result.activeId).toBeNull()
+    expect(await store.getActive()).toBeNull()
+  })
+
+  it('leaves the active pointer untouched when a non-active profile is deleted', async () => {
+    await store.save(profile({ name: 'First' }))
+    await store.save(profile({ name: 'Second' }))
+    await store.setActive('first')
+    const result = await store.delete('second')
+    expect(result.activeId).toBe('first')
+    expect(result.profiles.map((p) => p.id)).toEqual(['first'])
+  })
+
+  it('recovers after a failed delete (the queue keeps serving)', async () => {
+    await store.save(profile({ name: 'First' }))
+    await expect(store.delete('nope')).rejects.toThrow()
+    expect((await store.delete('first')).profiles).toEqual([])
+  })
+
+  it('persists across store instances', async () => {
+    await store.save(profile({ name: 'First' }))
+    await store.delete('first')
+    const reopened = new PrinterProfileStore({ baseDir })
+    expect((await reopened.list()).profiles).toEqual([])
+  })
+})

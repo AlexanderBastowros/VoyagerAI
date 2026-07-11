@@ -4,6 +4,7 @@
     { "path": "./tsconfig.node.json" },
     { "path": "./tsconfig.web.json" },
     { "path": "./packages/agent-core/tsconfig.json" },
-    { "path": "./packages/verify/tsconfig.json" }
+    { "path": "./packages/verify/tsconfig.json" },
+    { "path": "./packages/render-rig/tsconfig.json" }
   ]
 }

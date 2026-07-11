@@ -27,7 +27,10 @@ import type {
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrinterProfileDeleteRequest,
   PrinterProfileListResponse,
+  RenderGetRequest,
+  RenderGetResponse,
   PrinterProfileSaveRequest,
   PrinterProfileSetActiveRequest,
   PrintSettings,
@@ -133,6 +136,12 @@ export interface VoyagerApi {
      *  unsubscribe function. */
     onUpdated: (callback: (response: PartListResponse) => void) => () => void
   }
+  /** WS-D canonical-view renders. */
+  render: {
+    /** One canonical-view PNG of an iteration's render set as a data URL, or null when that
+     *  iteration has no render set (toggle was off / matplotlib missing / never rendered). */
+    get: (request: RenderGetRequest) => Promise<RenderGetResponse>
+  }
   /** WS-B Parameter panel - stub behavior until WS-B lands (see `src/main/ipc.ts`). */
   param: {
     update: (request: ParamUpdateRequest) => Promise<ParamUpdateResponse>
@@ -149,6 +158,9 @@ export interface VoyagerApi {
     list: () => Promise<PrinterProfileListResponse>
     save: (request: PrinterProfileSaveRequest) => Promise<PrinterProfileListResponse>
     setActive: (request: PrinterProfileSetActiveRequest) => Promise<PrinterProfileListResponse>
+    /** Permanently removes a saved profile; the active pointer moves to null if it was active.
+     *  Rejects if Voyager is mid-turn - stop or wait first. */
+    delete: (request: PrinterProfileDeleteRequest) => Promise<PrinterProfileListResponse>
     /** Subscribe to profile-list changes; returns an unsubscribe function. */
     onUpdated: (callback: (response: PrinterProfileListResponse) => void) => () => void
   }

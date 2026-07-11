@@ -4,7 +4,13 @@ import type { ExecFileFn } from './execJson'
 import { emptyDesignBrief } from '@shared/ipc'
 import type { DesignBrief } from '@shared/ipc'
 
-function fakeExecFor(outputs: { static?: object; extractParams?: { code: number }; geometry?: object; conformance?: object }): ExecFileFn {
+function fakeExecFor(outputs: {
+  static?: object
+  extractParams?: { code: number }
+  geometry?: object
+  conformance?: object
+  partInterference?: object
+}): ExecFileFn {
   return async (_cmd, args) => {
     const script = args[0]
     if (script.includes('static_check')) {
@@ -19,6 +25,9 @@ function fakeExecFor(outputs: { static?: object; extractParams?: { code: number 
     }
     if (script.includes('conformance_check')) {
       return { code: 0, stdout: JSON.stringify(outputs.conformance ?? { findings: [], conformance: [] }), stderr: '' }
+    }
+    if (script.includes('part_interference')) {
+      return { code: 0, stdout: JSON.stringify(outputs.partInterference ?? { findings: [] }), stderr: '' }
     }
     throw new Error(`unexpected script: ${script}`)
   }
@@ -119,5 +128,68 @@ describe('runVerification', () => {
     )
 
     expect(report.badge).toBe('warning')
+  })
+
+  it('skips the cross-part interference check with no partInterferenceScriptPath, even with 2+ parts', async () => {
+    let interferenceCalled = false
+    const execFn: ExecFileFn = async (cmd, args) => {
+      if (args[0].includes('part_interference')) interferenceCalled = true
+      return fakeExecFor({})(cmd, args)
+    }
+
+    await runVerification(
+      {
+        ...baseOptions,
+        parts: [
+          { partId: 'box', stlPath: 'box.stl', placement: { position: [0, 0, 0], rotation: [0, 0, 0] } },
+          { partId: 'lid', stlPath: 'lid.stl', placement: { position: [0, 0, 10], rotation: [0, 0, 0] } }
+        ]
+      },
+      execFn
+    )
+
+    expect(interferenceCalled).toBe(false)
+  })
+
+  it('skips the cross-part interference check for a single part, even with a script path set', async () => {
+    let interferenceCalled = false
+    const execFn: ExecFileFn = async (cmd, args) => {
+      if (args[0].includes('part_interference')) interferenceCalled = true
+      return fakeExecFor({})(cmd, args)
+    }
+
+    await runVerification(
+      {
+        ...baseOptions,
+        partInterferenceScriptPath: 'part_interference.py',
+        parts: [{ partId: 'main', stlPath: 'main.stl', placement: { position: [0, 0, 0], rotation: [0, 0, 0] } }]
+      },
+      execFn
+    )
+
+    expect(interferenceCalled).toBe(false)
+  })
+
+  it('runs the cross-part interference check for 2+ parts and folds a blocking finding into the geometry layer + badge', async () => {
+    const report = await runVerification(
+      {
+        ...baseOptions,
+        partInterferenceScriptPath: 'part_interference.py',
+        parts: [
+          { partId: 'box', stlPath: 'box.stl', placement: { position: [0, 0, 0], rotation: [0, 0, 0] } },
+          { partId: 'lid', stlPath: 'lid.stl', placement: { position: [2, 0, 0], rotation: [0, 0, 0] } }
+        ]
+      },
+      fakeExecFor({
+        partInterference: {
+          findings: [{ severity: 'blocking', message: 'Parts "box" and "lid" interpenetrate at their current placement.' }]
+        }
+      })
+    )
+
+    expect(report.badge).toBe('fail')
+    expect(report.findings).toEqual([
+      { layer: 'geometry', severity: 'blocking', message: 'Parts "box" and "lid" interpenetrate at their current placement.' }
+    ])
   })
 })

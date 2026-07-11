@@ -29,7 +29,10 @@ import type {
   PermissionRequestPayload,
   PermissionRespondRequest,
   PermissionRespondResponse,
+  PrinterProfileDeleteRequest,
   PrinterProfileListResponse,
+  RenderGetRequest,
+  RenderGetResponse,
   PrinterProfileSaveRequest,
   PrinterProfileSetActiveRequest,
   PrintSettings,
@@ -114,6 +117,9 @@ const api: VoyagerApi = {
       ipcRenderer.invoke(IPC.partDuplicate, request),
     onUpdated: (callback) => subscribe<PartListResponse>(IPC.partUpdated, callback)
   },
+  render: {
+    get: (request: RenderGetRequest): Promise<RenderGetResponse> => ipcRenderer.invoke(IPC.renderGet, request)
+  },
   param: {
     update: (request: ParamUpdateRequest): Promise<ParamUpdateResponse> =>
       ipcRenderer.invoke(IPC.paramUpdate, request),
@@ -129,6 +135,8 @@ const api: VoyagerApi = {
       ipcRenderer.invoke(IPC.printerProfileSave, request),
     setActive: (request: PrinterProfileSetActiveRequest): Promise<PrinterProfileListResponse> =>
       ipcRenderer.invoke(IPC.printerProfileSetActive, request),
+    delete: (request: PrinterProfileDeleteRequest): Promise<PrinterProfileListResponse> =>
+      ipcRenderer.invoke(IPC.printerProfileDelete, request),
     onUpdated: (callback) => subscribe<PrinterProfileListResponse>(IPC.printerProfileUpdated, callback)
   },
   exportPackage: {

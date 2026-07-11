@@ -60,9 +60,9 @@ WS-0a (extract agent-core) ── DONE
           ├─► WS-D  Render rig + self-inspect  ├─ parallel, disjoint file footprints
           ├─► WS-E  Printer profiles ── DONE   ┘
           └─► WS-0c (contract addendum: import/parts/gears) ── DONE
-                 ├─► WS-G  External model import/remix  ┐
-                 ├─► WS-H  Gear generation              ├─ parallel (H's verify checks after WS-C)
-                 └─► WS-I  Multi-part & placement ── DONE ┘
+                 ├─► WS-G  External model import/remix       ┐
+                 ├─► WS-H  Gear generation ── DONE-partial    ├─ parallel (H's verify checks after WS-C)
+                 └─► WS-I  Multi-part & placement ── DONE     ┘
                         └─► WS-F  Graduation package + per-part export (needs WS-I)
 Then: M1 integration pass (dispatcher-led).
 M2+ (Bedrock, multi-model, plugins) — sketched only; decomposed when a trigger fires.
@@ -393,8 +393,79 @@ Notes on the gates:
 - **Done when:** every new iteration gets a report; a deliberately-wrong dimension in a
   test fixture is caught by layer 3 and shown as a red row.
 
-### WS-D — Render rig + designer self-inspection · **Status: TODO** · depends: 0a, 0b
+### WS-D — Render rig + designer self-inspection · **Status: DONE** · depends: 0a, 0b
 
+- **Landed:** `packages/render-rig` (new npm workspace, mirroring `packages/verify`'s shape).
+  **Rendering backend is matplotlib's Agg canvas, not pyrender/EGL** despite the scope line
+  below - Voyager renders locally on the user's own desktop (Mac/Windows/Linux), and EGL is a
+  Linux/NVIDIA-only headless GL extension with no macOS equivalent, so a pyrender/EGL-only path
+  would simply not run for a large share of desktop users (this dev sandbox is macOS, where it
+  could not have been exercised either). Agg is a pure-software rasterizer bundled with
+  matplotlib - no GPU, no display server, no OS driver stack - and is exactly the "pinned
+  fallback" the scope line allows; it was chosen as the primary (only) implementation for that
+  reason, with the camera/projection/shading done as our own small vectorized-numpy code (see
+  below) rather than relying on `mplot3d`'s 3D camera model.
+  `python/render_views.py` renders one STL's 6 orthographic axis views + 2 isometric views to
+  fixed-size PNGs - deterministic camera basis (Gram-Schmidt'd `(right, up, view_dir)` per view,
+  a documented, fixed `VIEW_DEFS` table), backface culling + a painter's-algorithm depth sort
+  feeding matplotlib's 2D `PolyCollection` (own small vectorized-numpy projection/shading code,
+  **not** `mplot3d` - sidesteps its orthographic-aspect-ratio/hidden-surface quirks), fixed
+  ambient+diffuse lighting from a constant world-space light direction, a fixed neutral
+  blue-gray material (deliberately not the app's per-part palette), and an mm grid + tick labels
+  baked into every frame (the "mm scale reference" requirement) with a "nice step" chosen so
+  gridlines land near round mm values regardless of part size. Prints one JSON line on stdout,
+  `{"ok": true, "views": {...}, "widthMm", "heightMm", "depthMm", "sizePx"}` or `{"ok": false,
+  "error"}` on any failure (including missing imports) - never a bare traceback, matching
+  `packages/verify/python/*.py`'s convention exactly. `src/renderViews.ts` is the thin
+  injectable-exec TS wrapper (`packages/verify/src/validateStl.ts`'s exact shape, own local copy
+  of the small `execFile` helper rather than a cross-package dependency on `@voyager/verify` -
+  render-rig and verify are independent siblings per the architecture doc, not a stack);
+  `renderConvention.ts` gives renders a home beside each iteration's STL
+  (`<base>.renders/{front,back,left,right,top,bottom,iso1,iso2}.png`, mirroring
+  `manifestPathForStl`/`verificationPathForStl`'s "one rule for what lives next to the STL"
+  convention, but naming a directory instead of a single file). Root `package.json`/`tsconfig.json`
+  gained the same per-package `typecheck:render-rig` wiring `agent-core`/`verify` already have
+  (`vitest.config.ts`'s `packages/**/*.test.ts` glob already covered the new tests with no
+  change needed).
+  `packages/agent-core/tools/renderViews.ts` is the `render_views` MCP tool, same standalone-
+  handler/injected-deps shape as `runVerification.ts`: reads the active iteration, calls
+  `deps.renderViews(iteration)`, reads each PNG's bytes itself (mirrors `display_model` reading
+  its own STL bytes), and returns them as MCP **image content blocks** (`{type: 'image', data:
+  base64, mimeType: 'image/png'}`) plus a one-line text summary - the model can actually *see*
+  the renders, not just get told they exist, which is the whole point of self-inspection. Wired
+  into the registry (`tools/index.ts`) and one small additive optional field on
+  `VoyagerMcpDeps`/new `RenderIterationOutcome` type (`tools/types.ts`), exactly mirroring how
+  WS-C's `runVerification`/WS-E's `printerProfiles` were added - both files are siblings of this
+  order's own `tools/renderViews.ts`, not a different stream's surface. SKILL.md gained one
+  surgical paragraph at the Phase 5/6 boundary (WS-D's explicitly-owned paragraphs): call
+  `render_views` and look at the result - missing/misplaced/mirrored/mis-oriented features -
+  before calling `display_model`; explicitly told it's a sanity check, not a measurement tool,
+  and to proceed to Phase 6 without blocking if rendering reports itself unavailable.
+  **Execution-verified against real geometry** (WS-C precedent): an ad-hoc `pip install --user
+  trimesh numpy matplotlib` in the sandbox (none of the three importable from the repo's own
+  managed venv here) rendered a deliberately asymmetric L-shaped test STL; front/back/left/right
+  visually confirmed *not* mirrored or rotated wrong (worked through the camera-basis math by
+  hand for two views to confirm the rendered silhouettes match); two independent runs against the
+  same STL produced **byte-identical PNGs** (same checksum, same size) - the "pixel-stable across
+  two runs" done-when criterion. Quality gate green: 463 tests (448 prior + 15 new: 4 render-rig
+  exec-wrapper, 5 `renderDirForStl`, 6 tool), build, typecheck (now including the new
+  `typecheck:render-rig`).
+- **Not wired live (honest gap - see contract-change requests below):** `deps.renderViews` is
+  optional and nothing in this order's file ownership constructs a real implementation, so
+  today the tool always replies "Rendering is not available in this session" in the actual app -
+  `src/main/ipc.ts` (where `verifyIteration`/`AgentSession` are constructed) and
+  `packages/agent-core/src/agent/session.ts` (`AgentSessionDeps`, the `createVoyagerMcpServer`
+  call) are where WS-C's `runVerification` and WS-E's `printerProfiles` were threaded through by
+  their own orders even though neither file was in *their* "Files owned" line either - this
+  order's brief was explicit to touch only its three owned surfaces and file a request for
+  anything else, so that wiring (fully specified below, all-additive, ~20 lines) is left for the
+  dispatcher to route rather than assumed. Net effect: the "done when" criteria (canonical
+  render set on disk per iteration; transcript shows self-inspection before display) are **not**
+  met end-to-end yet - only the tool + renderer are done and independently verified. Thumbnails
+  in the version-history UI (`ProjectsDrawer.tsx`'s "Versions" list) are **not implemented**:
+  reading PNG bytes into the renderer process needs a new IPC channel (nothing in the frozen
+  `src/shared/ipc.ts` surface exposes arbitrary file bytes, nor should it generically), which is
+  a contract change outside this order's file ownership - filed below instead of edited.
 - **Why:** product doc §4.3 — deterministic canonical views; the designer looks at its own
   output before declaring success (works fully in CLI mode; the *independent* vision critic
   waits for Mode B).
@@ -466,7 +537,7 @@ Notes on the gates:
   nozzle/bed questions and the generated script's `BED_X/BED_Y/BED_Z/NOZZLE` constants
   match the profile.
 
-### WS-F — Graduation package + per-part export · **Status: TODO (partial)** · depends: 0a, 0b, **WS-I** (parts model)
+### WS-F — Graduation package + per-part export · **Status: DONE** · depends: 0a, 0b, **WS-I** (parts model)
 
 - **Partial (maintainer-directed fix, 2026-07-10):** the "export all parts" slice landed —
   `model:export` now honors `partId`, and a multi-part project with no explicit part saves
@@ -476,6 +547,41 @@ Notes on the gates:
   surfaces parts left out (no iterations / no STEP) in the success snackbar. Still open:
   3MF, plate export, package builder (`exportPackage.ts` can reuse `writeZip`), "Export…"
   menu, per-part export UI.
+- **Landed (2026-07-11):** the remainder. **3MF** resolves per part exactly like STL/STEP now
+  (`resolveExportSource`/`resolveAllPartsExportSources` widened to `SingleFileExportFormat =
+  'stl'|'step'|'3mf'`) via a convention-derived sibling path (`deriveThreeMfPath`, same
+  "no new field needed" pattern `manifestPathForStl` already uses) that `src/main/ipc.ts`
+  probes for with a real `stat()` before trusting it - degrades to the existing "no export"
+  messaging when absent, since `ProjectIteration` has no `threeMfPath` field (SKILL.md only
+  "offers" 3MF today; see the contract-change request below). **Plate export** (new
+  `packages/agent-core/src/projects/plateStl.ts`, dependency-free, unit-tested): a pure
+  binary-STL parser/writer plus a hand-rolled XYZ-Euler rotation matrix (bit-for-bit the same
+  formula as three.js's `Matrix4.makeRotationFromEuler`, so agent-core takes no `three`
+  dependency) that origin-aligns each part's geometry, ground-clamps against *that*
+  iteration's own bounds (mirrors `loadPart()`'s re-clamp-on-load reasoning - a stale
+  persisted `placement.position[1]` can't sink a refined part below the plate), then merges
+  every **visible** part into one binary STL; wired into `model:export`'s `'plate'` branch
+  (`partId` ignored, parts without a visible iteration reported via `skippedParts`).
+  **Package builder** (new `packages/agent-core/src/projects/exportPackage.ts`, pure logic
+  with injected `PackageFsDeps` so it unit-tests against an in-memory fake): per-part
+  `{part}_v{N}.step/.3mf/.stl/.py` sections (bundling only what `fileExists` confirms -
+  format-honesty degrade, mirroring mesh-lineage parts having no STEP), one combined
+  `manifest.json` (keyed by part id), the project's *currently* locked brief as a single
+  `brief.v{K}.json` (omitted if never locked), and a generated `README.md` (re-run with
+  `pip install build123d`, import instructions, per-part gaps, which locked brief version
+  each part was generated against) - wired into the `model:exportPackage` stub-replacement
+  point in `src/main/ipc.ts`. **"Export…" menu** in `ViewportControls.tsx` replaces the two
+  STL/STEP buttons with one dropdown: "This part" (STL/STEP/3MF, scoped to the focused part)
+  and "All parts" (STL/STEP/3MF zips) sections on a multi-part project, plus "Export plate"
+  and "Export package" always - same "Exporting …"/silent-cancel/verbatim-error conventions.
+  Quality gate green: 474 tests (27 new: 6 more `exportResolver` 3MF cases, 10 new
+  `exportPackage.test.ts`, 11 new `plateStl.test.ts`), typecheck, build. Also validated with
+  real tools in scratch (not committed) integration tests: a generated package zip passed
+  `unzip -t`/`-l` and round-tripped its STL byte-for-byte through a real `unzip -o` extract;
+  a two-part plate STL was written to disk and its binary header/triangle count re-parsed
+  independently, confirming both parts' geometry rests on the plate after a 45° rotation.
+  Not runtime-verified in a live Electron window in this sandbox (same CLI/Python-env gap
+  WS-B/C/I noted).
 - **Why:** architecture doc §12.1, §14 / product doc §5.3, §5.5 — anti-lock-in bundle,
   plus the fix for "everything merges into one file": exports resolve **per part**.
 - **Scope:** part-scoped export resolution (`exportResolver` generalized to an artifact
@@ -486,15 +592,72 @@ Notes on the gates:
   generated README); "Export…" menu in `ViewportControls` (per part / all / plate /
   package); skill note ensuring 3MF is always produced.
 - **Files owned:** `packages/agent-core/projects/exportResolver.ts`,
-  `packages/agent-core/projects/exportPackage.ts`,
-  `src/renderer/src/components/ViewportControls.tsx` (export menu only).
+  `packages/agent-core/projects/exportPackage.ts`, `packages/agent-core/projects/plateStl.ts`
+  (new sibling file for the plate-export STL transform/merge, per this order's own text),
+  `src/renderer/src/components/ViewportControls.tsx` (export menu only), plus the
+  `model:export`/`model:exportPackage` handler bodies (designated stub-replacement points) in
+  `src/main/ipc.ts` and additive `packages/agent-core/src/index.ts` exports.
 - **Done when:** a two-part project exports each part as its own file, "all parts" as a
   zip of separate files, and a plate STL matching the viewport arrangement; the exported
   package opens: STEP imports into Fusion/Onshape, script re-runs with
   `pip install build123d`, README renders.
 
-### WS-G — External model import & remix · **Status: TODO** · depends: 0a, 0b, **0c**
+### WS-G — External model import & remix · **Status: DONE** · depends: 0a, 0b, **0c**
 
+- **Landed:** `packages/agent-core/src/projects/importModel.ts` (the roadmap's own path below
+  omits `/src/` — same shorthand slip WS-A/WS-E's docs already flagged for their own paths) — pure,
+  injected-spawn logic (mirrors `EnvManager`/`params/rerun.ts`, zero `electron` imports):
+  `detectImportFormat`/`isUnitlessFormat` (extension → lineage), `copyImportSource` (source file →
+  `imports/<uuid>.<ext>`, never touching the original), `measureMeshImport` (spawns
+  `remix/measure_mesh.py`, used only for STL/OBJ's unit-confirmation bbox), `pickUnitConfirmationAxis`
+  (largest bbox extent), and `finalizeMeshImport`/`finalizeStepImport` — each writes a
+  **self-contained** `outputs/<part>_v<n>.py` (no cross-package imports) and *runs* that exact file
+  to produce the artifacts, so the script `recordIteration` snapshots as "the exact script that
+  produced this iteration" is never a fiction. Mesh lineage embeds a dependency-free repair (drop
+  degenerate/duplicate faces, merge vertices, fan-triangulate boundary loops to fill simple holes -
+  no networkx/scipy, since the managed env's package list doesn't include them, mirroring
+  `packages/verify/python/geometry_report.py`'s own no-extra-dependency precedent) and reports
+  exactly what it changed; STEP lineage is an ordinary build123d `import_step` + `export_stl`/
+  `export_step` script. `src/main/ipc.ts`'s `model:import` stub body now orchestrates the full
+  two-phase flow (native `dialog.showOpenDialog` when `filePath` is omitted; a module-level
+  `pendingMeshImports` map, keyed by project id, resumes an STL/OBJ import once the renderer
+  re-calls with `unitScaleMm` — mirrors the existing `pendingApprovals` pattern) and calls
+  `ProjectStore.recordIteration({ createdBy: 'import' })` + broadcasts `model:displayed` exactly
+  like `param:update` does, so display/verification/version-history all work unchanged. Python:
+  `packages/agent-core/remix/measure_mesh.py` (the only remix script the TS side actually invokes),
+  plus two standalone, independently-runnable reference tools satisfying "scripts the managed env
+  runs" without coupling the production path to them: `repair_mesh.py` (same repair algorithm as a
+  CLI + `--scale`) and `boolean_ops.py` (`trimesh.boolean` union/subtract/intersect, `manifold3d`
+  engine preferred, a clear actionable error when no backend is installed rather than a crash).
+  New skill reference `references/remix.md` (capability rule, unit-confirmation rule, STEP vs. mesh
+  patterns, the plug-and-recut boolean pattern, repair-pass honesty about the networkx gap).
+  `ImportDialog.tsx` is a real two-phase UI (drop zone + native-picker "Browse…" button → the
+  measured-dimension confirm/correct step → error `Alert`) — since no existing mount point called
+  `setImportDialogOpen(true)` (WS-0c pre-landed the flag/placeholder but no trigger), and every
+  candidate location to add one (`ViewportControls.tsx`, `PartsPanel.tsx`, `App.tsx`'s mount list)
+  is owned by another work order, the component renders its own small floating "Import model"
+  trigger (top-right of the viewport) alongside the dialog rather than shipping an unreachable
+  feature. Small mechanical/additive edits mirroring WS-A/WS-B's own precedent (invited by "a new
+  package-local folder", not a scope violation): `packages/agent-core/src/index.ts` barrel-exports
+  the new module's public surface; `electron-builder.yml` gained a `packages/agent-core/remix → remix`
+  `extraResources` entry mirroring the existing `verify`/`params` ones.
+  **Execution-verified against real trimesh/numpy in this sandbox** (both happen to be installed
+  system-wide here, unlike build123d/OCP) — `measure_mesh.py`, `repair_mesh.py`, and the exact
+  dependency-free hole-fill algorithm embedded in the generated mesh-lineage script were run
+  end-to-end against synthetic non-watertight/duplicate-face STL fixtures (confirmed: repair
+  report accuracy, watertight after fill, scale correctly applied); `boolean_ops.py`'s
+  no-backend-installed error path was confirmed to fail cleanly with an actionable message (real
+  boolean success needs `manifold3d`, not installed here). **Not verified:** the STEP-lineage
+  generated script (`import_step`/`export_stl`/`export_step`, and the `bounding_box().size`
+  attribute-casing guess it falls back gracefully from) — build123d/OCP aren't importable in this
+  sandbox, the same gap WS-B/WS-C/WS-E/WS-I all noted; and the live Electron app (native file
+  picker end-to-end, drag-drop, viewport display) — no signed-in CLI + managed Python env available
+  here either. 24 new unit tests (mocked spawn, real tmpdir), quality gate green: typecheck, build,
+  test (447 total).
+- **Known gap, filed below:** true drag-and-drop (resolving a dropped file's absolute path) needs
+  a `webUtils.getPathForFile()` preload bridge this work order can't add (`src/preload/**` is a
+  frozen shared contract) — the dialog's drop zone degrades to opening the native picker instead of
+  silently doing nothing with the drop.
 - **Why:** product doc §5.6 / architecture doc §12.5 — most hobbyist projects start from an
   existing file (a Thingiverse/Printables STL, a colleague's STEP, a scan), and
   import → repair → verify → split → print settings is a complete zero-generation use case
@@ -523,8 +686,118 @@ Notes on the gates:
   STEP; an import that fails watertightness gets a repair pass with a report of what
   changed.
 
-### WS-H — Gear generation (mechanisms v1) · **Status: TODO** · depends: 0a, 0b, **0c** (gear-spec verify checks additionally wait for WS-C)
+### WS-H — Gear generation (mechanisms v1) · **Status: DONE-partial** · depends: 0a, 0b, **0c** (gear-spec verify checks additionally wait for WS-C)
 
+- **Landed:** all four scope items below, plus the library-spike verdict this order asks to be
+  recorded here.
+  - **1. Library spike (WebSearch/WebFetch research against each project's README/docs — none
+    of the three pip-installs in this sandbox, per this order's own constraint).** Verdict, per
+    gear type:
+    - **Spur (default) → `bd_warehouse.gear.SpurGear`.** build123d-native (Gumyr, the build123d
+      author), plain PyPI package (`pip install bd_warehouse`), Apache-2.0, actively maintained
+      (v0.2.0, Feb 2026, 225 commits). Its `InvoluteToothProfile` generates the analytic involute
+      curve directly from module/pressure-angle/tooth-count — no spline approximation. Coverage
+      is spur-only (no helical/bevel/ring/planetary in the gear module) and it has no
+      bore/hub constructor args — cut those with an ordinary build123d boolean, same as any hole.
+    - **Helical / herringbone → `cq_gears` (CadQuery).** The only candidate with herringbone
+      (and helical ring-gear) coverage at all — required because this order's own "done when"
+      example specifies a herringbone pair. Apache-2.0; involute math is adapted from the
+      long-standing `gears.scad`/`involute_gears.scad` OpenSCAD lineage, specifically
+      battle-tested in the FDM/hobbyist gear-printing community (a real trust signal for this
+      product's users). **Risk:** last tagged release is `v0.45-alpha` (Aug 2021), README says
+      "work in progress... might be unstable," not on PyPI (git-install only). Broadest raw
+      coverage of the three (spur/helical/herringbone/ring incl. helical+herringbone
+      ring/planetary/straight+helical bevel/racks) but the least maintained.
+    - **Bevel / (external) ring / cycloid → `py_gearworks`** (renamed from `gggears`;
+      `import py_gearworks`). build123d-native (no CadQuery bridge), Apache-2.0, more actively
+      maintained than `cq_gears` (v0.0.18, Jan 2026, 221 commits), and ships a `mesh_to()` helper
+      that places a mate at the correct center distance — directly useful for this order's
+      center-distance check. **Risk:** the project states its own API "has no stability yet";
+      not on PyPI (git-install only). No herringbone/planetary/worm coverage.
+    - **Planetary gearsets, racks → `cq_gears`** — only candidate with explicit builders for
+      either.
+    - **Worm gears → none of the three.** Not covered by any candidate's gear module. Flagged
+      as a v1 gap (skill says so explicitly rather than hand-modeling one) — see Known gaps.
+    - **No framework switch**, per the constraint: a CadQuery-built gear wraps into build123d at
+      the OCP shape level (`Solid(cq_shape.val().wrapped)`), STEP round-trip as the documented
+      fallback if that misbehaves for a given library version.
+  - **2. Env (`packages/agent-core/src/python/envManager.ts` — the roadmap's "package list"
+    scope; the file has no separate `src/`-less path, same shorthand slip WS-A/WS-E's entries
+    already noted):** `REQUIRED_PACKAGES` gained `bd_warehouse` only — `['build123d', 'trimesh',
+    'numpy', 'bd_warehouse']` — installed eagerly in the same single pip/uv call as the other
+    three (small, PyPI, no extra heavy wheel beyond build123d's own OCP dependency).
+    `extractPackageVersions`'s regex and `STAGE_PATTERNS`/progress-message strings were extended
+    to recognize it so the marker file and setup-screen progress text stay accurate. **Deliberate
+    deviation from a literal reading of "CadQuery-based libs install lazily":** `py_gearworks` is
+    build123d-native (not CadQuery-based) but was *also* kept lazy/optional rather than added to
+    `REQUIRED_PACKAGES`, because the project states outright that its API "has no stability yet."
+    Baking a pre-1.0, git-only dependency into every project's environment (gear or not) seemed
+    like the wrong risk trade for a feature most projects won't touch; `cq_gears` and
+    `py_gearworks` are both pip-installed **on demand**, pinned to a tag (`@v0.45-alpha` /
+    `@v0.0.18`, not `@main`) — documented in `references/gears.md` §1, mirroring the skill's
+    existing CadQuery lazy-install path. New/updated tests:
+    `packages/agent-core/src/python/envManager.test.ts` asserts `bd_warehouse` is actually in the
+    combined install call's args and that its progress-line pattern classifies.
+  - **3. Skill:** new `resources/skills/printable-cad/references/gears.md` — the library table
+    above, the CadQuery→build123d handoff snippet, the meshing math to confirm before generating
+    (module/PA/helix match across a pair, center distance `m·(z₁+z₂)/2` with the transverse-module
+    correction for helical, the undercut-minimum formula `2/sin(PA)²` — and its helical
+    "virtual tooth count" variant `teeth/cos(helix)³`), the gear `PARAMS` convention
+    (`MODULE`/`TEETH`/`PRESSURE_ANGLE`/`HELIX_ANGLE`/`BORE_D`/`BACKLASH`, exact constant names so
+    a future automated reader doesn't have to guess), the sibling-parts convention (§4: one
+    `display_model` call per gear, distinct `part` slugs, never a unioned/co-located multi-body
+    file), and the Phase-2 clarify questions ("what does it mesh with?" as mandatory as "what's
+    the hole for?", module-vs-DP, pressure angle default, spur/helical/herringbone tradeoffs,
+    bore/keyway, load-bearing, replacing-an-existing-gear caliper cross-check).
+  - **4. Verification:** `packages/verify/src/gearsSpecCheck.ts` (+ colocated
+    `gearsSpecCheck.test.ts`, 26 tests, all hand-computed fixture numbers — no python subprocess,
+    no live env needed, since every check here is a pure formula over the brief's `gear` features
+    plus (optionally) the modeled arrangement) implements `runGearSpecCheck`: matched
+    module/pressure-angle/helix-magnitude across each declared `meshesWith` pair (`blocking` on
+    mismatch — physically can't mesh), center distance vs. the modeled arrangement (`blocking`
+    when it deviates from `m·(z₁+z₂)/2` beyond a placement-precision tolerance, either direction —
+    same "hard conformance" treatment as layer 3's envelope/hole rows), backlash within a DFM
+    allowance (`suggestion` — see the contract-change below, the allowance itself doesn't exist
+    yet so this degrades to an `info` finding rather than inventing a number), and an
+    undercut-minimum-teeth warning (`suggestion`, using the helical "virtual tooth count" so a
+    helical gear isn't falsely flagged at a real tooth count that would undercut as a spur). Also
+    catches a dangling/asymmetric `meshesWith` and a same-hand helix pair (likely a crossed-axis
+    mix-up). Exported pure helpers (`minTeethToAvoidUndercut`, `virtualToothCount`,
+    `theoreticalCenterDistanceMm`) are unit-tested directly against the textbook figures (~17
+    teeth @ 20° PA, ~32 @ 14.5° PA) so the math itself is checkable independent of the finding
+    plumbing. **Not wired into `runVerification.ts`/`verifyIteration`** — see below.
+- **What's still open, and why it's a contract-change rather than WS-H code** (every one of these
+  sits in a file WS-H doesn't own per the Ground rules):
+  1. **The gear-spec check isn't wired into the live pipeline yet.** `runVerification.ts` (WS-C,
+     frozen) runs per-iteration/per-part; the gear-spec check needs the *whole* locked brief's
+     gear features plus every gear part's `Placement` at once (closer to WS-I's still-pending
+     cross-part interference check than to a per-part layer). Filed below with the exact proposed
+     wiring — it can share the same "assemble every part's placement" plumbing that interference
+     check needs.
+  2. **The agent has no way to author a `gear` feature into the brief at all.**
+     `packages/agent-core/brief/agentPatch.ts`'s `AgentFeatureShape` (WS-A-owned) only has
+     `hole`/`pocket`/`boss`/`fillet_chamfer`/`text`/`insert` variants — `update_brief` will reject
+     a gear patch outright. This is more load-bearing than it looks: product doc §5.7's "gears are
+     brief-first-class" doesn't hold until this lands. Filed below.
+  3. **Gear DFM numbers** (min module vs. nozzle, herringbone preference for FDM, backlash
+     allowance) **and a `SKILL.md` pointer line** — both `design-for-printing.md`/`SKILL.md`,
+     WS-B-owned. Filed below (this order's required coordination note).
+  4. A dedicated `'gear-spec'` `VerificationLayer` value (`src/shared/verification.ts`,
+     WS-0b-owned/frozen) would let `VerificationPanel.tsx` group these findings distinctly instead
+     of folding them into `'brief-conformance'` (the `runGearSpecCheck` `layer` option already
+     takes any `VerificationLayer` and defaults there, so re-tagging later is a one-line change at
+     the call site, not a `gearsSpecCheck.ts` rewrite).
+- **Known gaps (v1 scope, not contract-change-blocked — just not built):** worm gears (no
+  candidate library covers them; the skill says so rather than hand-modeling one); profile-shifted
+  gears (addendum modification shifts center distance; `gears.md`/`gearsSpecCheck.ts` both flag
+  this as unhandled rather than silently ignoring a requested shift); the center-distance check
+  assumes parallel, vertical(Z) bore axes (the normal flat-print orientation for a spur/helical
+  pair) and doesn't apply to bevel/crossed-axis arrangements — `pressureAngleDeg`/`moduleMm`
+  checks still run for a bevel pair, center-distance doesn't; and — the sandbox gap this order
+  itself anticipated — no live env here to pip-install any of the three libraries, so the actual
+  *generated* tooth profile (library output vs. the analytic involute curve) is spike-research-only
+  (README/docs claims), never runtime-verified against a real export, the same gap WS-C/WS-E/WS-I
+  each noted for their own sandbox-unreachable pieces.
 - **Why:** product doc §5.7 / architecture doc §13 — gears are a top functional-print
   request and the sharpest "properly" test: library-generated involutes with checkable
   meshing math, never hand-modeled teeth. Fully CLI-phase.
@@ -695,6 +968,22 @@ Notes on the gates:
   `request.partId` through to `activeIterationRecord`. No channel names or preload wiring
   changed; `src/preload/api.ts` only had its `model.export` doc comment refreshed.
 
+- **WS-F 3MF export needs a SKILL.md Phase 4 change (WS-B-owned) — always produce 3MF, not just
+  "offer" it.** `resolveExportSource`/`resolveAllPartsExportSources`/`exportPackage.ts` (WS-F,
+  2026-07-11) now resolve a part's 3MF export the same way as STL/STEP - but purely by
+  *convention*: `deriveThreeMfPath` computes the sibling path (`<part>_vN.3mf` beside the STL,
+  same pattern `manifestPathForStl` already uses), and `src/main/ipc.ts` probes for it with a
+  real `stat()` before trusting it, since `ProjectIteration` carries no `threeMfPath` field (no
+  contract change needed for the *resolution* mechanism itself). SKILL.md's Phase 4 currently
+  says only "Offer **3MF** as well when the user's slicer prefers it" (a conditional, model-
+  discretion action) - so a real project mostly won't have the sibling file, and every 3MF
+  export/package section quietly degrades to "no 3MF export" even though the mechanism is fully
+  wired end-to-end. Proposed change (WS-B-owned `resources/skills/printable-cad/SKILL.md`):
+  change Phase 4's export step to *always* run `export_3mf(...)` alongside STL/STEP (mirroring
+  `build123d.md`'s already-documented `export_3mf` call), versioned identically
+  (`<part>_vN.3mf`) - not left conditional on the user's slicer preference. Filing here rather
+  than editing SKILL.md directly (WS-B ownership).
+
 - **WS-A needs a `brief:listVersions` channel.** `BriefStore.listVersions(projectDir)`
   (`packages/agent-core/brief/store.ts`) reads back every locked version's full snapshot from
   `<projectDir>/brief/versions/v{n}.json` and is unit-tested, but the frozen `brief:*` contract
@@ -728,6 +1017,15 @@ Notes on the gates:
      the `prompts.ts` change, so land them together.
   Until this lands, criteria "region-select reports which part was selected" and multi-part agent
   authoring are captured/persisted on the WS-I side but not yet surfaced to the model.
+  **→ LANDED (contracts follow-up, 2026-07-11):** all three landed together. `systemPromptAppend`
+  gained a parts-vocabulary paragraph (name `part` on `display_model` for multi-part projects, ask
+  when ambiguous); `formatSelectionContext` includes `selection.partId` when set;
+  `buildUserMessage`/`AgentSession.sendMessage` gained an `arrangementContext`/`focusedPartId` path
+  backed by a new `formatArrangementContext` (part names + placements, injected only for 2+ parts) -
+  `AgentSession.sendMessage` reads `projectStore.listParts()` itself, and `focusedPartId` flows
+  `ChatPanel.tsx` → `agent:sendMessage` → `AgentSession.sendMessage`'s new optional param. Also fixed
+  the stale `outputs/versions/vN.py` snapshot-path prose (now `outputs/versions/<part>/vN.py`) in
+  both `prompts.ts` and `SKILL.md`.
 
 - **WS-I needs a cross-part interference check in WS-C's layer 2.** WS-I persists each part's
   `placement` (`ProjectStore.setPlacement`; `listParts()` exposes `PartRecord.placement`) but does no
@@ -740,6 +1038,17 @@ Notes on the gates:
   rotation: [n,n,n] } }>` (each part's active-iteration STL + its placement) - transform each mesh by
   its placement, then AABB-then-mesh interference-test the set. This is the same caliper-class,
   LLM-free check the verification pyramid already favors.
+  **→ LANDED (contracts follow-up, 2026-07-11):** new `packages/verify/python/part_interference.py`
+  (min-corner-aligns each mesh like the renderer's `viewer.ts`/`placement.ts`, then AABB-padded-by-
+  epsilon-then-ray-cast interference test - deliberately not `trimesh.contains()`/`signed_distance()`,
+  both of which need `rtree`, not in the guaranteed venv; confirmed by hand) and a new
+  `packages/verify/src/layerPartInterference.ts` wrapper, composed into `runVerification` (findings
+  tagged `layer: 'geometry'`, only runs for 2+ parts) and wired through `verifyIteration` in
+  `src/main/ipc.ts` (assembles each part's active-iteration STL + placement via
+  `projectStore.listParts()`/`activeIterationRecord(partId)`). Unit-tested with fixture boxes
+  (overlapping, clear, and flush-touching - the touching case needed a small epsilon pad on the
+  AABB pre-filter to avoid a false positive) actually executed against real STL geometry with
+  system Python (numpy + trimesh), plus TS-level tests against a faked `execFileFn`.
 
 - **WS-E needs printer fields in `update_brief`'s patch shape (WS-A-owned `brief/agentPatch.ts`).**
   `DesignBriefSchema.printer` exists (0b) and WS-C's `verifyIteration` *prefers* `brief.printer`
@@ -755,6 +1064,12 @@ Notes on the gates:
   frozen-contract change), and one sentence in WS-E's switched-printer prompt arm telling the
   agent to record the project's printer via `update_brief` - `verifyIteration`'s
   brief-printer-first logic then does the right thing with no other change.
+  **→ LANDED (contracts follow-up, 2026-07-11):** the six `printer_*` fields landed on
+  `briefAgentPatchShape` and `mergeAgentPatch` (agent-core-local, matches the "no provenance
+  concept" plain-scalar pattern the other patch fields already use - unspecified fields fall back
+  to whatever the brief already had, not to 0/''), plus the prompted sentence in
+  `formatPrinterProfileContext`'s switched-printer arm telling the agent to call `update_brief`
+  right away rather than waiting on a saved-profile confirmation.
 
 - **WS-E requests a Phase-1 sentence in `SKILL.md` (WS-B-owned).** Phase 1 currently says to ask
   the nozzle/bed questions "together, up front" every session; WS-E now overrides that via the
@@ -765,6 +1080,8 @@ Notes on the gates:
   skill is copied per-project at creation (`ProjectStore.materializeProject` copies only when
   missing), so existing projects keep their old copy either way - the system-prompt override is
   the mechanism that works for them.
+  **→ LANDED (contracts follow-up, 2026-07-11):** the quoted sentence added verbatim at the top of
+  Phase 1 in `resources/skills/printable-cad/SKILL.md`.
 
 - **WS-E notes the frozen `printerProfile:*` contract has no delete.** The panel can list, save,
   and set-active but never remove a profile (a mis-added printer lives forever; the store's only
@@ -773,3 +1090,199 @@ Notes on the gates:
   `PrinterProfileListResponse` (active pointer moves to `null` when the active profile is
   deleted), wired like `printerProfile:setActive`, plus a delete affordance in
   `PrinterProfilesPanel.tsx` (WS-E-owned, trivial once the channel exists).
+  **→ LANDED (contracts follow-up, 2026-07-11):** the shape above, shipped as `printerProfile:delete`
+  (`src/shared/ipc.ts`/`ipc.test.ts`, `src/preload/api.ts`/`index.ts`), `PrinterProfileStore.delete`
+  (unit-tested: unknown-id throw, active-pointer-to-null, non-active delete leaves the pointer
+  alone, persists across store instances), a main handler gated on `agentSession.isBusy()` (unlike
+  `save`/`setActive`, since deleting the *active* profile out from under an in-flight turn would
+  invalidate that turn's already-baked-in system-prompt printer context) that broadcasts
+  `printerProfile:updated`, and a delete icon next to each profile's edit affordance in
+  `PrinterProfilesPanel.tsx` (confirms via `window.confirm` before calling it - no destructive
+  action anywhere else in the app to match an existing pattern against, so this is deliberately
+  the simplest thing that works).
+
+- **WS-D needs `render_views` threaded through `src/main/ipc.ts` + `session.ts` to actually run**
+  (neither file is in WS-D's "Files owned" line, and this order's brief was explicit to touch
+  only its three owned surfaces). The tool + renderer are done and independently
+  execution-verified (see WS-D's landed note); only the main-process wiring that constructs a
+  real `deps.renderViews` and threads it through is missing, and it is small and entirely
+  additive - mirrors WS-C's `runVerification` wiring line-for-line:
+  1. `src/main/ipc.ts`: add a `renderScriptPath()` resolver next to `geometryReportScriptPath()`
+     (same dev/packaged `app.isPackaged` branch, pointing at
+     `packages/render-rig/python/render_views.py`), and a `renderIteration(iteration, projectDir)`
+     function next to `verifyIteration` that calls `@voyager/render-rig`'s `renderViews({
+     pythonPath: envManager.pythonPath(), scriptPath: renderScriptPath(), stlPath: join(projectDir,
+     iteration.stlPath), outDir: join(projectDir, renderDirForStl(iteration.stlPath)) })` and
+     returns the `RenderIterationOutcome` shape `tools/types.ts` already declares (`{ ok: true,
+     dir: outDir, views: result.views, widthMm, heightMm, depthMm }` on success, `{ ok: false,
+     error }` passthrough on failure). Pass `renderViews: (iteration) =>
+     renderIteration(iteration, projectStore.getProjectDir())` into the existing `new
+     AgentSession({...})` call (alongside `runVerification`/`printerProfiles`, ~line 275).
+  2. `packages/agent-core/src/agent/session.ts`: add `renderViews?: (iteration: ProjectIteration)
+     => Promise<RenderIterationOutcome>` to `AgentSessionDeps` (mirrors `runVerification`'s optional
+     field exactly) and pass `renderViews: this.deps.renderViews` into the `createVoyagerMcpServer({
+     ... })` call. Optionally (UX polish, not a blocker - `decideToolPermission`'s blanket
+     `mcp__voyager__*` allow already covers it either way): add
+     `'mcp__voyager__render_views'` to the `allowedTools` array and a
+     `case 'mcp__voyager__render_views': return activity('Rendering canonical views')` arm in
+     `humanizeToolUse`.
+  3. `electron-builder.yml`: add a `- from: packages/render-rig/python` / `to: render-rig`
+     `extraResources` entry (mirrors the existing `verify`/`params` entries) so packaged builds
+     ship `render_views.py`.
+  Until this lands, `render_views` always replies "Rendering is not available in this session."
+  **→ LANDED (maintainer-directed, 2026-07-11):** all three steps as specified (`renderScriptPath`/
+  `renderIteration` in `src/main/ipc.ts`, the `AgentSessionDeps.renderViews` field + MCP pass-through
+  + `allowedTools`/`humanizeToolUse` polish in `session.ts`, the `render-rig` `extraResources`
+  entry), plus two additions: `renderIteration` also fires from `ProjectStore.onIterationRecorded`
+  (every iteration gets a render set - the order's first done-when), and the whole pipeline is
+  **toggleable per project** via a new optional `AgentSettings.renderViews` (default on; persisted
+  as `agentRenderViews` in `project.json`; camera ToggleButton in the chat toolbar next to Full
+  stream; `renderIteration` returns an explanatory `ok: false` when off, so the tool tells the
+  agent why instead of erroring).
+
+- **WS-D needs `matplotlib` added to the managed venv's `REQUIRED_PACKAGES`
+  (`packages/agent-core/src/python/envManager.ts`, owned outside this order).** The render rig's
+  rasterizer is matplotlib (see WS-D's landed note for why, over pyrender/EGL); `trimesh`/`numpy`
+  are already required but matplotlib isn't. `render_views.py` detects the missing import and
+  reports a clean `{"ok": false, "error": ...}` rather than crashing, so nothing breaks today -
+  but `render_views` can't actually produce a render in any real install until
+  `REQUIRED_PACKAGES` gains `'matplotlib'` (and the `STAGE_PATTERNS` progress-line matcher gains
+  a `matplotlib` entry, cosmetic only). `packages/render-rig/python/requirements.txt` documents
+  the same gap.
+  **→ LANDED (maintainer-directed, 2026-07-11):** `matplotlib` added to `REQUIRED_PACKAGES` + a
+  `STAGE_PATTERNS` progress line, with the install-call assertion extended in `envManager.test.ts`.
+  Existing installs pick it up on the next env repair/reinstall; until then `render_views.py`'s
+  clean missing-import error flows through the toggle-aware `renderIteration` unchanged.
+
+- **WS-D requests a new `render:list`/`render:get`-shaped channel for version-history
+  thumbnails** (frozen `src/shared/ipc.ts`/preload/`src/main/ipc.ts` surface, owned outside this
+  order). The scope line asked for thumbnails in `ProjectsDrawer.tsx`'s "Versions" list, but
+  nothing in the existing contract exposes arbitrary file bytes to the renderer process (nor
+  should it, generically) - reading a render PNG back requires a new round-trip. Proposed:
+  `render:get` with `RenderGetRequest { partId?: string; n: number; view: RenderViewName }` →
+  `RenderGetResponse { dataUrl: string | null }` (base64 `data:image/png;base64,...`, `null` if
+  that iteration has no render set yet - e.g. recorded before this order's `renderIteration` hook
+  existed, or before `render_views` was ever called for it), handler reading
+  `renderDirForStl`'s convention path off disk via `@voyager/render-rig`. `ProjectsDrawer.tsx`
+  would fetch one thumbnail view (e.g. `iso1`) per visible version row, lazily, the same
+  on-demand shape `part:getModel` already uses instead of pushing every iteration's images
+  up front.
+  **→ LANDED (maintainer-directed, 2026-07-11):** shipped as `render:get`
+  (`RenderGetRequest { partId?, n, view }` → `RenderGetResponse { dataUrl }`; `view` is a plain
+  string in the renderer-safe contract, validated main-side against `RENDER_VIEW_NAMES`), wired
+  through `src/shared/ipc.ts`/`ipc.test.ts`, preload `render.get`, and a main handler with the
+  same path-containment posture as `resolveExportSource`. `ProjectsDrawer.tsx` shows a lazy
+  `iso1` thumbnail per version row; rows without a render set (toggle off, matplotlib missing,
+  pre-WS-D iterations) simply show no image.
+- **WS-H needs a `gear` variant in `update_brief`'s patch shape
+  (`packages/agent-core/brief/agentPatch.ts`, WS-A-owned).** `AgentFeatureShape` is a
+  `z.discriminatedUnion('kind', [...])` covering `hole`/`pocket`/`boss`/`fillet_chamfer`/`text`/
+  `insert` - there's no `gear` arm, even though `src/shared/brief.ts`'s `FeatureSchema` has had a
+  `gear` variant since WS-0c. Concrete consequence: the agent has **no way to call `update_brief`
+  with a gear feature at all** - product doc §5.7's "gears are brief-first-class" doesn't hold
+  today, and `packages/agent-core/brief/completeness.ts`'s existing `gear` handling (bore > 0) can
+  never be exercised end-to-end. Proposed shape, mirroring the existing arms' `_mm` naming and
+  `toInferredDim` wrapping:
+  ```ts
+  z.object({
+    kind: z.literal('gear'),
+    id: z.string(),
+    label: z.string().optional(),
+    module_mm: z.number().positive(),
+    teeth: z.number().int().positive(),
+    pressure_angle_deg: z.number().positive(),
+    helix_deg: z.number().optional(),
+    bore_mm: z.number(),
+    bore_tolerance_mm: z.number().optional(),
+    hub_diameter_mm: z.number().optional(),
+    hub_height_mm: z.number().optional(),
+    meshes_with: z.string().optional()
+  })
+  ```
+  `toDomainFeature`'s `gear` arm wraps `bore_mm`/`hub_*` with `toInferredDim` like every other
+  `Dim` field and passes `module_mm`/`teeth`/`pressure_angle_deg`/`helix_deg`/`meshes_with`
+  straight through (they're plain numbers/strings on `Feature`'s `gear` variant, not `Dim`s - see
+  `src/shared/brief.ts`'s own doc comment on why). While in that file: `completeness.ts` could
+  additionally check that a `meshesWith`-declared pair has matching module/PA (WS-0c's own comment
+  on `featureCheck` anticipated this: *"WS-H may layer on gear-specific completeness"*) - not
+  required to unblock generation, just a nicer completeness meter.
+
+- **WS-H needs `runVerification`/`verifyIteration` wiring for the new gear-spec check**
+  (`packages/verify/src/runVerification.ts` is WS-C-owned/frozen; `verifyIteration` lives in
+  `src/main/ipc.ts`). `packages/verify/src/gearsSpecCheck.ts`'s `runGearSpecCheck` is complete and
+  unit-tested (26 tests, `packages/verify/src/gearsSpecCheck.test.ts`) but isn't called from
+  anywhere yet - it needs data `runVerification` doesn't currently receive: every `gear` feature
+  across the **whole locked brief** (not just the active part) plus every gear part's
+  `PartRecord.placement.position` (`packages/agent-core/src/projects/store.ts`'s `listParts()`).
+  This is the same shape of gap as WS-I's still-open cross-part interference request just above -
+  both need `verifyIteration` to assemble a `partId → placement` map from the store before calling
+  into `packages/verify`, so land them together if both are in flight. Proposed: `verifyIteration`
+  builds `Array<{ featureId: string; axisPositionMm: [number,number,number] }>` by matching each
+  locked-brief `gear` feature's owning part (a `Feature.id` → `partId` correspondence doesn't exist
+  yet either - the simplest option is one gear feature per part, matched by naming convention or a
+  new optional `Feature.partId`/`PartRecord.featureId` back-reference; a fancier option ties into
+  whatever manifest-driven `featureId` ↔ part mapping the parts-vocabulary prompt work
+  (`prompts.ts`, still-open per the WS-I coordination note above) ends up needing anyway - worth
+  designing once, not twice), then calls `runGearSpecCheck` and folds its `findings`/`conformance`
+  into the report alongside layers 1-3. Backlash needs each gear part's manifest `BACKLASH`
+  `ParamEntry` too (`params/` extraction already handles arbitrary `PARAMS` names generically - no
+  extractor change needed, just reading the value at the call site).
+
+- **WS-H requests gear DFM numbers in `design-for-printing.md` and a pointer line in `SKILL.md`
+  (both WS-B-owned).** `references/gears.md` (new, WS-H-owned) covers the *math* (module/PA/helix
+  matching, center distance, undercut) but explicitly punts the *DFM* numbers to
+  `design-for-printing.md` per this repo's "never invent thresholds" convention - that file has no
+  gear section at all yet. Needed, per architecture doc §13: **minimum module vs. nozzle diameter**
+  (an FDM nozzle can't resolve arbitrarily fine teeth - needs a floor analogous to `MIN_WALL`),
+  **print-flat orientation guidance** (teeth-up, to keep the involute profile in-plane rather than
+  built from stepped layers - `gears.md` already states this but the authoritative number/rule
+  belongs in the DFM doc), **herringbone preference for FDM** (avoids the thrust-bearing need a
+  plain helical gear has, worth calling out as the "prefer this when in doubt" default), and a
+  **backlash allowance range** (min/max mm) - the last one is the blocking gap for
+  `gearsSpecCheck.ts`'s backlash check, which currently only emits an `info` "not checked yet"
+  finding because there's no number to check against. Once landed, `SKILL.md`'s reference-files
+  list (§"Reference files") should also gain a one-line pointer to `references/gears.md`, matching
+  how it lists `clarify-checklist.md`/`design-for-printing.md`/`build123d.md`/`cadquery.md` today.
+
+- **WS-H suggests a dedicated `'gear-spec'` `VerificationLayer` value**
+  (`src/shared/verification.ts`'s `VerificationLayerSchema`, WS-0b-owned/frozen - additive,
+  non-breaking per that file's own doc comment anticipating exactly this kind of later-milestone
+  layer addition). `gearsSpecCheck.ts`'s findings currently tag themselves `'brief-conformance'` by
+  default (closest existing semantic fit - spec vs. modeled, same as envelope/hole checks) via a
+  `layer` option that already accepts any `VerificationLayer`, so this is a one-line change at
+  whichever call site eventually wires it in (see the `runVerification` request above), not a
+  `gearsSpecCheck.ts` rewrite. Worth doing once `VerificationPanel.tsx` needs to group these
+  findings distinctly from layer 3's brief-conformance rows.
+
+- **WS-H notes layer 3's hole-conformance matching excludes gear bores.**
+  `runVerification.ts`'s layer-3 branch builds its `holes` array via
+  `.filter((feature) => feature.kind === 'hole')` - a gear's `bore` (a `Dim`, same shape as a
+  hole's `diameter`) is never included, so a gear's declared bore diameter is never checked against
+  the measured bore in the exported STEP. Proposed: either widen that filter to also map
+  `kind === 'gear'` features' `bore` into a `HoleSpec`, or note it as intentionally out of scope
+  (gears already get their own bore-adjacent checks in `gearsSpecCheck.ts` once wired in) - a
+  decision for whoever owns `runVerification.ts`'s wiring next, not a hard requirement.
+- **WS-G needs a one-line pointer to `references/remix.md` in `SKILL.md` (WS-B-owned).** The new
+  reference file exists (`resources/skills/printable-cad/references/remix.md`) and is
+  self-sufficient once the agent opens it, but nothing in `SKILL.md` tells the agent it exists or
+  when to read it (mirrors how Phase 4 already points to `references/build123d.md`/`cadquery.md`
+  and Phase 2 to `references/clarify-checklist.md`). Proposed addition to `SKILL.md`'s "Reference
+  files" list: *"`references/remix.md` — working from an imported model (STEP vs. mesh capability
+  rules, unit-confirmation, boolean-surgery patterns). Read whenever `manifest.json` for the
+  active part has an `importedBase` field, or the user mentions importing/remixing a file."*
+
+- **WS-G needs a preload `webUtils.getPathForFile()` bridge for true drag-and-drop (WS-0b-owned
+  `src/preload/**`).** `ImportModelRequest.filePath` is documented as coming "from a native picker
+  or a drag-drop," and `ImportDialog.tsx`'s drop zone is wired to use it, but this Electron version
+  (43.0.0) removed the renderer-side `File.path` shortcut - resolving a dropped file's absolute
+  path now requires calling `webUtils.getPathForFile(file)` from the **preload** script (it's not
+  available in the sandboxed renderer at all) and exposing the result through `contextBridge`.
+  Neither `src/preload/api.ts` nor `src/preload/index.ts` currently exposes this, and both are
+  frozen shared contracts WS-G can't edit. Current behavior: a drop with no resolvable path falls
+  back to opening the native picker (`window.voyager.model.import({})`) rather than silently
+  discarding the drop - correct/safe, but not real drag-drop. Proposed: add
+  `window.voyager.model.getDroppedFilePath?: (file: File) => Promise<string | null>` (or a same-
+  process synchronous preload global, whichever the dispatcher prefers) backed by
+  `webUtils.getPathForFile` in `src/preload/index.ts`, then `ImportDialog.tsx`'s `handleDrop` swaps
+  its `(file as unknown as { path?: string }).path` probe for the new bridge call (a small,
+  WS-G-owned follow-up once the bridge exists).

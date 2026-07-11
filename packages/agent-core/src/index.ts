@@ -4,16 +4,56 @@ export type { AgentSessionDeps, QueryFn } from './agent/session'
 export { ProjectStore, DEFAULT_AGENT_SETTINGS } from './projects/store'
 export type { ProjectStoreOptions, ProjectRecord, ProjectIteration } from './projects/store'
 
-export { resolveAllPartsExportSources, resolveExportSource } from './projects/exportResolver'
+export {
+  containedAbsPath,
+  deriveThreeMfPath,
+  resolveAllPartsExportSources,
+  resolveExportSource,
+  slugifyZipBase
+} from './projects/exportResolver'
 export type {
   AllPartsExportResolution,
   ExportSourceResolution,
   PartExportSource,
+  SingleFileExportFormat,
   ZipEntrySource
 } from './projects/exportResolver'
 
 export { writeZip } from './projects/zipWriter'
 export type { ZipEntry } from './projects/zipWriter'
+
+export { buildGraduationPackage } from './projects/exportPackage'
+export type {
+  BuildGraduationPackageInput,
+  BuildGraduationPackageResult,
+  PackageFsDeps,
+  PackagePartInput,
+  PackagePartIteration
+} from './projects/exportPackage'
+
+export { bakePartTriangles, buildPlateStl, parseBinaryStl, writeBinaryStl } from './projects/plateStl'
+export type { PlacementLike, PlatePart, PlateBuildResult, StlTriangle, Vec3 } from './projects/plateStl'
+
+export {
+  copyImportSource,
+  detectImportFormat,
+  finalizeMeshImport,
+  finalizeStepImport,
+  isUnitlessFormat,
+  measureMeshImport,
+  pickUnitConfirmationAxis,
+  slugifyForFilename
+} from './projects/importModel'
+export type {
+  CopyImportSourceResult,
+  FinalizeImportResult,
+  FinalizeMeshImportOptions,
+  FinalizeStepImportOptions,
+  ImportFormat,
+  ImportModelDeps,
+  MeshMeasurement,
+  SpawnLike as ImportModelSpawnLike
+} from './projects/importModel'
 
 export { PrinterProfileStore } from './projects/printerProfiles'
 export type { PrinterProfileList, PrinterProfileStoreOptions } from './projects/printerProfiles'

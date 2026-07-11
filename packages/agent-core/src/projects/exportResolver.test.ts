@@ -1,6 +1,11 @@
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { resolveAllPartsExportSources, resolveExportSource, type PartExportSource } from './exportResolver'
+import {
+  deriveThreeMfPath,
+  resolveAllPartsExportSources,
+  resolveExportSource,
+  type PartExportSource
+} from './exportResolver'
 
 const projectDir = '/home/user/.config/voyager/projects/default'
 
@@ -70,6 +75,39 @@ describe('resolveExportSource', () => {
     const result = resolveExportSource({ stlPath: '.', stepPath: undefined }, projectDir, 'stl')
     expect(result.ok).toBe(false)
   })
+
+  it('rejects a 3mf export when no threeMfPath was resolved (no 3MF was ever produced)', () => {
+    const result = resolveExportSource({ stlPath: 'outputs/part_v1.stl', stepPath: undefined }, projectDir, '3mf')
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.reason).toMatch(/no 3MF export/)
+  })
+
+  it('resolves a 3mf export once the caller has confirmed the sibling file exists', () => {
+    const result = resolveExportSource(
+      { stlPath: 'outputs/part_v2.stl', stepPath: undefined, threeMfPath: 'outputs/part_v2.3mf' },
+      projectDir,
+      '3mf'
+    )
+    expect(result).toEqual({
+      ok: true,
+      absPath: join(projectDir, 'outputs/part_v2.3mf'),
+      fileName: 'part_v2.3mf'
+    })
+  })
+})
+
+describe('deriveThreeMfPath', () => {
+  it('swaps the .stl extension for .3mf, same directory/basename', () => {
+    expect(deriveThreeMfPath('outputs/bracket_v2.stl')).toBe('outputs/bracket_v2.3mf')
+  })
+
+  it('handles a bare filename with no directory', () => {
+    expect(deriveThreeMfPath('bracket_v2.stl')).toBe('bracket_v2.3mf')
+  })
+
+  it('matches the extension case-insensitively', () => {
+    expect(deriveThreeMfPath('outputs/bracket_v2.STL')).toBe('outputs/bracket_v2.3mf')
+  })
 })
 
 function part(id: string, name: string, iteration: PartExportSource['iteration']): PartExportSource {
@@ -110,6 +148,22 @@ describe('resolveAllPartsExportSources', () => {
       entries: [{ absPath: join(projectDir, 'outputs/bracket_v2.step'), entryName: 'bracket_v2.step' }],
       skippedParts: ['Lid'],
       zipFileName: 'parts-step.zip'
+    })
+  })
+
+  it('resolves 3mf entries only for parts whose threeMfPath was confirmed to exist', () => {
+    const withThreeMf = part('bracket', 'Bracket', {
+      n: 2,
+      stlPath: 'outputs/bracket_v2.stl',
+      stepPath: 'outputs/bracket_v2.step',
+      threeMfPath: 'outputs/bracket_v2.3mf'
+    })
+    const result = resolveAllPartsExportSources([withThreeMf, lid], projectDir, '3mf')
+    expect(result).toEqual({
+      ok: true,
+      entries: [{ absPath: join(projectDir, 'outputs/bracket_v2.3mf'), entryName: 'bracket_v2.3mf' }],
+      skippedParts: ['Lid'],
+      zipFileName: 'parts-3mf.zip'
     })
   })
 
