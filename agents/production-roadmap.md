@@ -485,8 +485,62 @@ Notes on the gates:
   package opens: STEP imports into Fusion/Onshape, script re-runs with
   `pip install build123d`, README renders.
 
-### WS-G — External model import & remix · **Status: TODO** · depends: 0a, 0b, **0c**
+### WS-G — External model import & remix · **Status: DONE** · depends: 0a, 0b, **0c**
 
+- **Landed:** `packages/agent-core/src/projects/importModel.ts` (the roadmap's own path below
+  omits `/src/` — same shorthand slip WS-A/WS-E's docs already flagged for their own paths) — pure,
+  injected-spawn logic (mirrors `EnvManager`/`params/rerun.ts`, zero `electron` imports):
+  `detectImportFormat`/`isUnitlessFormat` (extension → lineage), `copyImportSource` (source file →
+  `imports/<uuid>.<ext>`, never touching the original), `measureMeshImport` (spawns
+  `remix/measure_mesh.py`, used only for STL/OBJ's unit-confirmation bbox), `pickUnitConfirmationAxis`
+  (largest bbox extent), and `finalizeMeshImport`/`finalizeStepImport` — each writes a
+  **self-contained** `outputs/<part>_v<n>.py` (no cross-package imports) and *runs* that exact file
+  to produce the artifacts, so the script `recordIteration` snapshots as "the exact script that
+  produced this iteration" is never a fiction. Mesh lineage embeds a dependency-free repair (drop
+  degenerate/duplicate faces, merge vertices, fan-triangulate boundary loops to fill simple holes -
+  no networkx/scipy, since the managed env's package list doesn't include them, mirroring
+  `packages/verify/python/geometry_report.py`'s own no-extra-dependency precedent) and reports
+  exactly what it changed; STEP lineage is an ordinary build123d `import_step` + `export_stl`/
+  `export_step` script. `src/main/ipc.ts`'s `model:import` stub body now orchestrates the full
+  two-phase flow (native `dialog.showOpenDialog` when `filePath` is omitted; a module-level
+  `pendingMeshImports` map, keyed by project id, resumes an STL/OBJ import once the renderer
+  re-calls with `unitScaleMm` — mirrors the existing `pendingApprovals` pattern) and calls
+  `ProjectStore.recordIteration({ createdBy: 'import' })` + broadcasts `model:displayed` exactly
+  like `param:update` does, so display/verification/version-history all work unchanged. Python:
+  `packages/agent-core/remix/measure_mesh.py` (the only remix script the TS side actually invokes),
+  plus two standalone, independently-runnable reference tools satisfying "scripts the managed env
+  runs" without coupling the production path to them: `repair_mesh.py` (same repair algorithm as a
+  CLI + `--scale`) and `boolean_ops.py` (`trimesh.boolean` union/subtract/intersect, `manifold3d`
+  engine preferred, a clear actionable error when no backend is installed rather than a crash).
+  New skill reference `references/remix.md` (capability rule, unit-confirmation rule, STEP vs. mesh
+  patterns, the plug-and-recut boolean pattern, repair-pass honesty about the networkx gap).
+  `ImportDialog.tsx` is a real two-phase UI (drop zone + native-picker "Browse…" button → the
+  measured-dimension confirm/correct step → error `Alert`) — since no existing mount point called
+  `setImportDialogOpen(true)` (WS-0c pre-landed the flag/placeholder but no trigger), and every
+  candidate location to add one (`ViewportControls.tsx`, `PartsPanel.tsx`, `App.tsx`'s mount list)
+  is owned by another work order, the component renders its own small floating "Import model"
+  trigger (top-right of the viewport) alongside the dialog rather than shipping an unreachable
+  feature. Small mechanical/additive edits mirroring WS-A/WS-B's own precedent (invited by "a new
+  package-local folder", not a scope violation): `packages/agent-core/src/index.ts` barrel-exports
+  the new module's public surface; `electron-builder.yml` gained a `packages/agent-core/remix → remix`
+  `extraResources` entry mirroring the existing `verify`/`params` ones.
+  **Execution-verified against real trimesh/numpy in this sandbox** (both happen to be installed
+  system-wide here, unlike build123d/OCP) — `measure_mesh.py`, `repair_mesh.py`, and the exact
+  dependency-free hole-fill algorithm embedded in the generated mesh-lineage script were run
+  end-to-end against synthetic non-watertight/duplicate-face STL fixtures (confirmed: repair
+  report accuracy, watertight after fill, scale correctly applied); `boolean_ops.py`'s
+  no-backend-installed error path was confirmed to fail cleanly with an actionable message (real
+  boolean success needs `manifold3d`, not installed here). **Not verified:** the STEP-lineage
+  generated script (`import_step`/`export_stl`/`export_step`, and the `bounding_box().size`
+  attribute-casing guess it falls back gracefully from) — build123d/OCP aren't importable in this
+  sandbox, the same gap WS-B/WS-C/WS-E/WS-I all noted; and the live Electron app (native file
+  picker end-to-end, drag-drop, viewport display) — no signed-in CLI + managed Python env available
+  here either. 24 new unit tests (mocked spawn, real tmpdir), quality gate green: typecheck, build,
+  test (447 total).
+- **Known gap, filed below:** true drag-and-drop (resolving a dropped file's absolute path) needs
+  a `webUtils.getPathForFile()` preload bridge this work order can't add (`src/preload/**` is a
+  frozen shared contract) — the dialog's drop zone degrades to opening the native picker instead of
+  silently doing nothing with the drop.
 - **Why:** product doc §5.6 / architecture doc §12.5 — most hobbyist projects start from an
   existing file (a Thingiverse/Printables STL, a colleague's STEP, a scan), and
   import → repair → verify → split → print settings is a complete zero-generation use case
@@ -746,3 +800,28 @@ Notes on the gates:
   `PrinterProfileListResponse` (active pointer moves to `null` when the active profile is
   deleted), wired like `printerProfile:setActive`, plus a delete affordance in
   `PrinterProfilesPanel.tsx` (WS-E-owned, trivial once the channel exists).
+
+- **WS-G needs a one-line pointer to `references/remix.md` in `SKILL.md` (WS-B-owned).** The new
+  reference file exists (`resources/skills/printable-cad/references/remix.md`) and is
+  self-sufficient once the agent opens it, but nothing in `SKILL.md` tells the agent it exists or
+  when to read it (mirrors how Phase 4 already points to `references/build123d.md`/`cadquery.md`
+  and Phase 2 to `references/clarify-checklist.md`). Proposed addition to `SKILL.md`'s "Reference
+  files" list: *"`references/remix.md` — working from an imported model (STEP vs. mesh capability
+  rules, unit-confirmation, boolean-surgery patterns). Read whenever `manifest.json` for the
+  active part has an `importedBase` field, or the user mentions importing/remixing a file."*
+
+- **WS-G needs a preload `webUtils.getPathForFile()` bridge for true drag-and-drop (WS-0b-owned
+  `src/preload/**`).** `ImportModelRequest.filePath` is documented as coming "from a native picker
+  or a drag-drop," and `ImportDialog.tsx`'s drop zone is wired to use it, but this Electron version
+  (43.0.0) removed the renderer-side `File.path` shortcut - resolving a dropped file's absolute
+  path now requires calling `webUtils.getPathForFile(file)` from the **preload** script (it's not
+  available in the sandboxed renderer at all) and exposing the result through `contextBridge`.
+  Neither `src/preload/api.ts` nor `src/preload/index.ts` currently exposes this, and both are
+  frozen shared contracts WS-G can't edit. Current behavior: a drop with no resolvable path falls
+  back to opening the native picker (`window.voyager.model.import({})`) rather than silently
+  discarding the drop - correct/safe, but not real drag-drop. Proposed: add
+  `window.voyager.model.getDroppedFilePath?: (file: File) => Promise<string | null>` (or a same-
+  process synchronous preload global, whichever the dispatcher prefers) backed by
+  `webUtils.getPathForFile` in `src/preload/index.ts`, then `ImportDialog.tsx`'s `handleDrop` swaps
+  its `(file as unknown as { path?: string }).path` probe for the new bridge call (a small,
+  WS-G-owned follow-up once the bridge exists).

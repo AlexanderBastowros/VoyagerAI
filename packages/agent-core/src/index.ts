@@ -7,6 +7,27 @@ export type { ProjectStoreOptions, ProjectRecord, ProjectIteration } from './pro
 export { resolveExportSource } from './projects/exportResolver'
 export type { ExportSourceResolution } from './projects/exportResolver'
 
+export {
+  copyImportSource,
+  detectImportFormat,
+  finalizeMeshImport,
+  finalizeStepImport,
+  isUnitlessFormat,
+  measureMeshImport,
+  pickUnitConfirmationAxis,
+  slugifyForFilename
+} from './projects/importModel'
+export type {
+  CopyImportSourceResult,
+  FinalizeImportResult,
+  FinalizeMeshImportOptions,
+  FinalizeStepImportOptions,
+  ImportFormat,
+  ImportModelDeps,
+  MeshMeasurement,
+  SpawnLike as ImportModelSpawnLike
+} from './projects/importModel'
+
 export { PrinterProfileStore } from './projects/printerProfiles'
 export type { PrinterProfileList, PrinterProfileStoreOptions } from './projects/printerProfiles'
 
