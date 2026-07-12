@@ -29,7 +29,7 @@ const SELECTED_BG = 'rgba(102, 170, 255, 0.15)'
  * per-part version history is the existing history view (`ProjectsDrawer`), which shows the focused
  * part's history once it's active.
  */
-export function PartsPanel(): React.JSX.Element | null {
+export function PartsPanel({ embedded = false }: { embedded?: boolean } = {}): React.JSX.Element | null {
   const parts = useAppStore((state) => state.parts)
   const selectedPartId = useAppStore((state) => state.selectedPartId)
   const activeProjectId = useAppStore((state) => state.activeProjectId)
@@ -63,7 +63,8 @@ export function PartsPanel(): React.JSX.Element | null {
   }, [activeProjectId, setParts, setSelectedPartId])
 
   // No parts UI for a single-part project - the parts model is invisible until a project has ≥2.
-  if (parts.length <= 1) return null
+  // Embedded (dock) usage always renders, even for 0/1 parts - see the "No parts yet." fallback below.
+  if (!embedded && parts.length <= 1) return null
 
   /** Points the parameter/verification/history panels at `partId` (now the active part). They
    *  watch the displayed model + iteration list, so refreshing those is all it takes. */
@@ -123,11 +124,20 @@ export function PartsPanel(): React.JSX.Element | null {
     }
   }
 
+  const open = embedded || expanded
+
   return (
-    <Box sx={{ borderBottom: 1, borderColor: 'divider' }}>
+    <Box sx={{ borderBottom: embedded ? 0 : 1, borderColor: 'divider' }}>
       <Box
-        onClick={() => setExpanded((v) => !v)}
-        sx={{ display: 'flex', alignItems: 'center', gap: 1, px: 2, py: 1.25, cursor: 'pointer' }}
+        onClick={embedded ? undefined : () => setExpanded((v) => !v)}
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1,
+          px: 2,
+          py: 1.25,
+          cursor: embedded ? 'default' : 'pointer'
+        }}
       >
         <ViewInArOutlinedIcon fontSize="small" color="action" />
         <Typography variant="body2" fontWeight={600}>
@@ -135,10 +145,15 @@ export function PartsPanel(): React.JSX.Element | null {
         </Typography>
         <Chip size="small" label={parts.length} sx={{ height: 18, '& .MuiChip-label': { px: 0.75, fontSize: 11 } }} />
         <Box sx={{ flex: 1 }} />
-        {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+        {!embedded && (expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />)}
       </Box>
-      <Collapse in={expanded}>
+      <Collapse in={open}>
         <Stack sx={{ px: 1, pb: 1 }} gap={0.5}>
+          {embedded && parts.length === 0 && (
+            <Typography variant="caption" color="text.disabled" sx={{ px: 1, py: 0.5 }}>
+              No parts yet.
+            </Typography>
+          )}
           {parts.map((part, index) => {
             const selected = part.id === selectedPartId
             return (

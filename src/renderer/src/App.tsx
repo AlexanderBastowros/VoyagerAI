@@ -3,20 +3,23 @@ import AppBar from '@mui/material/AppBar'
 import Box from '@mui/material/Box'
 import IconButton from '@mui/material/IconButton'
 import MuiToolbar from '@mui/material/Toolbar'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline'
 import ChevronRightIcon from '@mui/icons-material/ChevronRight'
 import MenuIcon from '@mui/icons-material/Menu'
-import { BriefPanel } from './components/BriefPanel'
+import UploadFileIcon from '@mui/icons-material/UploadFile'
+import ViewSidebarOutlinedIcon from '@mui/icons-material/ViewSidebarOutlined'
+import { ActivityRail } from './components/ActivityRail'
+import type { LeftView } from './components/ActivityRail'
 import { ChatPanel } from './components/ChatPanel'
 import { ImportDialog } from './components/ImportDialog'
-import { ParamPanel } from './components/ParamPanel'
-import { PartsPanel } from './components/PartsPanel'
-import { PrinterProfilesPanel } from './components/PrinterProfilesPanel'
-import { PrintSettingsPanel } from './components/PrintSettingsPanel'
+import { Inspector } from './components/Inspector'
+import type { InspectorTab } from './components/Inspector'
+import { LeftDock } from './components/LeftDock'
 import { ProjectsDrawer } from './components/ProjectsDrawer'
 import { SetupScreen } from './components/SetupScreen'
-import { VerificationPanel } from './components/VerificationPanel'
+import { StatusBar } from './components/StatusBar'
 import { ViewportControls } from './components/ViewportControls'
 import { Viewport } from './components/Viewport'
 import { MAIN_PART_ID } from '../../shared/ipc'
@@ -39,13 +42,26 @@ export function App(): React.JSX.Element {
   const setPrintSettings = useAppStore((state) => state.setPrintSettings)
   const setPendingPermission = useAppStore((state) => state.setPendingPermission)
   const hydrateProject = useAppStore((state) => state.hydrateProject)
+  const setImportDialogOpen = useAppStore((state) => state.setImportDialogOpen)
   const projects = useAppStore((state) => state.projects)
   const activeProjectId = useAppStore((state) => state.activeProjectId)
 
   const [projectsOpen, setProjectsOpen] = useState(false)
-  const [chatOpen, setChatOpen] = useState(true)
+  // Studio Workbench layout state (renderer-local, purely presentational - no store/IPC surface):
+  // which docks are open, which project-detail tab the right-dock Inspector shows, and which view
+  // the left dock shows.
+  const [leftDockOpen, setLeftDockOpen] = useState(true)
+  const [rightDockOpen, setRightDockOpen] = useState(true)
+  const [leftView, setLeftView] = useState<LeftView>('parts')
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('parameters')
 
   const activeProject = projects.find((project) => project.id === activeProjectId)
+
+  // Clicking a rail view opens the dock on that view; clicking the already-open view collapses it.
+  function handleSelectView(view: LeftView): void {
+    setLeftDockOpen((open) => !(open && view === leftView))
+    setLeftView(view)
+  }
 
   // One-time hydration of whichever project was active at last quit (or the sole project on a
   // fresh install). ProjectsDrawer's create/switch handlers mirror this same
@@ -137,40 +153,86 @@ export function App(): React.JSX.Element {
             </Typography>
           )}
           <Box sx={{ flex: 1 }} />
-          <IconButton
-            className="app-region-no-drag"
-            aria-label={chatOpen ? 'Close chat panel' : 'Open chat panel'}
-            onClick={() => setChatOpen(!chatOpen)}
-          >
-            {chatOpen ? <ChevronRightIcon fontSize="small" /> : <ChatBubbleOutlineIcon fontSize="small" />}
-          </IconButton>
+          <Tooltip title="Import a model">
+            <IconButton
+              className="app-region-no-drag"
+              aria-label="Import model"
+              onClick={() => setImportDialogOpen(true)}
+            >
+              <UploadFileIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title={leftDockOpen ? 'Hide left panel' : 'Show left panel'}>
+            <IconButton
+              className="app-region-no-drag"
+              aria-label={leftDockOpen ? 'Hide left panel' : 'Show left panel'}
+              color={leftDockOpen ? 'primary' : 'default'}
+              onClick={() => setLeftDockOpen((open) => !open)}
+            >
+              <ViewSidebarOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+          <Tooltip title={rightDockOpen ? 'Hide inspector & chat' : 'Show inspector & chat'}>
+            <IconButton
+              className="app-region-no-drag"
+              aria-label={rightDockOpen ? 'Hide inspector & chat' : 'Show inspector & chat'}
+              color={rightDockOpen ? 'primary' : 'default'}
+              onClick={() => setRightDockOpen((open) => !open)}
+            >
+              {rightDockOpen ? <ChevronRightIcon fontSize="small" /> : <ChatBubbleOutlineIcon fontSize="small" />}
+            </IconButton>
+          </Tooltip>
         </MuiToolbar>
       </AppBar>
+
       <Box sx={{ flex: 1, display: 'flex', minHeight: 0 }}>
+        <ActivityRail
+          view={leftView}
+          onSelectView={handleSelectView}
+          onOpenProjects={() => setProjectsOpen(true)}
+          leftDockOpen={leftDockOpen}
+        />
+        {leftDockOpen && <LeftDock view={leftView} viewerRef={viewerRef} />}
+
         <Box sx={{ flex: 1, minWidth: 0, position: 'relative' }}>
           <Viewport viewerRef={viewerRef} />
           <ViewportControls viewerRef={viewerRef} />
         </Box>
+
         <Box
           sx={{
-            width: 380,
+            width: 372,
             flexShrink: 0,
             borderLeft: 1,
             borderColor: 'divider',
-            display: chatOpen ? 'flex' : 'none',
+            display: rightDockOpen ? 'flex' : 'none',
             flexDirection: 'column',
             minWidth: 0
           }}
         >
-          <BriefPanel />
-          <PartsPanel />
-          <ParamPanel />
-          <VerificationPanel />
-          <PrintSettingsPanel />
-          <PrinterProfilesPanel />
-          <ChatPanel />
+          {/* Top: the tabbed project-detail Inspector (Brief / Parameters / Verify / Print). */}
+          <Box sx={{ flex: '1 1 58%', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            <Inspector tab={inspectorTab} onTabChange={setInspectorTab} />
+          </Box>
+          {/* Bottom: the assistant/chat dock. Kept mounted (display:none when closed) so its
+              transcript and scroll position survive toggling. */}
+          <Box
+            sx={{
+              flex: '1 1 42%',
+              minHeight: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              borderTop: 1,
+              borderColor: 'divider'
+            }}
+          >
+            <ChatPanel />
+          </Box>
         </Box>
       </Box>
+
+      <StatusBar viewerRef={viewerRef} />
+
       <ProjectsDrawer open={projectsOpen} onClose={() => setProjectsOpen(false)} viewerRef={viewerRef} />
       {/* WS-G import flow; renders a closed dialog until opened via the store's importDialogOpen. */}
       <ImportDialog />

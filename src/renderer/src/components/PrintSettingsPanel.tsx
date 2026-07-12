@@ -38,7 +38,7 @@ function SettingRow({ label, value }: { label: string; value: string }): React.J
  * via the "Recommend" button rather than generated automatically, since they're only useful once
  * a model is print-ready.
  */
-export function PrintSettingsPanel(): React.JSX.Element {
+export function PrintSettingsPanel({ embedded = false }: { embedded?: boolean } = {}): React.JSX.Element {
   const printSettings = useAppStore((state) => state.printSettings)
   const model = useAppStore((state) => state.model)
   const agentBusy = useAppStore((state) => state.agentBusy)
@@ -106,32 +106,42 @@ export function PrintSettingsPanel(): React.JSX.Element {
   )
 
   const isStale = printSettings !== null && printSettings.iteration !== model?.iteration
+  const open = embedded || expanded
 
   return (
-    <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper', flexShrink: 0 }}>
+    <Box
+      sx={{
+        borderBottom: embedded ? 0 : 1,
+        borderColor: 'divider',
+        bgcolor: embedded ? 'transparent' : 'background.paper',
+        flexShrink: 0
+      }}
+    >
       <Stack
         direction="row"
         alignItems="center"
         justifyContent="space-between"
         gap={1}
-        sx={{ px: 1.75, py: 1, cursor: 'pointer' }}
-        onClick={() => setExpanded((prev) => !prev)}
+        sx={{ px: 1.75, py: 1, cursor: embedded ? 'default' : 'pointer' }}
+        onClick={embedded ? undefined : () => setExpanded((prev) => !prev)}
       >
         <Typography variant="overline" color="text.secondary">
           Print settings
         </Typography>
         <Stack direction="row" alignItems="center" gap={0.5} onClick={(e) => e.stopPropagation()}>
           {recommendButton}
-          <IconButton
-            size="small"
-            aria-label={expanded ? 'Collapse print settings' : 'Expand print settings'}
-            onClick={() => setExpanded((prev) => !prev)}
-          >
-            {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-          </IconButton>
+          {!embedded && (
+            <IconButton
+              size="small"
+              aria-label={expanded ? 'Collapse print settings' : 'Expand print settings'}
+              onClick={() => setExpanded((prev) => !prev)}
+            >
+              {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+            </IconButton>
+          )}
         </Stack>
       </Stack>
-      <Collapse in={expanded}>
+      <Collapse in={open}>
         <Box sx={{ px: 1.75, pb: 1.5 }}>
           {printSettings ? (
             <Stack spacing={0.75}>

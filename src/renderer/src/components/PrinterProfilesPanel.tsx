@@ -92,7 +92,7 @@ function draftToProfile(draft: ProfileDraft): { profile: PrinterProfileRef } | {
  * `window.voyager.printerProfile.*`; the `printerProfile:updated` push (this panel's own saves,
  * other windows, or the agent's `save_printer_profile` tool) keeps the list in sync.
  */
-export function PrinterProfilesPanel(): React.JSX.Element {
+export function PrinterProfilesPanel({ embedded = false }: { embedded?: boolean } = {}): React.JSX.Element {
   const profiles = useAppStore((state) => state.printerProfiles)
   const activeId = useAppStore((state) => state.activePrinterProfileId)
   const setPrinterProfiles = useAppStore((state) => state.setPrinterProfiles)
@@ -185,15 +185,24 @@ export function PrinterProfilesPanel(): React.JSX.Element {
   const setField = (key: keyof ProfileDraft, value: string): void =>
     setDraft((prev) => (prev ? { ...prev, [key]: value } : prev))
 
+  const open = embedded || expanded
+
   return (
-    <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper', flexShrink: 0 }}>
+    <Box
+      sx={{
+        borderBottom: embedded ? 0 : 1,
+        borderColor: 'divider',
+        bgcolor: embedded ? 'transparent' : 'background.paper',
+        flexShrink: 0
+      }}
+    >
       <Stack
         direction="row"
         alignItems="center"
         justifyContent="space-between"
         gap={1}
-        sx={{ px: 1.75, py: 1, cursor: 'pointer' }}
-        onClick={() => setExpanded((prev) => !prev)}
+        sx={{ px: 1.75, py: 1, cursor: embedded ? 'default' : 'pointer' }}
+        onClick={embedded ? undefined : () => setExpanded((prev) => !prev)}
       >
         <Stack direction="row" alignItems="center" gap={1} sx={{ minWidth: 0 }}>
           <PrintIcon fontSize="small" color={profiles.length > 0 ? 'inherit' : 'disabled'} />
@@ -206,18 +215,20 @@ export function PrinterProfilesPanel(): React.JSX.Element {
             </Typography>
           )}
         </Stack>
-        <IconButton
-          size="small"
-          aria-label={expanded ? 'Collapse printer profiles' : 'Expand printer profiles'}
-          onClick={(e) => {
-            e.stopPropagation()
-            setExpanded((prev) => !prev)
-          }}
-        >
-          {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-        </IconButton>
+        {!embedded && (
+          <IconButton
+            size="small"
+            aria-label={expanded ? 'Collapse printer profiles' : 'Expand printer profiles'}
+            onClick={(e) => {
+              e.stopPropagation()
+              setExpanded((prev) => !prev)
+            }}
+          >
+            {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+          </IconButton>
+        )}
       </Stack>
-      <Collapse in={expanded}>
+      <Collapse in={open}>
         <Box sx={{ px: 1.75, pb: 1.5 }}>
           <Stack spacing={1}>
             {profiles.length === 0 && !draft && (

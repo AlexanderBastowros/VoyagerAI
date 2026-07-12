@@ -62,7 +62,7 @@ const fieldSx = { '& .MuiInputBase-input': { fontSize: 13 }, '& .MuiFormLabel-ro
  * tested, but the frozen `brief:*` IPC contract (WS-0b) has no channel to fetch it from the
  * renderer - see the contract-change request in `agents/production-roadmap.md`.
  */
-export function BriefPanel(): React.JSX.Element {
+export function BriefPanel({ embedded = false }: { embedded?: boolean } = {}): React.JSX.Element {
   const brief = useAppStore((state) => state.brief)
   const setBrief = useAppStore((state) => state.setBrief)
   const activeProjectId = useAppStore((state) => state.activeProjectId)
@@ -151,15 +151,24 @@ export function BriefPanel(): React.JSX.Element {
     }
   }
 
+  const open = embedded || expanded
+
   return (
-    <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper', flexShrink: 0 }}>
+    <Box
+      sx={{
+        borderBottom: embedded ? 0 : 1,
+        borderColor: 'divider',
+        bgcolor: embedded ? 'transparent' : 'background.paper',
+        flexShrink: 0
+      }}
+    >
       <Stack
         direction="row"
         alignItems="center"
         justifyContent="space-between"
         gap={1}
-        sx={{ px: 1.75, py: 1, cursor: 'pointer' }}
-        onClick={() => setExpanded((prev) => !prev)}
+        sx={{ px: 1.75, py: 1, cursor: embedded ? 'default' : 'pointer' }}
+        onClick={embedded ? undefined : () => setExpanded((prev) => !prev)}
       >
         <Stack direction="row" alignItems="center" gap={1}>
           <DescriptionOutlinedIcon fontSize="small" color={locked ? 'success' : 'action'} />
@@ -174,19 +183,21 @@ export function BriefPanel(): React.JSX.Element {
             sx={{ fontSize: 10, height: 20 }}
           />
         </Stack>
-        <IconButton
-          size="small"
-          aria-label={expanded ? 'Collapse design brief' : 'Expand design brief'}
-          onClick={(e) => {
-            e.stopPropagation()
-            setExpanded((prev) => !prev)
-          }}
-        >
-          {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-        </IconButton>
+        {!embedded && (
+          <IconButton
+            size="small"
+            aria-label={expanded ? 'Collapse design brief' : 'Expand design brief'}
+            onClick={(e) => {
+              e.stopPropagation()
+              setExpanded((prev) => !prev)
+            }}
+          >
+            {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+          </IconButton>
+        )}
       </Stack>
 
-      <Collapse in={expanded}>
+      <Collapse in={open}>
         <Stack spacing={1.25} sx={{ px: 1.75, pb: 1.5, maxHeight: 420, overflowY: 'auto' }}>
           {error && (
             <Alert severity="error" onClose={() => setError(null)} sx={{ fontSize: 12 }}>

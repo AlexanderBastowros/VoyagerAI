@@ -97,7 +97,7 @@ function ParamRow({ entry, draftValue, disabled, error, onDraftChange, onCommit 
  * that up via `App.tsx`'s existing subscription, so this panel only needs to track its own
  * draft/pending/error UI state and refetch the manifest once the active iteration changes.
  */
-export function ParamPanel(): React.JSX.Element {
+export function ParamPanel({ embedded = false }: { embedded?: boolean } = {}): React.JSX.Element {
   const model = useAppStore((state) => state.model)
   const manifest = useAppStore((state) => state.manifest)
   const setManifest = useAppStore((state) => state.setManifest)
@@ -167,15 +167,24 @@ export function ParamPanel(): React.JSX.Element {
       ? 'This version has no tunable parameters'
       : null
 
+  const open = embedded || expanded
+
   return (
-    <Box sx={{ borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper', flexShrink: 0 }}>
+    <Box
+      sx={{
+        borderBottom: embedded ? 0 : 1,
+        borderColor: 'divider',
+        bgcolor: embedded ? 'transparent' : 'background.paper',
+        flexShrink: 0
+      }}
+    >
       <Stack
         direction="row"
         alignItems="center"
         justifyContent="space-between"
         gap={1}
-        sx={{ px: 1.75, py: 1, cursor: 'pointer' }}
-        onClick={() => setExpanded((prev) => !prev)}
+        sx={{ px: 1.75, py: 1, cursor: embedded ? 'default' : 'pointer' }}
+        onClick={embedded ? undefined : () => setExpanded((prev) => !prev)}
       >
         <Stack direction="row" alignItems="center" gap={1}>
           <TuneIcon fontSize="small" color={manifest.params.length > 0 ? 'inherit' : 'disabled'} />
@@ -183,18 +192,20 @@ export function ParamPanel(): React.JSX.Element {
             Parameters
           </Typography>
         </Stack>
-        <IconButton
-          size="small"
-          aria-label={expanded ? 'Collapse parameters' : 'Expand parameters'}
-          onClick={(e) => {
-            e.stopPropagation()
-            setExpanded((prev) => !prev)
-          }}
-        >
-          {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-        </IconButton>
+        {!embedded && (
+          <IconButton
+            size="small"
+            aria-label={expanded ? 'Collapse parameters' : 'Expand parameters'}
+            onClick={(e) => {
+              e.stopPropagation()
+              setExpanded((prev) => !prev)
+            }}
+          >
+            {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+          </IconButton>
+        )}
       </Stack>
-      <Collapse in={expanded}>
+      <Collapse in={open}>
         <Box sx={{ px: 1.75, pb: 1.5 }}>
           {!loaded ? (
             <Stack direction="row" alignItems="center" gap={1}>

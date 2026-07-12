@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { DragEvent } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -8,10 +8,8 @@ import Dialog from '@mui/material/Dialog'
 import DialogActions from '@mui/material/DialogActions'
 import DialogContent from '@mui/material/DialogContent'
 import DialogTitle from '@mui/material/DialogTitle'
-import Paper from '@mui/material/Paper'
 import TextField from '@mui/material/TextField'
 import Typography from '@mui/material/Typography'
-import UploadFileIcon from '@mui/icons-material/UploadFile'
 import type { ImportModelResponse } from '../../../shared/ipc'
 import { colors } from '../colors'
 import { useAppStore } from '../state/appStore'
@@ -35,13 +33,10 @@ interface PendingConfirmation {
  * subscription `App.tsx` already has for the agent's `display_model` and the parameter panel's
  * re-run - a freshly imported iteration is displayed/verified identically to either of those).
  *
- * No mount point in the app currently opens `importDialogOpen` (WS-0c pre-landed the store flag
- * and this placeholder, but no toolbar button was wired up yet - see the store's own doc comment:
- * "any trigger - a toolbar button, drag-drop, an empty-project prompt - can open it"). Since every
- * other candidate location (`ViewportControls.tsx`, `PartsPanel.tsx`, `App.tsx`'s mount list) is
- * owned by another work order, this component renders its own small floating trigger alongside the
- * dialog rather than leaving the feature unreachable - the same pattern `SetupScreen` uses for a
- * self-contained overlay.
+ * The trigger lives in the app titlebar (`App.tsx` - the "Import model" button opens `importDialogOpen`
+ * via the store flag); this component owns only the dialog and the two-phase import contract. It
+ * resets to a clean state each time it opens (see the `open` effect below), so a dismissed-then-
+ * reopened dialog never shows a stale error/confirmation step.
  */
 export function ImportDialog(): React.JSX.Element {
   const open = useAppStore((state) => state.importDialogOpen)
@@ -60,6 +55,14 @@ export function ImportDialog(): React.JSX.Element {
     setConfirmValue('')
     setDragActive(false)
   }
+
+  // Start every open from a clean slate. The titlebar trigger only flips the store flag, so the
+  // reset that its old inline click handler used to do lives here instead - runs once per open
+  // (when `open` flips true), not on the phase changes that happen while the dialog is up.
+  useEffect(() => {
+    if (open) reset()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   function handleClose(): void {
     if (phase === 'busy') return // an in-flight import shouldn't be dismissed mid-request
@@ -140,29 +143,7 @@ export function ImportDialog(): React.JSX.Element {
   }
 
   return (
-    <>
-      <Paper
-        elevation={4}
-        sx={{
-          position: 'absolute',
-          top: 12,
-          right: 12,
-          zIndex: 10,
-          bgcolor: colors.bgPanelRaised
-        }}
-      >
-        <Button
-          startIcon={<UploadFileIcon />}
-          onClick={() => {
-            reset()
-            setImportDialogOpen(true)
-          }}
-        >
-          Import model
-        </Button>
-      </Paper>
-
-      <Dialog open={open} onClose={handleClose} maxWidth="xs" fullWidth>
+    <Dialog open={open} onClose={handleClose} maxWidth="xs" fullWidth>
         <DialogTitle>Import a model</DialogTitle>
         <DialogContent>
           {error && (
@@ -245,6 +226,5 @@ export function ImportDialog(): React.JSX.Element {
           )}
         </DialogActions>
       </Dialog>
-    </>
   )
 }

@@ -391,6 +391,21 @@ export class ModelViewer {
     return { x: box.max.x - box.min.x, y: box.max.y - box.min.y, z: box.max.z - box.min.z }
   }
 
+  /** Total triangle count summed across every loaded part (not just the focused one), or null if
+   *  nothing is loaded - backs the status bar's `N tris` segment. Per mesh: `geometry.index`'s
+   *  count/3 if indexed, else the position attribute's count/3; guarded against either being
+   *  absent, rounded to an integer. */
+  getTriangleCount(): number | null {
+    if (this.parts.size === 0) return null
+    let total = 0
+    for (const view of this.parts.values()) {
+      const geometry = view.mesh.geometry
+      const triangles = geometry.index ? geometry.index.count / 3 : (geometry.getAttribute('position')?.count ?? 0) / 3
+      total += triangles
+    }
+    return Math.round(total)
+  }
+
   /** The viewer's camera - useful for building a view-projection matrix for selection. */
   getCamera(): THREE.PerspectiveCamera {
     return this.camera

@@ -88,7 +88,7 @@ function ConformanceTable({ report }: { report: VerificationReport }): React.JSX
  * `ParamPanel.tsx`), and subscribes to `verification:updated` for live pushes from the automatic
  * `recordIteration` hook and the on-demand `run_verification` tool.
  */
-export function VerificationPanel(): React.JSX.Element {
+export function VerificationPanel({ embedded = false }: { embedded?: boolean } = {}): React.JSX.Element {
   const model = useAppStore((state) => state.model)
   const report = useAppStore((state) => state.verificationReport)
   const setReport = useAppStore((state) => state.setVerificationReport)
@@ -133,15 +133,25 @@ export function VerificationPanel(): React.JSX.Element {
         ? 'Verified — no findings'
         : null
 
+  const open = embedded || expanded
+
   return (
-    <Box sx={{ p: 0, borderBottom: 1, borderColor: 'divider', bgcolor: 'background.paper', flexShrink: 0 }}>
+    <Box
+      sx={{
+        p: 0,
+        borderBottom: embedded ? 0 : 1,
+        borderColor: 'divider',
+        bgcolor: embedded ? 'transparent' : 'background.paper',
+        flexShrink: 0
+      }}
+    >
       <Stack
         direction="row"
         alignItems="center"
         justifyContent="space-between"
         gap={1}
-        sx={{ px: 1.75, py: 1, cursor: 'pointer' }}
-        onClick={() => setExpanded((prev) => !prev)}
+        sx={{ px: 1.75, py: 1, cursor: embedded ? 'default' : 'pointer' }}
+        onClick={embedded ? undefined : () => setExpanded((prev) => !prev)}
       >
         <Stack direction="row" alignItems="center" gap={1}>
           <VerifiedOutlinedIcon fontSize="small" color={report ? 'inherit' : 'disabled'} />
@@ -150,18 +160,20 @@ export function VerificationPanel(): React.JSX.Element {
           </Typography>
           {report && <Chip size="small" label={badgeLabel(report.badge)} color={badgeTone(report.badge)} />}
         </Stack>
-        <IconButton
-          size="small"
-          aria-label={expanded ? 'Collapse verification' : 'Expand verification'}
-          onClick={(e) => {
-            e.stopPropagation()
-            setExpanded((prev) => !prev)
-          }}
-        >
-          {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
-        </IconButton>
+        {!embedded && (
+          <IconButton
+            size="small"
+            aria-label={expanded ? 'Collapse verification' : 'Expand verification'}
+            onClick={(e) => {
+              e.stopPropagation()
+              setExpanded((prev) => !prev)
+            }}
+          >
+            {expanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+          </IconButton>
+        )}
       </Stack>
-      <Collapse in={expanded}>
+      <Collapse in={open}>
         <Box sx={{ px: 1.75, pb: 1.5 }}>
           {!loaded ? (
             <Stack direction="row" alignItems="center" gap={1}>
