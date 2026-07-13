@@ -198,7 +198,13 @@ export function BriefPanel({ embedded = false }: { embedded?: boolean } = {}): R
       </Stack>
 
       <Collapse in={open}>
-        <Stack spacing={1.25} sx={{ px: 1.75, pb: 1.5, maxHeight: 420, overflowY: 'auto' }}>
+        {/* Embedded (Inspector tab): flow to full height and let the Inspector's own scroll
+            container handle overflow. The 420px inner-scroll cap is only for the legacy
+            collapsible-accordion (non-embedded) usage. */}
+        <Stack
+          spacing={1.25}
+          sx={{ px: 1.75, pb: 1.5, ...(embedded ? {} : { maxHeight: 420, overflowY: 'auto' }) }}
+        >
           {error && (
             <Alert severity="error" onClose={() => setError(null)} sx={{ fontSize: 12 }}>
               {error}
