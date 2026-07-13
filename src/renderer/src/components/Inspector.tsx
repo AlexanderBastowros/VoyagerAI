@@ -2,12 +2,13 @@ import Box from '@mui/material/Box'
 import ToggleButton from '@mui/material/ToggleButton'
 import ToggleButtonGroup from '@mui/material/ToggleButtonGroup'
 import { BriefPanel } from './BriefPanel'
+import { ChatPanel } from './ChatPanel'
 import { ParamPanel } from './ParamPanel'
 import { PrintSettingsPanel } from './PrintSettingsPanel'
 import { VerificationPanel } from './VerificationPanel'
 
 /** Which project-detail panel the right-dock Inspector currently shows. */
-export type InspectorTab = 'brief' | 'parameters' | 'verify' | 'print'
+export type InspectorTab = 'chat' | 'brief' | 'parameters' | 'verify' | 'print'
 
 interface InspectorProps {
   tab: InspectorTab
@@ -15,9 +16,13 @@ interface InspectorProps {
 }
 
 /**
- * The right dock's top region (Studio Workbench): a dense segmented tab bar switching between the
- * four project-detail panels, each rendered `embedded` (always-open, no per-panel collapse chrome -
- * the active tab itself is the "open" state). Sits above the chat dock in `App.tsx`'s right column.
+ * The right dock (Studio Workbench): a dense segmented tab bar switching between the assistant chat
+ * and the four project-detail panels, each rendered `embedded` (always-open, no per-panel collapse
+ * chrome - the active tab itself is the "open" state). Chat is a peer tab rather than a separate
+ * docked region, so all five surfaces share one panel and one at a time is visible.
+ *
+ * Chat renders directly (it manages its own scrolling log + pinned composer); the other four render
+ * inside a single scroll container.
  */
 export function Inspector({ tab, onTabChange }: InspectorProps): React.JSX.Element {
   return (
@@ -30,20 +35,25 @@ export function Inspector({ tab, onTabChange }: InspectorProps): React.JSX.Eleme
           onChange={(_, next: InspectorTab | null) => {
             if (next) onTabChange(next)
           }}
-          sx={{ width: '100%', '& .MuiToggleButton-root': { flex: 1, py: 0.25, fontSize: 11 } }}
+          sx={{ width: '100%', '& .MuiToggleButton-root': { flex: 1, py: 0.25, px: 0.5, fontSize: 11 } }}
         >
+          <ToggleButton value="chat">Chat</ToggleButton>
           <ToggleButton value="brief">Brief</ToggleButton>
-          <ToggleButton value="parameters">Parameters</ToggleButton>
+          <ToggleButton value="parameters">Params</ToggleButton>
           <ToggleButton value="verify">Verify</ToggleButton>
           <ToggleButton value="print">Print</ToggleButton>
         </ToggleButtonGroup>
       </Box>
-      <Box sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
-        {tab === 'brief' && <BriefPanel embedded />}
-        {tab === 'parameters' && <ParamPanel embedded />}
-        {tab === 'verify' && <VerificationPanel embedded />}
-        {tab === 'print' && <PrintSettingsPanel embedded />}
-      </Box>
+      {tab === 'chat' ? (
+        <ChatPanel />
+      ) : (
+        <Box sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+          {tab === 'brief' && <BriefPanel embedded />}
+          {tab === 'parameters' && <ParamPanel embedded />}
+          {tab === 'verify' && <VerificationPanel embedded />}
+          {tab === 'print' && <PrintSettingsPanel embedded />}
+        </Box>
+      )}
     </Box>
   )
 }

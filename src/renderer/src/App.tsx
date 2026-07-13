@@ -12,7 +12,6 @@ import UploadFileIcon from '@mui/icons-material/UploadFile'
 import ViewSidebarOutlinedIcon from '@mui/icons-material/ViewSidebarOutlined'
 import { ActivityRail } from './components/ActivityRail'
 import type { LeftView } from './components/ActivityRail'
-import { ChatPanel } from './components/ChatPanel'
 import { ImportDialog } from './components/ImportDialog'
 import { Inspector } from './components/Inspector'
 import type { InspectorTab } from './components/Inspector'
@@ -53,7 +52,7 @@ export function App(): React.JSX.Element {
   const [leftDockOpen, setLeftDockOpen] = useState(true)
   const [rightDockOpen, setRightDockOpen] = useState(true)
   const [leftView, setLeftView] = useState<LeftView>('parts')
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('parameters')
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('chat')
 
   const activeProject = projects.find((project) => project.id === activeProjectId)
 
@@ -172,10 +171,10 @@ export function App(): React.JSX.Element {
               <ViewSidebarOutlinedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
-          <Tooltip title={rightDockOpen ? 'Hide inspector & chat' : 'Show inspector & chat'}>
+          <Tooltip title={rightDockOpen ? 'Hide inspector' : 'Show inspector'}>
             <IconButton
               className="app-region-no-drag"
-              aria-label={rightDockOpen ? 'Hide inspector & chat' : 'Show inspector & chat'}
+              aria-label={rightDockOpen ? 'Hide inspector' : 'Show inspector'}
               color={rightDockOpen ? 'primary' : 'default'}
               onClick={() => setRightDockOpen((open) => !open)}
             >
@@ -199,6 +198,8 @@ export function App(): React.JSX.Element {
           <ViewportControls viewerRef={viewerRef} />
         </Box>
 
+        {/* Right dock: a single tabbed Inspector - Chat and the four project-detail panels
+            (Brief / Params / Verify / Print) are peer tabs, one visible at a time. */}
         <Box
           sx={{
             width: 372,
@@ -210,24 +211,7 @@ export function App(): React.JSX.Element {
             minWidth: 0
           }}
         >
-          {/* Top: the tabbed project-detail Inspector (Brief / Parameters / Verify / Print). */}
-          <Box sx={{ flex: '1 1 58%', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            <Inspector tab={inspectorTab} onTabChange={setInspectorTab} />
-          </Box>
-          {/* Bottom: the assistant/chat dock. Kept mounted (display:none when closed) so its
-              transcript and scroll position survive toggling. */}
-          <Box
-            sx={{
-              flex: '1 1 42%',
-              minHeight: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              borderTop: 1,
-              borderColor: 'divider'
-            }}
-          >
-            <ChatPanel />
-          </Box>
+          <Inspector tab={inspectorTab} onTabChange={setInspectorTab} />
         </Box>
       </Box>
 
