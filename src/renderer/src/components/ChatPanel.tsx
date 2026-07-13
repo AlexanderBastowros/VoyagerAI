@@ -50,8 +50,6 @@ const EFFORT_OPTIONS: Array<{ value: AgentEffort; label: string }> = [
  *  rather than sent a value the agent would have to silently drop. */
 const EFFORT_UNSUPPORTED_MODELS = new Set<AgentModel>(['claude-haiku-4-5'])
 
-const compactSelectSx = { fontSize: 11, minWidth: 0, maxWidth: 128, '& .MuiSelect-select': { py: 0.5 } }
-
 /** Reads an image `File` into a `ChatAttachment` (base64, no `data:` prefix). Resolves `null`
  *  for a file type the Anthropic API doesn't accept as an image block, so callers can filter it out. */
 function readImageFile(file: File): Promise<ChatAttachment | null> {
@@ -330,35 +328,15 @@ export function ChatPanel(): React.JSX.Element {
             </Typography>
           )}
         </Stack>
-        <Stack direction="row" alignItems="center" gap={0.5} sx={{ minWidth: 0 }}>
-          <Tooltip title={effortDisabled ? 'Haiku does not support an effort setting' : ''}>
-            <span>
-              <Select
-                size="small"
-                value={agentSettings.effort}
-                disabled={effortDisabled}
-                onChange={(e) => void updateAgentSettings({ effort: e.target.value as AgentEffort })}
-                inputProps={{ 'aria-label': 'Effort' }}
-                sx={compactSelectSx}
-              >
-                {EFFORT_OPTIONS.map((option) => (
-                  <MenuItem key={option.value} value={option.value}>
-                    {option.label}
-                  </MenuItem>
-                ))}
-              </Select>
-            </span>
-          </Tooltip>
-          <Tooltip title="Chat settings">
-            <IconButton
-              size="small"
-              aria-label="Chat settings"
-              onClick={(e) => setSettingsAnchor(e.currentTarget)}
-            >
-              <SettingsOutlinedIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-        </Stack>
+        <Tooltip title="Chat settings">
+          <IconButton
+            size="small"
+            aria-label="Chat settings"
+            onClick={(e) => setSettingsAnchor(e.currentTarget)}
+          >
+            <SettingsOutlinedIcon fontSize="small" />
+          </IconButton>
+        </Tooltip>
       </Stack>
 
       {/* Per-project chat settings: model, render previews, and full stream live here rather than
@@ -394,6 +372,31 @@ export function ChatPanel(): React.JSX.Element {
                 </MenuItem>
               ))}
             </Select>
+          </Stack>
+          <Stack gap={0.5}>
+            <Typography variant="caption" color="text.secondary">
+              Effort
+            </Typography>
+            <Select
+              size="small"
+              fullWidth
+              value={agentSettings.effort}
+              disabled={effortDisabled}
+              onChange={(e) => void updateAgentSettings({ effort: e.target.value as AgentEffort })}
+              inputProps={{ 'aria-label': 'Effort' }}
+              sx={{ fontSize: 13 }}
+            >
+              {EFFORT_OPTIONS.map((option) => (
+                <MenuItem key={option.value} value={option.value} sx={{ fontSize: 13 }}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </Select>
+            {effortDisabled && (
+              <Typography variant="caption" color="text.disabled">
+                Haiku doesn’t support an effort setting.
+              </Typography>
+            )}
           </Stack>
           <Divider />
           <FormControlLabel
