@@ -5,21 +5,23 @@ import Box from '@mui/material/Box'
 import Button from '@mui/material/Button'
 import Chip from '@mui/material/Chip'
 import CircularProgress from '@mui/material/CircularProgress'
+import Divider from '@mui/material/Divider'
+import FormControlLabel from '@mui/material/FormControlLabel'
 import IconButton from '@mui/material/IconButton'
 import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
+import Popover from '@mui/material/Popover'
 import Select from '@mui/material/Select'
 import Stack from '@mui/material/Stack'
+import Switch from '@mui/material/Switch'
 import TextField from '@mui/material/TextField'
-import ToggleButton from '@mui/material/ToggleButton'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import AttachFileIcon from '@mui/icons-material/AttachFile'
-import CameraAltOutlinedIcon from '@mui/icons-material/CameraAltOutlined'
 import HighlightAltIcon from '@mui/icons-material/HighlightAlt'
 import SendIcon from '@mui/icons-material/Send'
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
 import StopIcon from '@mui/icons-material/Stop'
-import ViewStreamIcon from '@mui/icons-material/ViewStream'
 import { useAppStore } from '../state/appStore'
 import type { ChatMessage } from '../state/appStore'
 import type { AgentEffort, AgentModel, AgentSettings, ChatAttachment } from '../../../shared/ipc'
@@ -166,6 +168,7 @@ export function ChatPanel(): React.JSX.Element {
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<ChatAttachment[]>([])
   const [stopping, setStopping] = useState(false)
+  const [settingsAnchor, setSettingsAnchor] = useState<HTMLElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Settings/messages/project name all hydrate together via `App.tsx`'s one-time
@@ -327,20 +330,7 @@ export function ChatPanel(): React.JSX.Element {
             </Typography>
           )}
         </Stack>
-        <Stack direction="row" alignItems="center" gap={0.75} sx={{ minWidth: 0 }}>
-          <Select
-            size="small"
-            value={agentSettings.model}
-            onChange={(e) => void updateAgentSettings({ model: e.target.value as AgentModel })}
-            inputProps={{ 'aria-label': 'Model' }}
-            sx={compactSelectSx}
-          >
-            {MODEL_OPTIONS.map((option) => (
-              <MenuItem key={option.value} value={option.value}>
-                {option.label}
-              </MenuItem>
-            ))}
-          </Select>
+        <Stack direction="row" alignItems="center" gap={0.5} sx={{ minWidth: 0 }}>
           <Tooltip title={effortDisabled ? 'Haiku does not support an effort setting' : ''}>
             <span>
               <Select
@@ -359,57 +349,88 @@ export function ChatPanel(): React.JSX.Element {
               </Select>
             </span>
           </Tooltip>
-          <Tooltip
-            title={`Render previews: ${agentSettings.renderViews !== false ? 'on' : 'off'} — Voyager renders 8 canonical views of each iteration and inspects them before showing you a model (adds a few seconds per iteration)`}
-          >
-            <ToggleButton
-              value="renderViews"
+          <Tooltip title="Chat settings">
+            <IconButton
               size="small"
-              selected={agentSettings.renderViews !== false}
-              onChange={() => void updateAgentSettings({ renderViews: !(agentSettings.renderViews !== false) })}
-              aria-label="Render previews"
-              sx={{
-                flexShrink: 0,
-                p: 0.5,
-                color: 'text.secondary',
-                borderColor: colors.borderStrong,
-                '& .MuiSvgIcon-root': { fontSize: 18 },
-                '&.Mui-selected': {
-                  color: colors.onAccent,
-                  bgcolor: colors.accent,
-                  '&:hover': { bgcolor: colors.accent }
-                }
-              }}
+              aria-label="Chat settings"
+              onClick={(e) => setSettingsAnchor(e.currentTarget)}
             >
-              <CameraAltOutlinedIcon />
-            </ToggleButton>
-          </Tooltip>
-          <Tooltip title={`Full stream: ${fullStream ? 'on' : 'off'} — show all of Voyager's background activity (tool calls, inputs, and full thinking)`}>
-            <ToggleButton
-              value="fullStream"
-              size="small"
-              selected={fullStream}
-              onChange={() => setFullStream(!fullStream)}
-              aria-label="Full stream"
-              sx={{
-                flexShrink: 0,
-                p: 0.5,
-                color: 'text.secondary',
-                borderColor: colors.borderStrong,
-                '& .MuiSvgIcon-root': { fontSize: 18 },
-                '&.Mui-selected': {
-                  color: colors.onAccent,
-                  bgcolor: colors.accent,
-                  borderColor: colors.accent,
-                  '&:hover': { bgcolor: colors.accent }
-                }
-              }}
-            >
-              <ViewStreamIcon />
-            </ToggleButton>
+              <SettingsOutlinedIcon fontSize="small" />
+            </IconButton>
           </Tooltip>
         </Stack>
       </Stack>
+
+      {/* Per-project chat settings: model, render previews, and full stream live here rather than
+          crowding the header. Model + render-previews are per-project (AgentSettings); full stream
+          is a global display preference. */}
+      <Popover
+        open={Boolean(settingsAnchor)}
+        anchorEl={settingsAnchor}
+        onClose={() => setSettingsAnchor(null)}
+        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+        slotProps={{ paper: { sx: { width: 272 } } }}
+      >
+        <Stack sx={{ p: 1.5 }} gap={1.5}>
+          <Typography variant="overline" color="text.secondary">
+            Chat settings
+          </Typography>
+          <Stack gap={0.5}>
+            <Typography variant="caption" color="text.secondary">
+              Model
+            </Typography>
+            <Select
+              size="small"
+              fullWidth
+              value={agentSettings.model}
+              onChange={(e) => void updateAgentSettings({ model: e.target.value as AgentModel })}
+              inputProps={{ 'aria-label': 'Model' }}
+              sx={{ fontSize: 13 }}
+            >
+              {MODEL_OPTIONS.map((option) => (
+                <MenuItem key={option.value} value={option.value} sx={{ fontSize: 13 }}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </Select>
+          </Stack>
+          <Divider />
+          <FormControlLabel
+            sx={{ m: 0, alignItems: 'flex-start', gap: 1 }}
+            control={
+              <Switch
+                size="small"
+                checked={agentSettings.renderViews !== false}
+                onChange={() =>
+                  void updateAgentSettings({ renderViews: !(agentSettings.renderViews !== false) })
+                }
+              />
+            }
+            label={
+              <Box>
+                <Typography variant="body2">Render previews</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Render &amp; inspect 8 views per iteration before display. Needed for version-history
+                  thumbnails; adds a few seconds per iteration.
+                </Typography>
+              </Box>
+            }
+          />
+          <FormControlLabel
+            sx={{ m: 0, alignItems: 'flex-start', gap: 1 }}
+            control={<Switch size="small" checked={fullStream} onChange={() => setFullStream(!fullStream)} />}
+            label={
+              <Box>
+                <Typography variant="body2">Full stream</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Show all of Voyager&apos;s background activity — tool calls, inputs, and full thinking.
+                </Typography>
+              </Box>
+            }
+          />
+        </Stack>
+      </Popover>
       <Stack spacing={1.25} sx={{ flex: 1, overflowY: 'auto', p: 1.5 }}>
         {messages.length === 0 && (
           <Typography variant="body2" color="text.disabled">
