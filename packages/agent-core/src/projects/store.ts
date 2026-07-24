@@ -413,6 +413,25 @@ export class ProjectStore {
   }
 
   /**
+   * Removes a part from the project entirely - its name, placement, visibility, and iteration
+   * history stop being tracked. Mirrors `duplicatePart`'s share-don't-copy posture in reverse: the
+   * on-disk artifacts the removed part's iterations pointed to are left alone (iterations are
+   * immutable and never deleted - only the project's *pointer* to them goes away). Throws if
+   * `partId` isn't known, or if it's the project's only part (a project always holds ≥1, per
+   * §14). If the removed part was active, the first remaining part becomes active.
+   */
+  async deletePart(partId: string): Promise<PartRecord[]> {
+    const record = await this.requireRecord()
+    const index = record.parts.findIndex((p) => p.id === partId)
+    if (index === -1) throw new Error(`Unknown part: ${partId}`)
+    if (record.parts.length === 1) throw new Error('Cannot delete the only part in a project')
+    record.parts.splice(index, 1)
+    if (record.activePartId === partId) record.activePartId = record.parts[0].id
+    await this.writeRecord(this.dirFor(record.id), record)
+    return record.parts.map(toPartRecord)
+  }
+
+  /**
    * Records a new versioned iteration for a part (called by the `display_model`
    * MCP tool once an export validates, and by WS-B's `param:update`). The part
    * is `entry.partId` (created on first use with `entry.partName`), or the

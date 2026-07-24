@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest'
-import type { PrintSettings, SelectionSummary } from '../../../shared/ipc'
+import type { ModelDisplayedPayload, PrintSettings, SelectionSummary } from '../../../shared/ipc'
 
 // The renderer tests run under vitest's `node` environment, which has no DOM/localStorage.
 // Install a tiny in-memory stand-in before importing the store so its persisted `fullStream`
@@ -25,7 +25,7 @@ const localStorageMock = ((): Storage => {
 })()
 globalThis.localStorage = localStorageMock
 
-const { useAppStore } = await import('./appStore')
+const { toModelInfo, useAppStore } = await import('./appStore')
 
 function resetStore(): void {
   useAppStore.setState({
@@ -132,12 +132,36 @@ describe('appStore', () => {
       iteration: 0,
       stlPath: '/tmp/cube.stl',
       stepPath: null,
-      scriptPath: null
+      scriptPath: null,
+      partId: 'main'
     })
     expect(useAppStore.getState().model?.name).toBe('cube.stl')
 
     useAppStore.getState().setModel(null)
     expect(useAppStore.getState().model).toBeNull()
+  })
+
+  it('defaults toModelInfo.partId to main when the payload omits it (single-part projects)', () => {
+    const payload: ModelDisplayedPayload = {
+      stlPath: 'outputs/box_v1.stl',
+      scriptPath: 'outputs/box_v1.py',
+      summary: 'a box',
+      iteration: 1,
+      stlBuffer: new ArrayBuffer(0)
+    }
+    expect(toModelInfo(payload).partId).toBe('main')
+  })
+
+  it('carries an explicit partId through toModelInfo (WS-I multi-part)', () => {
+    const payload: ModelDisplayedPayload = {
+      stlPath: 'outputs/lid_v1.stl',
+      scriptPath: 'outputs/lid_v1.py',
+      summary: 'a lid',
+      iteration: 1,
+      stlBuffer: new ArrayBuffer(0),
+      partId: 'lid'
+    }
+    expect(toModelInfo(payload).partId).toBe('lid')
   })
 
   it('replaces the model/effort choice wholesale via setAgentSettings', () => {
@@ -189,7 +213,8 @@ describe('appStore', () => {
       iteration: 2,
       stlPath: '/tmp/bracket_v2.stl',
       stepPath: null,
-      scriptPath: '/tmp/bracket_v2.py'
+      scriptPath: '/tmp/bracket_v2.py',
+      partId: 'main'
     })
 
     expect(useAppStore.getState().selection).toBeNull()
@@ -216,7 +241,8 @@ describe('appStore', () => {
       iteration: 2,
       stlPath: '/tmp/bracket_v2.stl',
       stepPath: null,
-      scriptPath: '/tmp/bracket_v2.py'
+      scriptPath: '/tmp/bracket_v2.py',
+      partId: 'main'
     })
 
     expect(useAppStore.getState().printSettings).toBeNull()
@@ -330,6 +356,14 @@ describe('appStore', () => {
     expect(useAppStore.getState().thinkingText).toBe('')
   })
 
+  it('records context-usage as contextUsage', () => {
+    expect(useAppStore.getState().contextUsage).toBeNull()
+
+    useAppStore.getState().applyAgentEvent({ type: 'context-usage', totalTokens: 104_000, maxTokens: 200_000 })
+
+    expect(useAppStore.getState().contextUsage).toEqual({ totalTokens: 104_000, maxTokens: 200_000 })
+  })
+
   it('completes the streaming message, adds a status line, and clears turn state on stopped', () => {
     useAppStore.getState().setPendingPermission({
       requestId: 'perm-1-1',
@@ -417,6 +451,7 @@ describe('appStore', () => {
       useAppStore.getState().setPrintSettings(samplePrintSettings())
       useAppStore.getState().setPendingPermission({ requestId: 'p-1', toolName: 'Write', summary: 'x' })
       useAppStore.getState().applyAgentEvent({ type: 'thinking-delta', messageId: 'turn-1', delta: 'thinking...' })
+      useAppStore.getState().applyAgentEvent({ type: 'context-usage', totalTokens: 104_000, maxTokens: 200_000 })
 
       useAppStore.getState().hydrateProject({
         activeProjectId: 'proj-a',
@@ -437,6 +472,7 @@ describe('appStore', () => {
       expect(state.thinkingText).toBe('')
       expect(state.agentStreamIds).toEqual({})
       expect(state.model).toBeNull()
+      expect(state.contextUsage).toBeNull()
     })
   })
 

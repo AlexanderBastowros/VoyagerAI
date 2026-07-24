@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ChangeEvent, ClipboardEvent, DragEvent, KeyboardEvent } from 'react'
 import Alert from '@mui/material/Alert'
 import Box from '@mui/material/Box'
@@ -18,15 +18,23 @@ import TextField from '@mui/material/TextField'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import AttachFileIcon from '@mui/icons-material/AttachFile'
+import CompressIcon from '@mui/icons-material/Compress'
 import HighlightAltIcon from '@mui/icons-material/HighlightAlt'
 import SendIcon from '@mui/icons-material/Send'
 import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
 import StopIcon from '@mui/icons-material/Stop'
 import { useAppStore } from '../state/appStore'
 import type { ChatMessage } from '../state/appStore'
-import type { AgentEffort, AgentModel, AgentSettings, ChatAttachment } from '../../../shared/ipc'
+import type {
+  AgentEffort,
+  AgentModel,
+  AgentSettings,
+  ChatAttachment,
+  SelectionSummary
+} from '../../../shared/ipc'
 import { deriveChatDisabledReason } from '../state/setupSelectors'
 import { colors } from '../colors'
+import { formatTokenCount } from '../format'
 import { Markdown } from './Markdown'
 
 const SUPPORTED_IMAGE_TYPES = new Set<string>(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
@@ -153,6 +161,7 @@ export function ChatPanel(): React.JSX.Element {
   const setupStatus = useAppStore((state) => state.setupStatus)
   const agentBusy = useAppStore((state) => state.agentBusy)
   const setAgentBusy = useAppStore((state) => state.setAgentBusy)
+  const contextUsage = useAppStore((state) => state.contextUsage)
   const pendingPermission = useAppStore((state) => state.pendingPermission)
   const setPendingPermission = useAppStore((state) => state.setPendingPermission)
   const thinkingText = useAppStore((state) => state.thinkingText)
@@ -168,6 +177,7 @@ export function ChatPanel(): React.JSX.Element {
   const [stopping, setStopping] = useState(false)
   const [settingsAnchor, setSettingsAnchor] = useState<HTMLElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
 
   // Settings/messages/project name all hydrate together via `App.tsx`'s one-time
   // project:getState mount effect (and on every create/switch) - no separate fetch here.
@@ -224,14 +234,14 @@ export function ChatPanel(): React.JSX.Element {
     setAttachments((prev) => prev.filter((_, i) => i !== index))
   }
 
-  async function sendDraft(): Promise<void> {
-    const text = draft.trim()
-    if ((!text && attachments.length === 0) || isDisabled) return
-
-    const selectionAtSend = selection
-    const attachmentsAtSend = attachments.length > 0 ? attachments : undefined
-    setDraft('')
-    setAttachments([])
+  /** Sends one user turn to the agent and adds its chat bubble - shared by the composer's
+   *  Send button and the "Compact" shortcut in the settings row. */
+  async function dispatchTurn(
+    text: string,
+    options?: { attachments?: ChatAttachment[]; selectionContext?: SelectionSummary | null }
+  ): Promise<void> {
+    const attachmentsAtSend = options?.attachments
+    const selectionAtSend = options?.selectionContext ?? null
     addMessage({ role: 'user', text, attachments: attachmentsAtSend })
     setAgentBusy(true)
 
@@ -265,6 +275,25 @@ export function ChatPanel(): React.JSX.Element {
     }
   }
 
+  async function sendDraft(): Promise<void> {
+    const text = draft.trim()
+    if ((!text && attachments.length === 0) || isDisabled) return
+
+    const selectionAtSend = selection
+    const attachmentsAtSend = attachments.length > 0 ? attachments : undefined
+    setDraft('')
+    setAttachments([])
+    await dispatchTurn(text, { attachments: attachmentsAtSend, selectionContext: selectionAtSend })
+  }
+
+  /** Sends `/compact` - the SDK's built-in context-compaction command, triggered the same way
+   *  as if the user had typed it - so a long conversation can be summarized down without the
+   *  user needing to know the slash command exists. */
+  async function compactConversation(): Promise<void> {
+    if (isDisabled || messages.length === 0) return
+    await dispatchTurn('/compact')
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLDivElement>): void {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
@@ -280,6 +309,14 @@ export function ChatPanel(): React.JSX.Element {
   useEffect(() => {
     if (!agentBusy) setStopping(false)
   }, [agentBusy])
+
+  // Keep the transcript pinned to the latest message - both when new content
+  // arrives (new messages, streaming deltas, thinking updates) and whenever
+  // this panel (re)mounts, e.g. switching back to it from another project/tab,
+  // where the scroll container otherwise starts at its default scrollTop of 0.
+  useLayoutEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ block: 'end' })
+  }, [messages, thinkingDisplay, agentBusy])
 
   async function stopTurn(): Promise<void> {
     if (stopping) return
@@ -432,6 +469,26 @@ export function ChatPanel(): React.JSX.Element {
               </Box>
             }
           />
+          <Divider />
+          <Stack gap={0.5} alignItems="flex-start">
+            {contextUsage && (
+              <Typography variant="caption" color="text.secondary">
+                Context: {formatTokenCount(contextUsage.totalTokens)} of{' '}
+                {formatTokenCount(contextUsage.maxTokens)}
+              </Typography>
+            )}
+            <Button
+              size="small"
+              startIcon={<CompressIcon fontSize="small" />}
+              disabled={isDisabled || messages.length === 0}
+              onClick={() => {
+                setSettingsAnchor(null)
+                void compactConversation()
+              }}
+            >
+              Compact conversation
+            </Button>
+          </Stack>
         </Stack>
       </Popover>
       <Stack spacing={1.25} sx={{ flex: 1, overflowY: 'auto', p: 1.5 }}>
@@ -477,6 +534,7 @@ export function ChatPanel(): React.JSX.Element {
             </Typography>
           </Stack>
         )}
+        <div ref={messagesEndRef} />
       </Stack>
       {pendingPermission && (
         <Alert severity="warning" variant="outlined" sx={{ mx: 1.25, bgcolor: colors.warningDim }}>

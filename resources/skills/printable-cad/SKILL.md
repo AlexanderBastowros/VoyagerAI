@@ -171,6 +171,18 @@ directory). Save the script there too. Version every artifact per iteration:
 `<part>_vN.py`, `<part>_vN.stl`, `<part>_vN.step` — N starts at 1 and increments on
 each refinement, so earlier iterations are never overwritten.
 
+**If the project has more than one part** (a box and its lid, a bracket set, a gear
+pair — see `references/gears.md` §4 for that specific case), each part is a **fully
+separate script**, never two parts' geometry sharing one file: `<part>` above must be
+that part's own slug (e.g. `box_v1.py` / `lid_v1.py`, not one `assembly_v1.py` that
+exports two STLs). Each part's script has its own independent `PARAMS` block. This
+matters beyond code hygiene — the extractor in Phase 4 below and the parameter panel's
+per-part slider re-run both key off "one script, one manifest, one part"; a shared
+script produces a manifest that mixes both parts' constants, and editing a slider then
+re-runs the wrong geometry (or both parts' at once). Pass that same slug as `part` (and
+`part_name` the first time) to `display_model` in Phase 6 so it lands in that part's own
+version history.
+
 Then extract the manifest — a trivial, deterministic parse of the PARAMS block, **no
 LLM involved**, which is exactly why it must run as a separate command rather than being
 hand-typed:
@@ -230,6 +242,14 @@ Voyager AI has a built-in 3D viewport — do **not** generate `viewer.html` with
 - `script_path` — path to the parametric Python script
 - `summary` — one or two sentences: what the part is, key dimensions, and which DFM
   rules were applied
+- `part` — that part's slug, **required for any project with more than one part**
+  (omit only for a genuinely single-part project); matches the `<part>` prefix on its
+  own script/STL/STEP from Phase 4 above. A new slug creates a new part; reusing an
+  existing part's slug adds the next version to that part's own history. Omitting it
+  when a project already has other parts keeps refining whichever part is currently
+  focused — only do that intentionally.
+- `part_name` — human-readable name for the parts panel, given the first time a slug is
+  used (e.g. `part="lid"`, `part_name="Lid"`)
 
 The model appears in the user's viewport immediately. Then invite corrections in chat.
 Expect iteration — re-run Phases 4–6 as parameters change, incrementing the version

@@ -291,6 +291,10 @@ interface HarnessOptions {
   /** Wires a printer-profile store (WS-E) so tests can assert the active profile reaches the
    *  system prompt and that a profile change restarts the query. */
   printerProfiles?: VoyagerPrinterProfileStore
+  /** Stands in for the fake Query's `getContextUsage()` - a resolved value makes the harness's
+   *  Query report it; omitted leaves it unimplemented (mirrors a real Query always having it,
+   *  but exercises `emitContextUsage`'s swallow-on-failure path when a test needs to). */
+  getContextUsage?: () => Promise<{ totalTokens: number; maxTokens: number }>
 }
 
 function makeHarness(opts: HarnessOptions = {}): Harness {
@@ -328,8 +332,13 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
       [Symbol.asyncIterator]: () => outputs[Symbol.asyncIterator]()
     }
     // Real Query objects have control-request methods (interrupt, etc.) beyond
-    // the async-iterable surface; only `interrupt` is exercised here.
-    return { ...iterable, interrupt: interruptSpy } as unknown as Query
+    // the async-iterable surface; only `interrupt` (and, when a test opts in,
+    // `getContextUsage`) is exercised here.
+    return {
+      ...iterable,
+      interrupt: interruptSpy,
+      ...(opts.getContextUsage ? { getContextUsage: opts.getContextUsage } : {})
+    } as unknown as Query
   }
 
   // Default: the approver must never be invoked unless a test explicitly
@@ -378,6 +387,35 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     interruptSpy
   }
 }
+
+describe('AgentSession context usage', () => {
+  it('emits a context-usage event once the turn completes', async () => {
+    const h = makeHarness({
+      getContextUsage: async () => ({ totalTokens: 104_000, maxTokens: 200_000 })
+    })
+
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+
+    await vi.waitFor(() =>
+      expect(h.events).toContainEqual({ type: 'context-usage', totalTokens: 104_000, maxTokens: 200_000 })
+    )
+  })
+
+  it('swallows a getContextUsage failure instead of surfacing an error event', async () => {
+    // The default harness Query has no getContextUsage at all - mirrors an SDK build/version
+    // that doesn't support it, exercising the same catch path as a rejected call.
+    const h = makeHarness()
+
+    await h.session.sendMessage('hello')
+    await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
+    h.outputs.push(msg({ type: 'result', subtype: 'success', is_error: false }))
+
+    await vi.waitFor(() => expect(h.session.isBusy()).toBe(false))
+    expect(h.events).toEqual([{ type: 'message-complete', messageId: 'turn-1' }])
+  })
+})
 
 describe('AgentSession', () => {
   it('runs a full turn: accepts, forwards the user message, streams events, completes', async () => {

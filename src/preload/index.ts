@@ -17,9 +17,11 @@ import type {
   ImportModelResponse,
   IterationInfo,
   ModelDisplayedPayload,
+  ParamGetManifestRequest,
   ParamGetManifestResponse,
   ParamUpdateRequest,
   ParamUpdateResponse,
+  PartDeleteRequest,
   PartDuplicateRequest,
   PartGetModelRequest,
   PartListResponse,
@@ -115,6 +117,8 @@ const api: VoyagerApi = {
       ipcRenderer.invoke(IPC.partSetActive, request),
     duplicate: (request: PartDuplicateRequest): Promise<PartListResponse> =>
       ipcRenderer.invoke(IPC.partDuplicate, request),
+    delete: (request: PartDeleteRequest): Promise<PartListResponse> =>
+      ipcRenderer.invoke(IPC.partDelete, request),
     onUpdated: (callback) => subscribe<PartListResponse>(IPC.partUpdated, callback)
   },
   render: {
@@ -123,7 +127,8 @@ const api: VoyagerApi = {
   param: {
     update: (request: ParamUpdateRequest): Promise<ParamUpdateResponse> =>
       ipcRenderer.invoke(IPC.paramUpdate, request),
-    getManifest: (): Promise<ParamGetManifestResponse> => ipcRenderer.invoke(IPC.paramGetManifest)
+    getManifest: (request?: ParamGetManifestRequest): Promise<ParamGetManifestResponse> =>
+      ipcRenderer.invoke(IPC.paramGetManifest, request)
   },
   verification: {
     get: (): Promise<VerificationGetResponse> => ipcRenderer.invoke(IPC.verificationGet),

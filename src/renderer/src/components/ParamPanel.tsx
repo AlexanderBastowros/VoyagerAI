@@ -112,11 +112,12 @@ export function ParamPanel({ embedded = false }: { embedded?: boolean } = {}): R
   const [errors, setErrors] = useState<Record<string, string | undefined>>({})
 
   const iteration = model?.iteration ?? null
+  const partId = model?.partId ?? null
 
   useEffect(() => {
     let cancelled = false
     setLoaded(false)
-    void window.voyager.param.getManifest().then((response) => {
+    void window.voyager.param.getManifest(partId ? { partId } : undefined).then((response) => {
       if (cancelled) return
       setManifest(response.manifest ?? emptyScriptManifest())
       setDrafts({})
@@ -126,10 +127,13 @@ export function ParamPanel({ embedded = false }: { embedded?: boolean } = {}): R
     return () => {
       cancelled = true
     }
-    // Re-fetch whenever the displayed iteration changes - both an agent turn and a successful
-    // param edit land here via the same `model:displayed` broadcast.
+    // Re-fetch whenever the displayed model changes - both an agent turn and a successful param
+    // edit land here via the same `model:displayed` broadcast. Keyed on `partId` *and*
+    // `iteration` together, not iteration alone: each part numbers its own iterations from 1
+    // (WS-I), so switching focus between two parts that happen to share an iteration number would
+    // otherwise be a no-op for this effect and leave the panel showing the wrong part's manifest.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [iteration, setManifest])
+  }, [partId, iteration, setManifest])
 
   const disabledReason = deriveChatDisabledReason(setupStatus)
   const anyPending = Object.values(pending).some(Boolean)
@@ -142,7 +146,11 @@ export function ParamPanel({ embedded = false }: { embedded?: boolean } = {}): R
     setParamUpdatePending(true)
     setErrors((e) => ({ ...e, [entry.name]: undefined }))
     try {
-      const response = await window.voyager.param.update({ name: entry.name, value })
+      const response = await window.voyager.param.update({
+        name: entry.name,
+        value,
+        ...(partId ? { partId } : {})
+      })
       if (!response.accepted) {
         setErrors((e) => ({ ...e, [entry.name]: response.reason ?? 'Could not update this parameter.' }))
         setDrafts((d) => ({ ...d, [entry.name]: entry.value }))

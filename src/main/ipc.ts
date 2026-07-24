@@ -19,9 +19,11 @@ import type {
   ImportModelResponse,
   IterationInfo,
   ModelDisplayedPayload,
+  ParamGetManifestRequest,
   ParamGetManifestResponse,
   ParamUpdateRequest,
   ParamUpdateResponse,
+  PartDeleteRequest,
   PartDuplicateRequest,
   PartGetModelRequest,
   PartListResponse,
@@ -831,7 +833,19 @@ export function registerIpcHandlers(): void {
         }
       }
 
-      const active = await projectStore.activeIterationRecord()
+      // Resolve which part this edit targets once, up front, and use that same value everywhere
+      // below - never re-read "the active part" later, since a concurrent focus change (or the
+      // agent starting a new turn the busy-gate above just missed) could otherwise make the
+      // re-run and the broadcast disagree about which part they're for.
+      if (request.partId) {
+        const parts = await projectStore.listParts()
+        if (!parts.some((p) => p.id === request.partId)) {
+          return { accepted: false, reason: `Unknown part: ${request.partId}` }
+        }
+      }
+      const partId = request.partId ?? (await projectStore.getActivePartId())
+
+      const active = await projectStore.activeIterationRecord(partId)
       if (!active) return { accepted: false, reason: 'No model has been generated yet.' }
 
       const manifest = await readManifestForIteration(projectStore.getProjectDir(), active)
@@ -861,13 +875,13 @@ export function registerIpcHandlers(): void {
         stepPath: result.stepRelPath,
         scriptPath: result.scriptRelPath,
         summary,
+        partId,
         createdBy: 'param'
       })
 
-      // A param edit re-runs the *active* part's script (`recordIteration` with no partId), so tag
-      // the payload with that part (WS-I) - otherwise the renderer's `partId ?? 'main'` fallback
-      // would load the re-run geometry into the wrong part when the active part isn't `main`.
-      const partId = await projectStore.getActivePartId()
+      // Tag the payload with the part this edit targeted (WS-I) - otherwise the renderer's
+      // `partId ?? 'main'` fallback would load the re-run geometry into the wrong part when the
+      // active part isn't `main`.
       const buffer = await readFile(join(projectStore.getProjectDir(), iteration.stlPath))
       const payload: ModelDisplayedPayload = {
         stlPath: iteration.stlPath,
@@ -886,8 +900,12 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  ipcMain.handle(IPC.paramGetManifest, async (): Promise<ParamGetManifestResponse> => {
-    const active = await projectStore.activeIterationRecord()
+  ipcMain.handle(IPC.paramGetManifest, async (_event, request?: ParamGetManifestRequest): Promise<ParamGetManifestResponse> => {
+    if (request?.partId) {
+      const parts = await projectStore.listParts()
+      if (!parts.some((p) => p.id === request.partId)) return { manifest: null }
+    }
+    const active = await projectStore.activeIterationRecord(request?.partId)
     if (!active) return { manifest: null }
     return { manifest: await readManifestForIteration(projectStore.getProjectDir(), active) }
   })
@@ -1270,6 +1288,19 @@ export function registerIpcHandlers(): void {
         throw new Error('Voyager is still working — wait for it to finish before duplicating parts.')
       }
       const parts = await projectStore.duplicatePart(request.partId)
+      const response: PartListResponse = { parts, activePartId: await projectStore.getActivePartId() }
+      broadcast(IPC.partUpdated, response)
+      return response
+    }
+  )
+
+  ipcMain.handle(
+    IPC.partDelete,
+    async (_event, request: PartDeleteRequest): Promise<PartListResponse> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before deleting a part.')
+      }
+      const parts = await projectStore.deletePart(request.partId)
       const response: PartListResponse = { parts, activePartId: await projectStore.getActivePartId() }
       broadcast(IPC.partUpdated, response)
       return response

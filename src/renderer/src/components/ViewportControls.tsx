@@ -120,7 +120,8 @@ export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JS
         iteration: 0,
         stlPath: 'resources/sample/cube.stl',
         stepPath: null,
-        scriptPath: null
+        scriptPath: null,
+        partId: 'main'
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load sample model')

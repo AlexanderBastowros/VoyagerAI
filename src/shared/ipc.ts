@@ -133,6 +133,9 @@ export type AgentEvent =
    *  event fires per turn: `message-complete` | `error` | `stopped`. */
   | { type: 'stopped'; messageId: string }
   | { type: 'error'; messageId?: string; message: string }
+  /** Emitted after a turn completes with the session's current context-window usage
+   *  (`Query.getContextUsage()`), so the chat UI can show e.g. "104k tokens". */
+  | { type: 'context-usage'; totalTokens: number; maxTokens: number }
 
 // ---------------------------------------------------------------------------
 // Projects (R3 multi-project switcher)
@@ -421,6 +424,15 @@ export interface PartDuplicateRequest {
   partId: string
 }
 
+/** Renderer -> main: permanently remove a part from the project (its name, placement,
+ *  visibility, and iteration history stop being tracked; the on-disk artifacts its iterations
+ *  point to are left alone, mirroring the immutable-iterations rule). Rejects if `partId` is the
+ *  project's only remaining part. Resolves with the refreshed list; if the removed part was
+ *  active, `activePartId` now names the first remaining part. */
+export interface PartDeleteRequest {
+  partId: string
+}
+
 /** Renderer -> main: fetch one canonical-view PNG of an iteration's render set (WS-D) as a data
  *  URL, for version-history thumbnails. On-demand per visible row (mirrors `part:getModel`'s
  *  fetch-when-needed shape) rather than pushing every iteration's images up front. `view` is one
@@ -477,6 +489,11 @@ export interface BriefListVersionsResponse {
 export interface ParamUpdateRequest {
   name: string
   value: number
+  /** Which part to re-run (WS-I multi-part). Omitted = whatever part the main process currently
+   *  considers active - kept optional so single-part callers need no change, but the renderer
+   *  should always send the focused part's id once one exists, so a slider edit can't land on
+   *  the wrong part if the active-part pointer and the panel's focus have drifted apart. */
+  partId?: string
 }
 
 export interface ParamUpdateResponse {
@@ -487,7 +504,15 @@ export interface ParamUpdateResponse {
   model?: ModelDisplayedPayload
 }
 
-/** Renderer -> main: fetch the active iteration's manifest (PARAMS entries), if any exists yet. */
+/** Renderer -> main: fetch a part's manifest (PARAMS entries), if any exists yet. `partId`
+ *  omitted = whatever part the main process currently considers active (single-part behavior,
+ *  unchanged); the renderer should pass the focused part's id once one exists - see
+ *  `ParamUpdateRequest.partId`'s doc comment for why this shouldn't rely on the active-part
+ *  pointer alone. */
+export interface ParamGetManifestRequest {
+  partId?: string
+}
+
 export interface ParamGetManifestResponse {
   manifest: ScriptManifest | null
 }
@@ -560,6 +585,7 @@ export const IPC = {
   partSetVisibility: 'part:setVisibility',
   partSetActive: 'part:setActive',
   partDuplicate: 'part:duplicate',
+  partDelete: 'part:delete',
   partUpdated: 'part:updated',
   renderGet: 'render:get',
   briefGet: 'brief:get',
@@ -596,7 +622,8 @@ const AGENT_EVENT_TYPES = [
   'tool-activity',
   'message-complete',
   'stopped',
-  'error'
+  'error',
+  'context-usage'
 ] as const
 
 export function isAgentEvent(value: unknown): value is AgentEvent {

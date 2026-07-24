@@ -808,6 +808,56 @@ describe('ProjectStore.duplicatePart', () => {
   })
 })
 
+describe('ProjectStore.deletePart', () => {
+  it('removes a non-active part, leaving the active pointer untouched', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await recordScript(store, { stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'lid', partId: 'lid' })
+    await store.setActivePart('main')
+
+    const parts = await store.deletePart('lid')
+    expect(parts.map((p) => p.id)).toEqual(['main'])
+    expect(await store.getActivePartId()).toBe('main')
+  })
+
+  it('reassigns the active pointer to the first remaining part when the active part is deleted', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await recordScript(store, { stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'lid', partId: 'lid' })
+    expect(await store.getActivePartId()).toBe('lid')
+
+    const parts = await store.deletePart('lid')
+    expect(parts.map((p) => p.id)).toEqual(['main'])
+    expect(await store.getActivePartId()).toBe('main')
+  })
+
+  it('throws for an unknown part id', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await expect(store.deletePart('bogus')).rejects.toThrow('Unknown part: bogus')
+  })
+
+  it('throws when deleting the only remaining part', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await expect(store.deletePart('main')).rejects.toThrow('Cannot delete the only part in a project')
+  })
+
+  it('leaves the removed part\'s on-disk artifacts untouched and persists across a reload', async () => {
+    const first = makeStore()
+    const { dir } = await first.ensureProject()
+    await recordScript(first, { stlPath: 'outputs/lid_v1.stl', scriptPath: 'outputs/lid_v1.py', summary: 'lid', partId: 'lid' })
+    await first.deletePart('lid')
+
+    // The version snapshot the deleted part's iteration pointed to is still on disk.
+    expect(await readFile(join(dir, 'outputs', 'versions', 'lid', 'v1.py'), 'utf-8')).toBe('# source of outputs/lid_v1.py')
+
+    const reloaded = makeStore()
+    await reloaded.ensureProject()
+    expect((await reloaded.listParts()).map((p) => p.id)).toEqual(['main'])
+  })
+})
+
 describe('ProjectStore migration', () => {
   it('discovers a pre-R3 default project with no manifest and makes it active', async () => {
     const legacyDir = join(scratch, 'projects', 'default')

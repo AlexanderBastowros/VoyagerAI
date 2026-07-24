@@ -15,9 +15,11 @@ import type {
   ImportModelResponse,
   IterationInfo,
   ModelDisplayedPayload,
+  ParamGetManifestRequest,
   ParamGetManifestResponse,
   ParamUpdateRequest,
   ParamUpdateResponse,
+  PartDeleteRequest,
   PartDuplicateRequest,
   PartGetModelRequest,
   PartListResponse,
@@ -132,6 +134,9 @@ export interface VoyagerApi {
     /** Duplicates a part (shared immutable artifacts, offset placement, becomes active);
      *  resolves with the refreshed list. */
     duplicate: (request: PartDuplicateRequest) => Promise<PartListResponse>
+    /** Permanently removes a part (on-disk iteration artifacts are left alone); rejects if it's
+     *  the project's only remaining part. Resolves with the refreshed list. */
+    delete: (request: PartDeleteRequest) => Promise<PartListResponse>
     /** Subscribe to parts-list changes (e.g. the agent creating a new part); returns an
      *  unsubscribe function. */
     onUpdated: (callback: (response: PartListResponse) => void) => () => void
@@ -145,7 +150,7 @@ export interface VoyagerApi {
   /** WS-B Parameter panel - stub behavior until WS-B lands (see `src/main/ipc.ts`). */
   param: {
     update: (request: ParamUpdateRequest) => Promise<ParamUpdateResponse>
-    getManifest: () => Promise<ParamGetManifestResponse>
+    getManifest: (request?: ParamGetManifestRequest) => Promise<ParamGetManifestResponse>
   }
   /** WS-C Verification - stub behavior until WS-C lands (see `src/main/ipc.ts`). */
   verification: {

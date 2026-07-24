@@ -639,25 +639,13 @@ export class AgentSession {
           emit: (emission) => this.handleEmission(emission)
         })
       },
-      // No `permissionMode` here: the default mode plus `canUseTool` below is
-      // the single permission authority. `allowedTools` is intentionally
-      // trimmed to the tools that are *always* safe to auto-run - bare
-      // Write/Edit/Bash entries here would short-circuit before
-      // `canUseTool` ever runs and defeat the scoped write policy.
-      allowedTools: [
-        'Read',
-        'Glob',
-        'Grep',
-        'Skill',
-        'TodoWrite',
-        'mcp__voyager__display_model',
-        'mcp__voyager__recommend_print_settings',
-        'mcp__voyager__render_views',
-        'mcp__voyager__run_verification',
-        'mcp__voyager__save_printer_profile',
-        'mcp__voyager__set_status',
-        'mcp__voyager__update_brief'
-      ],
+      // No `permissionMode` and no `allowedTools` here: `canUseTool` below is the single
+      // permission authority for every tool. A bare entry in `allowedTools` would make the
+      // SDK auto-approve that tool before `canUseTool` ever runs - fine in effect for the
+      // read-only/internal/voyager tools `decideToolPermission` already hard-allows, but it'd
+      // silently shadow that function for any of them (or for Write/Edit/Bash) if its policy
+      // were ever tightened later. Routing everything through `canUseTool` keeps that one
+      // function as the actual source of truth.
       canUseTool: this.canUseTool,
       systemPrompt: { type: 'preset', preset: 'claude_code', append: systemPromptAppend(dir, printerProfile) },
       includePartialMessages: true,
@@ -707,6 +695,7 @@ export class AgentSession {
           this.flushAssistantBuffer()
           this.busy = false
           this.interruptRequested = false
+          void this.emitContextUsage(activeQuery)
         }
       }
       // A superseded query exiting (its input stream was ended by a restart, and the subprocess
@@ -736,6 +725,23 @@ export class AgentSession {
         messageId: this.currentMessageId,
         message: `Voyager session error: ${err instanceof Error ? err.message : String(err)}. Send your message again to restart.`
       })
+    }
+  }
+
+  /** Best-effort context-window readout after a turn completes - never throws or blocks the
+   *  turn itself. Dropped if a restart has since superseded this query (its answer would
+   *  describe a session the UI has already moved on from). */
+  private async emitContextUsage(activeQuery: Query): Promise<void> {
+    try {
+      const usage = await activeQuery.getContextUsage()
+      if (this.activeQuery !== activeQuery) return
+      this.deps.emitAgentEvent({
+        type: 'context-usage',
+        totalTokens: usage.totalTokens,
+        maxTokens: usage.maxTokens
+      })
+    } catch {
+      // Context usage is a nice-to-have readout, not essential to the turn - swallow.
     }
   }
 

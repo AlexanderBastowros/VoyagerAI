@@ -11,6 +11,7 @@ describe('isAgentEvent', () => {
     expect(isAgentEvent({ type: 'message-complete', messageId: 'a' })).toBe(true)
     expect(isAgentEvent({ type: 'stopped', messageId: 'turn-1' })).toBe(true)
     expect(isAgentEvent({ type: 'error', message: 'boom' })).toBe(true)
+    expect(isAgentEvent({ type: 'context-usage', totalTokens: 1000, maxTokens: 200_000 })).toBe(true)
   })
 
   it('rejects malformed or unrelated payloads', () => {
@@ -67,6 +68,7 @@ describe('IPC channel names', () => {
     expect(IPC.partSetVisibility).toBe('part:setVisibility')
     expect(IPC.partSetActive).toBe('part:setActive')
     expect(IPC.partDuplicate).toBe('part:duplicate')
+    expect(IPC.partDelete).toBe('part:delete')
     expect(IPC.partUpdated).toBe('part:updated')
     expect(IPC.renderGet).toBe('render:get')
     expect(IPC.briefListVersions).toBe('brief:listVersions')

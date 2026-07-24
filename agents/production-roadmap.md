@@ -902,6 +902,41 @@ Notes on the gates:
   `src/main/ipc.ts`, `packages/agent-core/params/**`, and the focus/refetch path in
   `src/renderer/src/components/PartsPanel.tsx` (WS-I). Not a WS-I regression - single-part parameter
   editing is unchanged.
+- **Follow-up landed (2026-07-16): multi-part parameter panel fix.** Root-caused the "parameter
+  panel doesn't work on multi-part projects" gap above to two bugs, not one: (1)
+  `ParamPanel.tsx`'s refetch effect keyed only on `model.iteration` — a bare number — but WS-I
+  numbers each part's iterations from 1 independently, so focusing (or the agent creating) a
+  second part whose iteration count happened to match the first part's was a no-op for that
+  dependency array and the panel kept showing the wrong part's manifest (most commonly right
+  after generating a brand-new second part, since every new part's first iteration is v1); (2)
+  `param:getManifest`/`param:update` took no `partId` at all and always resolved against
+  whatever part `ProjectStore` considered "active" server-side, an indirection that `model:
+  exportPackage` (WS-F) had already moved off of for the same reason. Fixed both ends: `ModelInfo`
+  (`appStore.ts`) now carries `partId` (from `ModelDisplayedPayload.partId ?? MAIN_PART_ID`, via
+  `toModelInfo`); `ParamPanel`'s effect keys on `(partId, iteration)` together; `ParamUpdateRequest`/
+  new `ParamGetManifestRequest` (`src/shared/ipc.ts`) carry an optional `partId` that the panel now
+  always sends, with `src/main/ipc.ts`'s two handlers resolving/validating it explicitly (`Unknown
+  part: …` on a stale id) instead of re-reading the mutable active-part pointer mid-request.
+  Separately, `display_model`'s `part`/`part_name` args (WS-I) were never mentioned in `SKILL.md`'s
+  Phase 6 tool-call bullets, and the Phase 4 filename convention predated multi-part and didn't say
+  a part's script must be its own file — so an agent could plausibly generate two parts' geometry
+  into one script (which also explains a manifest mixing both parts' PARAMS). Both sections now
+  spell out the `<part>` slug must match the `part` argument and that each part is a fully separate
+  script/manifest, generalizing `references/gears.md` §4's existing "sibling parts, never one
+  multi-body file" rule beyond gears. No test harness exists for `src/main/ipc.ts` handlers or
+  renderer components in this repo (Electron-glue / untested-by-precedent, same gap the panel itself
+  shipped with); verified by reading the full call path, not by a new automated test.
+- **Follow-up landed (2026-07-16): part deletion.** WS-I shipped list/visibility/focus/duplicate
+  for parts but no way to remove one. Added `ProjectStore.deletePart` (throws for an unknown part
+  or the project's only remaining part; reassigns `activePartId` to the first remaining part when
+  the active part is deleted; on-disk iteration artifacts are left alone, same share-don't-copy
+  posture as `duplicatePart`, unit-tested in `store.test.ts`), a `part:delete` channel
+  (`PartDeleteRequest` -> `PartListResponse`, `src/shared/ipc.ts`/`ipc.test.ts`) with a busy-gated
+  handler in `src/main/ipc.ts` broadcasting `part:updated` (mirrors `printerProfile:delete`), the
+  `part.delete` preload bridge (`src/preload/api.ts`/`index.ts`), and a per-row delete affordance in
+  `PartsPanel.tsx` (`window.confirm`, disabled when it's the only part). Quality gate green
+  (typecheck, build, 581 tests). Not runtime-verified in a live Electron window (same sandbox gap
+  WS-I noted for the gizmo).
 - **Why:** product doc §5.3 / architecture doc §14 — real projects are a box *and* its
   lid, a gear *pair*, a bracket set; the single-part data model is why everything merges
   into one exported file. Gear pairs (WS-H), split-plan pieces, and imports (WS-G) all

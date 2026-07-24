@@ -7,11 +7,13 @@ import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import ContentCopyIcon from '@mui/icons-material/ContentCopy'
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline'
 import ExpandLessIcon from '@mui/icons-material/ExpandLess'
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore'
 import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined'
 import VisibilityIcon from '@mui/icons-material/Visibility'
 import VisibilityOffIcon from '@mui/icons-material/VisibilityOff'
+import type { PartRecord } from '../../../shared/ipc'
 import { partColorFor } from '../colors'
 import { toModelInfo, useAppStore } from '../state/appStore'
 
@@ -103,6 +105,25 @@ export function PartsPanel({ embedded = false }: { embedded?: boolean } = {}): R
       // The copy became the active part; its mesh loads via the Viewport's lazy part-fetch effect,
       // and the side panels follow it like a focus click.
       if (activePartId) await refreshActivePartPanels(activePartId)
+    } catch {
+      // Busy backstop - ignore.
+    } finally {
+      setPending(false)
+    }
+  }
+
+  async function deletePart(part: PartRecord): Promise<void> {
+    if (agentBusy || pending || parts.length <= 1) return
+    if (!window.confirm(`Delete the part "${part.name}"? This can't be undone.`)) return
+    const wasActive = part.id === selectedPartId
+    setPending(true)
+    try {
+      const { parts: next, activePartId } = await window.voyager.part.delete({ partId: part.id })
+      setParts(next)
+      setSelectedPartId(activePartId)
+      // Only the panels tracking the active part need a refetch - deleting a part that wasn't
+      // active doesn't change what they're showing.
+      if (wasActive && activePartId) await refreshActivePartPanels(activePartId)
     } catch {
       // Busy backstop - ignore.
     } finally {
@@ -212,6 +233,21 @@ export function PartsPanel({ embedded = false }: { embedded?: boolean } = {}): R
                   >
                     <ContentCopyIcon sx={{ fontSize: 14 }} />
                   </IconButton>
+                </Tooltip>
+                <Tooltip title={parts.length > 1 ? `Delete ${part.name}` : "Can't delete the only part"}>
+                  <span>
+                    <IconButton
+                      size="small"
+                      aria-label={`Delete ${part.name}`}
+                      disabled={parts.length <= 1}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void deletePart(part)
+                      }}
+                    >
+                      <DeleteOutlineIcon sx={{ fontSize: 14 }} />
+                    </IconButton>
+                  </span>
                 </Tooltip>
               </Stack>
             )

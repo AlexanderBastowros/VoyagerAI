@@ -18,7 +18,7 @@ import type {
   SetupStatus,
   VerificationReport
 } from '../../../shared/ipc'
-import { emptyDesignBrief, emptyScriptManifest } from '../../../shared/ipc'
+import { MAIN_PART_ID, emptyDesignBrief, emptyScriptManifest } from '../../../shared/ipc'
 
 export type ChatRole = 'user' | 'assistant' | 'system-status'
 
@@ -45,6 +45,11 @@ export interface ModelInfo {
   stlPath: string | null
   stepPath: string | null
   scriptPath: string | null
+  /** Which part this model belongs to (WS-I multi-part), `main` when absent - mirrors the
+   *  viewer's own `partId ?? MAIN_PART_ID` fallback. Iteration numbers restart at 1 per part, so
+   *  anything that reacts to "the displayed model changed" (the parameter panel, in particular)
+   *  must key off `(partId, iteration)` together, not `iteration` alone. */
+  partId: string
 }
 
 function unchecked(detail: string): SetupCheck {
@@ -63,7 +68,8 @@ export function toModelInfo(payload: ModelDisplayedPayload): ModelInfo {
     iteration: payload.iteration,
     stlPath: payload.stlPath,
     stepPath: payload.stepPath ?? null,
-    scriptPath: payload.scriptPath
+    scriptPath: payload.scriptPath,
+    partId: payload.partId ?? MAIN_PART_ID
   }
 }
 
@@ -153,6 +159,9 @@ export interface AppState {
   fullStream: boolean
   /** True from an accepted send until the agent's message-complete/error event. */
   agentBusy: boolean
+  /** The session's context-window usage as of the last completed turn, or null before any
+   *  turn has completed (or after a project switch tears the session down). */
+  contextUsage: { totalTokens: number; maxTokens: number } | null
   /**
    * Maps the agent's stream messageId (e.g. `turn-3`) to the chat message id
    * its streamed text is accumulating into.
@@ -281,6 +290,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   gizmoMode: 'translate',
   fullStream: readFullStream(),
   agentBusy: false,
+  contextUsage: null,
   agentStreamIds: {},
   pendingPermission: null,
   thinkingText: '',
@@ -340,6 +350,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       // stale recommendation forward.
       printSettings: null,
       agentBusy: false,
+      // A project switch tears down the SDK session behind it - the last-known usage no
+      // longer describes anything live.
+      contextUsage: null,
       agentStreamIds: {},
       pendingPermission: null,
       thinkingText: '',
@@ -440,6 +453,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (streaming) state.completeMessage(streaming)
         state.addMessage({ role: 'system-status', text: `⚠ ${event.message}` })
         set({ agentBusy: false, thinkingText: '' })
+        return
+      }
+      case 'context-usage': {
+        set({ contextUsage: { totalTokens: event.totalTokens, maxTokens: event.maxTokens } })
         return
       }
       case 'stopped': {

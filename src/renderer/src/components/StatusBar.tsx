@@ -4,11 +4,13 @@ import Box from '@mui/material/Box'
 import Chip from '@mui/material/Chip'
 import Divider from '@mui/material/Divider'
 import Stack from '@mui/material/Stack'
+import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import PrintOutlinedIcon from '@mui/icons-material/PrintOutlined'
 import type { AgentEffort, AgentModel, AgentSettings } from '../../../shared/ipc'
 import type { ModelViewer } from '../three/viewer'
 import { colors, fontMono } from '../colors'
+import { formatTokenCount } from '../format'
 import { useAppStore } from '../state/appStore'
 import { badgeLabel, badgeTone } from '../state/verificationSelectors'
 
@@ -61,6 +63,7 @@ export function StatusBar({ viewerRef }: StatusBarProps): React.JSX.Element {
   const activePrinterProfileId = useAppStore((state) => state.activePrinterProfileId)
   const agentBusy = useAppStore((state) => state.agentBusy)
   const paramUpdatePending = useAppStore((state) => state.paramUpdatePending)
+  const contextUsage = useAppStore((state) => state.contextUsage)
   const model = useAppStore((state) => state.model)
   const parts = useAppStore((state) => state.parts)
   const selectedPartId = useAppStore((state) => state.selectedPartId)
@@ -118,6 +121,16 @@ export function StatusBar({ viewerRef }: StatusBarProps): React.JSX.Element {
     <Typography key="model-effort" variant="caption" color="text.secondary">
       {formatModelEffort(agentSettings)}
     </Typography>,
+    contextUsage && (
+      <Tooltip
+        key="context"
+        title={`${contextUsage.totalTokens.toLocaleString()} / ${contextUsage.maxTokens.toLocaleString()} tokens (${Math.round((contextUsage.totalTokens / contextUsage.maxTokens) * 100)}% of context)`}
+      >
+        <Typography variant="caption" color="text.secondary">
+          {formatTokenCount(contextUsage.totalTokens)}
+        </Typography>
+      </Tooltip>
+    ),
     <Stack key="state" direction="row" alignItems="center" gap={0.5}>
       <Box sx={{ width: 6, height: 6, borderRadius: '50%', bgcolor: stateDotColor, flexShrink: 0 }} />
       <Typography variant="caption" color="text.secondary">
