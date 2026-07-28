@@ -566,7 +566,7 @@ describe('AgentSession', () => {
     await vi.waitFor(() => expect(h.inputs).toHaveLength(1))
 
     expect(h.getCapturedOptions()?.thinking).toEqual({ type: 'adaptive', display: 'summarized' })
-    expect(h.getCapturedOptions()?.model).toBe('claude-opus-4-8')
+    expect(h.getCapturedOptions()?.model).toBe('default')
     expect(h.getCapturedOptions()?.effort).toBe('xhigh')
   })
 
@@ -650,7 +650,7 @@ describe('AgentSession model/effort settings', () => {
     // A fresh query started (not the first one reused) with the new settings, resuming the
     // prior conversation via `resume` rather than losing it.
     expect(h.optionsHistory).toHaveLength(2)
-    expect(h.optionsHistory[0]?.model).toBe('claude-opus-4-8')
+    expect(h.optionsHistory[0]?.model).toBe('default')
     expect(h.optionsHistory[1]?.model).toBe('claude-sonnet-5')
     expect(h.optionsHistory[1]?.effort).toBe('medium')
     expect(h.optionsHistory[1]?.resume).toBe('sess-1')

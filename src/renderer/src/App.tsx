@@ -41,6 +41,7 @@ export function App(): React.JSX.Element {
   const setPrintSettings = useAppStore((state) => state.setPrintSettings)
   const setPendingPermission = useAppStore((state) => state.setPendingPermission)
   const hydrateProject = useAppStore((state) => state.hydrateProject)
+  const setAvailableModels = useAppStore((state) => state.setAvailableModels)
   const setImportDialogOpen = useAppStore((state) => state.setImportDialogOpen)
   const projects = useAppStore((state) => state.projects)
   const activeProjectId = useAppStore((state) => state.activeProjectId)
@@ -72,6 +73,21 @@ export function App(): React.JSX.Element {
       hydrateProject(snapshot)
       // Render every part at its placement (WS-I) - replaces the old single-model syncModel.
       await syncViewportParts(viewerRef.current)
+    })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // The model picker's rows. Fetched separately from project hydration and deliberately not
+  // awaited alongside it: building the catalog can involve probing a model the CLI doesn't list
+  // yet, which costs a turn on a cold cache, and the viewport must not wait on that. Until it
+  // resolves the picker shows the project's persisted model on its own.
+  useEffect(() => {
+    let cancelled = false
+    void window.voyager.agent.listModels().then((models) => {
+      if (!cancelled) setAvailableModels(models)
     })
     return () => {
       cancelled = true

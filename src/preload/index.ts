@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
+  AgentModelInfo,
   AgentSettings,
   BriefListVersionsResponse,
   BriefLockResponse,
@@ -69,6 +70,7 @@ const api: VoyagerApi = {
     getSettings: (): Promise<AgentSettings> => ipcRenderer.invoke(IPC.agentGetSettings),
     setSettings: (settings: AgentSettings): Promise<AgentSettings> =>
       ipcRenderer.invoke(IPC.agentSetSettings, settings),
+    listModels: (): Promise<AgentModelInfo[]> => ipcRenderer.invoke(IPC.agentListModels),
     interrupt: (): Promise<void> => ipcRenderer.invoke(IPC.agentInterrupt),
     onEvent: (callback) => subscribe<AgentEvent>(IPC.agentEvent, callback),
     onPermissionRequest: (callback) => subscribe<PermissionRequestPayload>(IPC.agentPermissionRequest, callback),

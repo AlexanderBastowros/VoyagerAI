@@ -8,6 +8,7 @@ import CircularProgress from '@mui/material/CircularProgress'
 import Divider from '@mui/material/Divider'
 import FormControlLabel from '@mui/material/FormControlLabel'
 import IconButton from '@mui/material/IconButton'
+import ListSubheader from '@mui/material/ListSubheader'
 import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
 import Popover from '@mui/material/Popover'
@@ -28,10 +29,12 @@ import type { ChatMessage } from '../state/appStore'
 import type {
   AgentEffort,
   AgentModel,
+  AgentModelInfo,
   AgentSettings,
   ChatAttachment,
   SelectionSummary
 } from '../../../shared/ipc'
+import { matchModelRow, supportsEffort } from '../../../shared/ipc'
 import { deriveChatDisabledReason } from '../state/setupSelectors'
 import { colors } from '../colors'
 import { formatTokenCount } from '../format'
@@ -39,10 +42,12 @@ import { Markdown } from './Markdown'
 
 const SUPPORTED_IMAGE_TYPES = new Set<string>(['image/jpeg', 'image/png', 'image/gif', 'image/webp'])
 
-const MODEL_OPTIONS: Array<{ value: AgentModel; label: string }> = [
-  { value: 'claude-opus-4-8', label: 'Opus 4.8 — deepest' },
-  { value: 'claude-sonnet-5', label: 'Sonnet 5 — balanced' },
-  { value: 'claude-haiku-4-5', label: 'Haiku 4.5 — fastest' }
+/** Group headings for the picker, in display order. `verified` sits first so the newest model
+ *  the CLI hasn't caught up to yet is the first thing offered. */
+const MODEL_GROUPS: Array<{ source: AgentModelInfo['source']; label: string }> = [
+  { source: 'verified', label: 'Latest' },
+  { source: 'catalog', label: 'Available' },
+  { source: 'legacy', label: 'Legacy (pinned)' }
 ]
 
 const EFFORT_OPTIONS: Array<{ value: AgentEffort; label: string }> = [
@@ -53,10 +58,21 @@ const EFFORT_OPTIONS: Array<{ value: AgentEffort; label: string }> = [
   { value: 'max', label: 'Max effort' }
 ]
 
-/** Haiku's API rejects the `effort` option outright - mirrors `EFFORT_UNSUPPORTED_MODELS` in
- *  `packages/agent-core/src/agent/session.ts`. The effort select is disabled for this model
- *  rather than sent a value the agent would have to silently drop. */
-const EFFORT_UNSUPPORTED_MODELS = new Set<AgentModel>(['claude-haiku-4-5'])
+/**
+ * The rows to show, given the catalog and the current selection.
+ *
+ * If the persisted model isn't in the catalog - the catalog hasn't loaded yet, or the project
+ * was saved against a model no longer offered - it's appended as its own row so the select
+ * always has an option matching its value. Without that the browser would silently display the
+ * first option instead, misreporting which model the project actually runs on.
+ */
+function pickerRows(models: AgentModelInfo[], selected: AgentModel): AgentModelInfo[] {
+  if (matchModelRow(selected, models)) return models
+  return [
+    ...models,
+    { value: selected, displayName: selected, description: 'Current selection', supportsEffort: true, source: 'legacy' }
+  ]
+}
 
 /** Reads an image `File` into a `ChatAttachment` (base64, no `data:` prefix). Resolves `null`
  *  for a file type the Anthropic API doesn't accept as an image block, so callers can filter it out. */
@@ -166,6 +182,7 @@ export function ChatPanel(): React.JSX.Element {
   const setPendingPermission = useAppStore((state) => state.setPendingPermission)
   const thinkingText = useAppStore((state) => state.thinkingText)
   const agentSettings = useAppStore((state) => state.agentSettings)
+  const availableModels = useAppStore((state) => state.availableModels)
   const setAgentSettings = useAppStore((state) => state.setAgentSettings)
   const fullStream = useAppStore((state) => state.fullStream)
   const setFullStream = useAppStore((state) => state.setFullStream)
@@ -204,7 +221,8 @@ export function ChatPanel(): React.JSX.Element {
   // ready, and re-locks while Claude is working on a turn.
   const disabledReason = deriveChatDisabledReason(setupStatus)
   const isDisabled = disabledReason !== null || agentBusy
-  const effortDisabled = EFFORT_UNSUPPORTED_MODELS.has(agentSettings.model)
+  const modelRows = pickerRows(availableModels, agentSettings.model)
+  const effortDisabled = !supportsEffort(agentSettings.model, modelRows)
 
   async function addFiles(files: Iterable<File>): Promise<void> {
     const read = await Promise.all(Array.from(files).map((file) => readImageFile(file)))
@@ -403,11 +421,21 @@ export function ChatPanel(): React.JSX.Element {
               inputProps={{ 'aria-label': 'Model' }}
               sx={{ fontSize: 13 }}
             >
-              {MODEL_OPTIONS.map((option) => (
-                <MenuItem key={option.value} value={option.value} sx={{ fontSize: 13 }}>
-                  {option.label}
-                </MenuItem>
-              ))}
+              {MODEL_GROUPS.flatMap(({ source, label }) => {
+                const rows = modelRows.filter((row) => row.source === source)
+                if (rows.length === 0) return []
+                return [
+                  <ListSubheader key={source} sx={{ fontSize: 11, lineHeight: '24px' }}>
+                    {label}
+                  </ListSubheader>,
+                  ...rows.map((row) => (
+                    <MenuItem key={row.value} value={row.value} sx={{ fontSize: 13 }}>
+                      {row.displayName}
+                      {row.description ? ` — ${row.description}` : ''}
+                    </MenuItem>
+                  ))
+                ]
+              })}
             </Select>
           </Stack>
           <Stack gap={0.5}>

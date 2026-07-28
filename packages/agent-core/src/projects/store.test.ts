@@ -365,11 +365,11 @@ describe('ProjectStore.getProjectDir', () => {
 })
 
 describe('ProjectStore.getAgentSettings / setAgentSettings', () => {
-  it('defaults to Opus 4.8 + xhigh when nothing has been saved', async () => {
+  it('defaults to the CLI `default` alias + xhigh when nothing has been saved', async () => {
     const store = makeStore()
     await store.ensureProject()
 
-    expect(await store.getAgentSettings()).toEqual({ model: 'claude-opus-4-8', effort: 'xhigh', renderViews: true })
+    expect(await store.getAgentSettings()).toEqual({ model: 'default', effort: 'xhigh', renderViews: true })
   })
 
   it('persists a choice across reloads', async () => {
@@ -460,7 +460,7 @@ describe('ProjectStore multi-project support', () => {
 
     await store.createProject('Second')
     expect(await store.getSessionId()).toBeUndefined()
-    expect(await store.getAgentSettings()).toEqual({ model: 'claude-opus-4-8', effort: 'xhigh', renderViews: true })
+    expect(await store.getAgentSettings()).toEqual({ model: 'default', effort: 'xhigh', renderViews: true })
 
     await store.switchProject(firstId)
     expect(await store.getSessionId()).toBe('session-a')

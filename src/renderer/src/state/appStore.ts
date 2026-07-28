@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type {
   AgentEvent,
+  AgentModelInfo,
   AgentSettings,
   ChatAttachment,
   DesignBrief,
@@ -83,7 +84,7 @@ function initialSetupStatus(): SetupStatus {
 
 /** Placeholder shown before `window.voyager.agent.getSettings()` resolves on mount - matches
  *  the main process's own default (see `DEFAULT_AGENT_SETTINGS` in `projects/store.ts`). */
-const DEFAULT_AGENT_SETTINGS: AgentSettings = { model: 'claude-opus-4-8', effort: 'xhigh', renderViews: true }
+const DEFAULT_AGENT_SETTINGS: AgentSettings = { model: 'default', effort: 'xhigh', renderViews: true }
 
 let messageSequence = 0
 function createMessageId(): string {
@@ -119,6 +120,9 @@ export interface AppState {
   model: ModelInfo | null
   /** The active project's model/effort choice, hydrated from the main process on mount. */
   agentSettings: AgentSettings
+  /** Rows for the model picker, fetched once on mount. Starts empty; the picker falls back to
+   *  showing the persisted selection alone until this resolves, so it is never blank. */
+  availableModels: AgentModelInfo[]
   /** Every known project, in stable creation/discovery order - shown in the right-hand sidebar. */
   projects: ProjectSummary[]
   /** The currently-active project's id, or null before the initial `project:getState` hydration. */
@@ -215,6 +219,8 @@ export interface AppState {
   setModel: (model: ModelInfo | null) => void
   /** Replaces the current model/effort choice - called on mount and after the user changes it. */
   setAgentSettings: (settings: AgentSettings) => void
+  /** Stores the model picker's rows once `agent.listModels()` resolves. */
+  setAvailableModels: (models: AgentModelInfo[]) => void
   /** Replaces `messages`/`model`/`agentSettings`/`projects`/`activeProjectId` from a full
    *  project snapshot (mount, create, or switch) and resets ephemeral turn state - see
    *  `project:getState`/`project:create`/`project:switch`. */
@@ -275,6 +281,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   messages: [],
   model: null,
   agentSettings: DEFAULT_AGENT_SETTINGS,
+  availableModels: [],
   projects: [],
   activeProjectId: null,
   iterations: [],
@@ -326,6 +333,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setModel: (model) => set({ model, selection: null, measurement: null, printSettings: null }),
   setAgentSettings: (agentSettings) => set({ agentSettings }),
+  setAvailableModels: (availableModels) => set({ availableModels }),
 
   hydrateProject: (snapshot) => {
     set({

@@ -4,7 +4,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk'
 import type { CanUseTool, Options, PermissionResult, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type {
   AgentEvent,
-  AgentModel,
+  AgentModelInfo,
   AgentSettings,
   ChatAttachment,
   DesignBrief,
@@ -20,6 +20,7 @@ import { BriefStore } from '../../brief/store'
 import { createVoyagerMcpServer } from '../../tools'
 import type { RenderIterationOutcome } from '../../tools'
 import type { VoyagerMcpEmission, VoyagerPrinterProfileStore } from '../../tools'
+import { supportsEffort } from './models'
 import { decideToolPermission } from './permissions'
 import { buildUserMessage, formatArrangementContext, formatRevertContext, systemPromptAppend } from './prompts'
 
@@ -32,9 +33,10 @@ const DECLINED_MESSAGE =
  *  `AgentSessionDeps.approvalTimeoutMs` so tests don't need to wait 2 minutes for the timeout path. */
 const DEFAULT_APPROVAL_TIMEOUT_MS = 120_000
 
-/** Models whose API rejects the `effort` option outright (400) - omitted from `query()`'s
- *  options for these regardless of the user's effort choice. */
-const EFFORT_UNSUPPORTED_MODELS = new Set<AgentModel>(['claude-haiku-4-5'])
+/** Stand-in for sessions constructed without a catalog (tests, and the window between launch and
+ *  the first successful fetch). `supportsEffort` still recognises Haiku from its id alone in that
+ *  case, so the one model that 400s on `effort` stays protected with no hardcoded allowlist. */
+const NO_CATALOG: readonly AgentModelInfo[] = []
 
 /**
  * Races the injected approval promise against a timeout and the SDK's abort
@@ -104,6 +106,9 @@ export interface AgentSessionDeps {
   pythonPath: () => string
   /** Resolved Claude CLI path from preflight, if any (ClaudeChecker.cliPath). */
   claudeCliPath: () => string | null
+  /** The picker's current rows, used to decide whether `effort` may be sent for the chosen model.
+   *  Optional: omitted in tests, and `supportsEffort` degrades to an id-based check. */
+  modelCatalog?: () => readonly AgentModelInfo[]
   emitAgentEvent: (event: AgentEvent) => void
   emitModelDisplayed: (payload: ModelDisplayedPayload) => void
   emitPrintSettings: (payload: PrintSettings) => void
@@ -655,9 +660,12 @@ export class AgentSession {
       model: settings.model,
       // Effort defaults to xhigh (adaptive thinking otherwise defaults to "high") so thinking
       // runs deeper on essentially every substantive turn - the user can trade that away for
-      // speed via the model/effort selectors. Haiku's API 400s on `effort` entirely, so it's
-      // omitted rather than sent for a model that rejects it.
-      ...(EFFORT_UNSUPPORTED_MODELS.has(settings.model) ? {} : { effort: settings.effort }),
+      // speed via the model/effort selectors. Models that 400 on `effort` (Haiku) have it omitted
+      // rather than sent - determined from the catalog's `supportsEffort`, so a future
+      // effort-rejecting model is handled without editing a list here.
+      ...(supportsEffort(settings.model, this.deps.modelCatalog?.() ?? NO_CATALOG)
+        ? { effort: settings.effort }
+        : {}),
       env: { ...baseEnv, PATH: `${venvBin}${delimiter}${baseEnv.PATH ?? ''}` },
       ...(resume ? { resume } : {}),
       ...(cliPath ? { pathToClaudeCodeExecutable: cliPath } : {})

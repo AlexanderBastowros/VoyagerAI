@@ -1,6 +1,16 @@
 export { AgentSession } from './agent/session'
 export type { AgentSessionDeps, QueryFn } from './agent/session'
 
+export {
+  CANDIDATE_MODELS,
+  LEGACY_MODELS,
+  ModelCatalog,
+  matchModelRow,
+  preferredModel,
+  supportsEffort
+} from './agent/models'
+export type { CatalogCache, ModelCatalogDeps } from './agent/models'
+
 export { ProjectStore, DEFAULT_AGENT_SETTINGS } from './projects/store'
 export type { ProjectStoreOptions, ProjectRecord, ProjectIteration } from './projects/store'
 

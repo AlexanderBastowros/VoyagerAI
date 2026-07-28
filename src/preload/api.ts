@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  AgentModelInfo,
   AgentSettings,
   BriefListVersionsResponse,
   BriefLockResponse,
@@ -67,6 +68,9 @@ export interface VoyagerApi {
     getSettings: () => Promise<AgentSettings>
     /** Persists a new model/effort choice; applied by the session starting from the next turn. */
     setSettings: (settings: AgentSettings) => Promise<AgentSettings>
+    /** The model picker's rows, resolved at runtime from the CLI's catalog plus probe-verified
+     *  models it doesn't list yet. Never rejects - falls back to a static alias list. */
+    listModels: () => Promise<AgentModelInfo[]>
     /** Stops the in-flight turn; resolves once the interrupt is delivered. No-op when idle. */
     interrupt: () => Promise<void>
     /** Subscribe to streaming agent events; returns an unsubscribe function. */

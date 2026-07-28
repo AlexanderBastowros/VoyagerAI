@@ -1,9 +1,11 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { query } from '@anthropic-ai/claude-agent-sdk'
 import { copyFile, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, join, relative } from 'node:path'
 import { IPC } from '../shared/ipc'
 import type {
   AgentEvent,
+  AgentModelInfo,
   AgentSettings,
   BriefListVersionsResponse,
   BriefLockResponse,
@@ -62,7 +64,9 @@ import {
   finalizeMeshImport,
   finalizeStepImport,
   isUnitlessFormat,
+  LEGACY_MODELS,
   measureMeshImport,
+  ModelCatalog,
   pickUnitConfirmationAxis,
   PrinterProfileStore,
   ProjectStore,
@@ -461,9 +465,69 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  const modelCachePath = join(app.getPath('userData'), 'model-catalog.json')
+
+  /**
+   * Rows shown if the catalog can never be built (CLI missing, not signed in). Deliberately
+   * aliases, not pinned ids: an alias resolves to whatever the installed CLI considers current,
+   * so even this last-resort list does not freeze the app on a specific model the way the old
+   * hardcoded `MODEL_OPTIONS` did.
+   */
+  const FALLBACK_MODELS: AgentModelInfo[] = [
+    { value: 'default', displayName: 'Default (recommended)', description: 'Newest Opus', supportsEffort: true, source: 'catalog' },
+    { value: 'sonnet', displayName: 'Sonnet', description: 'Efficient for routine tasks', supportsEffort: true, source: 'catalog' },
+    { value: 'haiku', displayName: 'Haiku', description: 'Fastest for quick answers', supportsEffort: false, source: 'catalog' },
+    ...LEGACY_MODELS.map((row): AgentModelInfo => ({ ...row, supportsEffort: true, source: 'legacy' }))
+  ]
+
+  /** Last successful catalog fetch. Held so `AgentSession` can consult `supportsEffort` on every
+   *  turn without awaiting, and so a later fetch failure doesn't empty the picker. */
+  let modelRows: AgentModelInfo[] = FALLBACK_MODELS
+
+  const modelCatalog = new ModelCatalog({
+    queryFn: (params) => query(params),
+    // Same cwd/env/CLI binary the real turns use, so a probe that succeeds here means the
+    // model will actually run there.
+    baseOptions: () => {
+      const cliPath = claudeChecker.cliPath()
+      return {
+        cwd: projectStore.getProjectDir(),
+        ...(cliPath ? { pathToClaudeCodeExecutable: cliPath } : {})
+      }
+    },
+    // The CLI's model list is compiled into its binary, so the binary's identity is exactly the
+    // right cache key - mtime changes on every update, and no extra `--version` subprocess.
+    cliVersion: async () => {
+      const cliPath = claudeChecker.cliPath()
+      if (!cliPath) return 'no-cli'
+      try {
+        return `${cliPath}@${(await stat(cliPath)).mtimeMs}`
+      } catch {
+        return 'no-cli'
+      }
+    },
+    cache: {
+      read: async () => {
+        try {
+          return JSON.parse(await readFile(modelCachePath, 'utf8'))
+        } catch {
+          return null
+        }
+      },
+      write: async (entry) => {
+        try {
+          await writeFile(modelCachePath, JSON.stringify(entry), 'utf8')
+        } catch {
+          // A non-writable cache only costs one probe per launch - never block the picker on it.
+        }
+      }
+    }
+  })
+
   const agentSession = new AgentSession({
     projectStore,
     briefStore,
+    modelCatalog: () => modelRows,
     runVerification: (iteration) => verifyIteration(iteration, projectStore.getProjectDir()),
     renderViews: (iteration) => renderIteration(iteration, projectStore.getProjectDir()),
     printerProfiles: printerProfileStore,
@@ -711,6 +775,21 @@ export function registerIpcHandlers(): void {
       )
     }
   )
+
+  /**
+   * The picker's rows. Recomputed on demand rather than at boot so a slow probe never delays the
+   * window, and cached in `modelRows` so a later failure keeps serving the last good list instead
+   * of blanking the dropdown.
+   */
+  ipcMain.handle(IPC.agentListModels, async (): Promise<AgentModelInfo[]> => {
+    try {
+      const rows = await modelCatalog.list()
+      if (rows.length > 0) modelRows = rows
+    } catch {
+      // Offline, signed out, or the CLI moved - keep whatever we last resolved.
+    }
+    return modelRows
+  })
 
   ipcMain.handle(IPC.agentGetSettings, async (): Promise<AgentSettings> => projectStore.getAgentSettings())
 

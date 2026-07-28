@@ -100,9 +100,77 @@ export interface SendMessageResponse {
  *  it's omitted from the request regardless of the user's choice here. */
 export type AgentEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
-/** The models surfaced in the UI's model picker - a curated subset of what the SDK accepts,
- *  spanning the speed/depth tradeoff from deepest to fastest. */
-export type AgentModel = 'claude-opus-4-8' | 'claude-sonnet-5' | 'claude-haiku-4-5'
+/**
+ * A model id or alias accepted by the Claude CLI's `--model`. Deliberately NOT a closed union:
+ * the set of servable models changes without an app release, and pinning it here is what made
+ * the picker go stale in the first place. The picker's contents come from `ModelCatalog`
+ * (`packages/agent-core/src/agent/models.ts`) at runtime; this type only says "some model id".
+ *
+ * Values are either an **alias** (`opus`, `sonnet`) that resolves to whatever the CLI currently
+ * considers newest in that family, or a **pinned** wire id (`claude-opus-5`) that always runs
+ * exactly that model. See `AgentModelInfo.resolvedModel` for mapping one onto the other.
+ */
+export type AgentModel = string
+
+/**
+ * One selectable row in the model picker. Mirrors the Agent SDK's `ModelInfo` (returned by
+ * `Query.supportedModels()`) plus a `source` discriminator, because the SDK's list is a curated
+ * catalog compiled into the CLI binary and **lags the serving fleet** - CLI 2.1.220 does not
+ * list `claude-opus-5` even though the account serves it. Rows therefore arrive from three
+ * places and are merged; see `ModelCatalog`.
+ */
+export interface AgentModelInfo {
+  /** Passed verbatim to the CLI's `--model`. An alias (`opus`) or a pinned id (`claude-opus-5`). */
+  value: AgentModel
+  /** The wire id `value` resolves to, when known. Used to detect that a pinned id and an alias
+   *  row are the same underlying model, so the picker doesn't list it twice, and to match a
+   *  previously-persisted pinned id back onto the alias row that now covers it. */
+  resolvedModel?: string
+  displayName: string
+  description: string
+  /** `false` for models whose API rejects `effort` outright (Haiku 4.5 400s on it). Undefined
+   *  from the SDK means the same thing - normalized to an explicit boolean by the catalog. */
+  supportsEffort: boolean
+  supportedEffortLevels?: AgentEffort[]
+  /**
+   * Where the row came from, so the UI can group it:
+   * - `catalog`  - the CLI's own `supportedModels()` list (aliases; auto-tracks new releases)
+   * - `verified` - ahead of the CLI's list, confirmed servable by a probe (e.g. Opus 5 today)
+   * - `legacy`   - an older pinned id, offered for reproducibility
+   */
+  source: 'catalog' | 'verified' | 'legacy'
+}
+
+/** Models whose API rejects `effort` outright. The last resort when no catalog row describes the
+ *  model - the catalog's own `supportsEffort` is authoritative when present. */
+const EFFORT_UNSUPPORTED = /^claude-haiku-/
+
+/** Strips the CLI's context-window suffix so `claude-opus-4-8` matches the `opus[1m]` alias row,
+ *  whose `resolvedModel` is `claude-opus-4-8[1m]`. Without this a project persisted before the
+ *  1M rows existed would fail to match and silently reset to the default. */
+function baseModelId(model: string): string {
+  return model.replace(/\[[^\]]*\]$/, '')
+}
+
+/**
+ * Resolves a persisted selection onto a row that is still offered: exact `value` first, then by
+ * resolved wire id, so a project saved as pinned `claude-opus-4-8` lands on whichever row now
+ * represents that model. Returns undefined when nothing matches, so callers can fall back
+ * explicitly rather than silently showing the wrong model.
+ *
+ * Lives here rather than in `agent-core` because both the main process and the renderer need it,
+ * and the renderer must not pull that package's Node-only barrel into the browser bundle.
+ */
+export function matchModelRow(model: AgentModel, rows: readonly AgentModelInfo[]): AgentModelInfo | undefined {
+  const target = baseModelId(model)
+  return rows.find((row) => row.value === model) ?? rows.find((row) => baseModelId(row.resolvedModel ?? row.value) === target)
+}
+
+/** Whether `effort` may be sent for `model`. Unknown models are assumed to support it - the
+ *  option is additive, and guessing "unsupported" would silently cap a capable model. */
+export function supportsEffort(model: AgentModel, rows: readonly AgentModelInfo[]): boolean {
+  return matchModelRow(model, rows)?.supportsEffort ?? !EFFORT_UNSUPPORTED.test(model)
+}
 
 export interface AgentSettings {
   model: AgentModel
@@ -562,6 +630,7 @@ export const IPC = {
   agentSendMessage: 'agent:sendMessage',
   agentGetSettings: 'agent:getSettings',
   agentSetSettings: 'agent:setSettings',
+  agentListModels: 'agent:listModels',
   agentEvent: 'agent:event',
   agentInterrupt: 'agent:interrupt',
   agentPermissionRequest: 'agent:permissionRequest',

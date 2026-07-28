@@ -7,7 +7,8 @@ import Stack from '@mui/material/Stack'
 import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import PrintOutlinedIcon from '@mui/icons-material/PrintOutlined'
-import type { AgentEffort, AgentModel, AgentSettings } from '../../../shared/ipc'
+import type { AgentEffort, AgentModelInfo, AgentSettings } from '../../../shared/ipc'
+import { matchModelRow, supportsEffort } from '../../../shared/ipc'
 import type { ModelViewer } from '../three/viewer'
 import { colors, fontMono } from '../colors'
 import { formatTokenCount } from '../format'
@@ -18,15 +19,6 @@ interface StatusBarProps {
   viewerRef: MutableRefObject<ModelViewer | null>
 }
 
-/** Friendly labels for the model picker's `AgentModel` values - matches the option labels in
- *  `ChatPanel.tsx`'s `MODEL_OPTIONS`, minus the "— deepest/balanced/fastest" suffix (too long for
- *  a status-bar segment). */
-const MODEL_LABEL: Record<AgentModel, string> = {
-  'claude-opus-4-8': 'Opus 4.8',
-  'claude-sonnet-5': 'Sonnet 5',
-  'claude-haiku-4-5': 'Haiku 4.5'
-}
-
 const EFFORT_LABEL: Record<AgentEffort, string> = {
   low: 'Low',
   medium: 'Med',
@@ -35,13 +27,14 @@ const EFFORT_LABEL: Record<AgentEffort, string> = {
   max: 'Max'
 }
 
-/** Haiku's API rejects the `effort` option outright (mirrors `EFFORT_UNSUPPORTED_MODELS` in
- *  `ChatPanel.tsx`/`packages/agent-core/src/agent/session.ts`), so its segment omits the effort
- *  suffix rather than showing a value that was never actually sent. */
-function formatModelEffort(settings: AgentSettings): string {
-  const modelLabel = MODEL_LABEL[settings.model]
-  if (settings.model === 'claude-haiku-4-5') return modelLabel
-  return `${modelLabel} · ${EFFORT_LABEL[settings.effort]}`
+/** Renders the model segment, preferring the catalog's own display name over the raw id so the
+ *  status bar reads "Opus 5" rather than "claude-opus-5". The effort suffix is omitted for models
+ *  that reject `effort`, so the bar never shows a value that was not actually sent. */
+function formatModelEffort(settings: AgentSettings, models: readonly AgentModelInfo[]): string {
+  const row = matchModelRow(settings.model, models)
+  const modelLabel = row?.displayName ?? settings.model
+  if (!supportsEffort(settings.model, models)) return modelLabel
+  return `${modelLabel} \u00b7 ${EFFORT_LABEL[settings.effort]}`
 }
 
 function formatDims(dims: { x: number; y: number; z: number }): string {
@@ -59,6 +52,7 @@ function formatDims(dims: { x: number; y: number; z: number }): string {
 export function StatusBar({ viewerRef }: StatusBarProps): React.JSX.Element {
   const verificationReport = useAppStore((state) => state.verificationReport)
   const agentSettings = useAppStore((state) => state.agentSettings)
+  const availableModels = useAppStore((state) => state.availableModels)
   const printerProfiles = useAppStore((state) => state.printerProfiles)
   const activePrinterProfileId = useAppStore((state) => state.activePrinterProfileId)
   const agentBusy = useAppStore((state) => state.agentBusy)
@@ -119,7 +113,7 @@ export function StatusBar({ viewerRef }: StatusBarProps): React.JSX.Element {
       </Stack>
     ),
     <Typography key="model-effort" variant="caption" color="text.secondary">
-      {formatModelEffort(agentSettings)}
+      {formatModelEffort(agentSettings, availableModels)}
     </Typography>,
     contextUsage && (
       <Tooltip

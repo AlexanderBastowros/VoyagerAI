@@ -102,9 +102,16 @@ interface LegacyProjectRecord extends Omit<ProjectRecord, 'parts' | 'activePartI
   activeIteration?: number
 }
 
-/** Applied whenever a project has no explicit model/effort recorded yet - matches the MVP's
- *  original hardcoded Opus + xhigh behavior. */
-export const DEFAULT_AGENT_SETTINGS: AgentSettings = { model: 'claude-opus-4-8', effort: 'xhigh', renderViews: true }
+/**
+ * Applied whenever a project has no explicit model/effort recorded yet.
+ *
+ * The model is the CLI's own `default` alias rather than a pinned id: a pin here is what went
+ * stale before (it froze every new project on Opus 4.8 long after newer models shipped), and
+ * the alias is guaranteed resolvable by whatever CLI build is installed. `ModelCatalog` may
+ * still steer a *new* project onto a newer verified model via `preferredModel`; this constant
+ * is the floor that has to work with no catalog at all.
+ */
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = { model: 'default', effort: 'xhigh', renderViews: true }
 
 export interface ProjectStoreOptions {
   /** Root directory all projects live under, e.g. `<userData>/projects`. */
