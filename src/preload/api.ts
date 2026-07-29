@@ -7,6 +7,7 @@ import type {
   BriefUpdateRequest,
   BriefUpdateResponse,
   CreateProjectRequest,
+  DeleteProjectRequest,
   DesignBrief,
   ExportModelRequest,
   ExportModelResponse,
@@ -103,6 +104,13 @@ export interface VoyagerApi {
     switch: (request: SwitchProjectRequest) => Promise<ProjectStateSnapshot>
     /** Renames any project by id, active or not. */
     rename: (request: RenameProjectRequest) => Promise<ProjectSummary>
+    /** Deletes any project by id, active or not: this permanently removes the project directory
+     *  and every iteration recorded in it (STLs, STEPs, scripts, renders, chat transcript) - there
+     *  is no undo, so callers must confirm with the user first. Resolves with the full hydrated
+     *  state of whatever project is active afterwards (a successor is picked when the deleted one
+     *  was active), so the caller re-hydrates the same way it does for switch/create. Rejects for
+     *  the last remaining project, and while Voyager is mid-turn. */
+    delete: (request: DeleteProjectRequest) => Promise<ProjectStateSnapshot>
     /** The active project's full hydrated state - called once on app mount. */
     getState: () => Promise<ProjectStateSnapshot>
     /** Every iteration ever recorded for the active project, oldest first (R4 version history). */

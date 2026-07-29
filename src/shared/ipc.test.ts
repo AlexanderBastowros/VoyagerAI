@@ -47,6 +47,7 @@ describe('IPC channel names', () => {
     expect(IPC.agentSetSettings).toBe('agent:setSettings')
     expect(IPC.projectListIterations).toBe('project:listIterations')
     expect(IPC.projectRevertTo).toBe('project:revertTo')
+    expect(IPC.projectDelete).toBe('project:delete')
     expect(IPC.briefGet).toBe('brief:get')
     expect(IPC.briefUpdate).toBe('brief:update')
     expect(IPC.briefLock).toBe('brief:lock')

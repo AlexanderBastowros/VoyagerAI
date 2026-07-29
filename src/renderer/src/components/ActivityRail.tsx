@@ -4,7 +4,6 @@ import Tooltip from '@mui/material/Tooltip'
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined'
 import HistoryIcon from '@mui/icons-material/History'
 import PrintOutlinedIcon from '@mui/icons-material/PrintOutlined'
-import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined'
 import ViewInArOutlinedIcon from '@mui/icons-material/ViewInArOutlined'
 
 /** Which panel the left dock currently shows - owned by `App.tsx`, switched by this rail. */
@@ -100,15 +99,6 @@ export function ActivityRail({ view, onSelectView, onOpenProjects, leftDockOpen 
         label="Printer"
         active={leftDockOpen && view === 'printer'}
         onClick={() => onSelectView('printer')}
-      />
-      <Box sx={{ flex: 1 }} />
-      <RailButton
-        icon={<SettingsOutlinedIcon fontSize="small" color="action" />}
-        label="Settings"
-        active={false}
-        onClick={() => {
-          // No settings surface yet - the icon is a visual affordance for now.
-        }}
       />
     </Box>
   )

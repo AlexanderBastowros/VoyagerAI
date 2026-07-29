@@ -1,4 +1,4 @@
-import { copyFile, cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { copyFile, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import type {
@@ -140,6 +140,11 @@ export interface ProjectStoreOptions {
 
 const SKILL_DIR_SEGMENTS = ['.claude', 'skills', 'printable-cad'] as const
 const MANIFEST_FILENAME = 'manifest.json'
+/** Staging area a deleted project directory is `rename`d into before it is actually removed - see
+ *  `deleteProject()`. Invisible to `discoverProjectIds()`, which only treats *direct* children of
+ *  `baseDir` holding a `project.json` as projects (a staged `<baseDir>/.trash/<id>/project.json`
+ *  sits one level deeper). */
+const TRASH_DIRNAME = '.trash'
 
 /** Tracks only ids/order - never display data (name, createdAt), which would duplicate what
  *  each project's own `project.json` already holds and could drift out of sync. */
@@ -329,6 +334,91 @@ export class ProjectStore {
     await this.writeRecord(dir, record)
     if (this.record?.id === id) this.record = record
     return toSummary(record)
+  }
+
+  /**
+   * Permanently deletes a project: its entire directory (every recorded iteration's STL/STEP,
+   * script snapshots, brief, render sets, and the chat transcript in `project.json`) plus its
+   * manifest entry. This is the one operation that does destroy recorded iterations - the
+   * immutable-iteration rule is about never rewriting history *within* a project, and the user is
+   * explicitly discarding the whole project here (the renderer confirms first). Throws if `id`
+   * isn't a known project, or if it's the only one: the app always has an active project, and
+   * `bootstrapManifest()` would immediately re-create a fresh 'default' anyway, so refusing is
+   * both honest and cheaper than that churn.
+   *
+   * The destructive part happens in two steps so that it can only ever fail *before* anything is
+   * destroyed. The directory is first taken out of play with a single atomic `rename` into
+   * `<baseDir>/.trash/<id>/`, and only then removed for real. A recursive `rm` can fail part-way
+   * through - a render/verify subprocess still writing under `outputs/`, a locked file, a
+   * permission error - and done in place that would leave a gutted directory the store still
+   * believes is a project: the next write would recreate its `project.json` and the next
+   * `bootstrapManifest()` would "discover" the half-destroyed project again, resurrecting it with
+   * iterations pointing at STLs that no longer exist. Staging first means the rename either
+   * succeeds (the project is gone from discovery, atomically) or throws with the project wholly
+   * intact; the sweep that follows is therefore best-effort and must not be reported as a failed
+   * delete, since by then the delete has happened.
+   *
+   * The manifest is rewritten only after the rename, because `bootstrapManifest()` re-discovers any
+   * on-disk project directory the manifest doesn't list. A crash between the two steps leaves a
+   * manifest naming a directory that's already gone, which `bootstrapManifest`'s `stillPresent`
+   * filter reconciles away on the next read. The reverse order (manifest first) would leave an
+   * orphaned directory that the very next bootstrap "discovers" and resurrects as a project the
+   * user thought they deleted.
+   *
+   * Deleting the *active* project hands the active slot to a deterministic neighbour - the project
+   * that follows it in `projectOrder`, or the new last one when it was last - and loads that record
+   * immediately, so the store never sits with `this.record` pointing at a directory that no longer
+   * exists (`getProjectDir()` is read synchronously by callers like `AgentSession`). Deleting any
+   * other project leaves the active record untouched. Returns the surviving summaries, mirroring
+   * `deletePart`.
+   */
+  async deleteProject(id: string): Promise<ProjectSummary[]> {
+    const manifest = await this.bootstrapManifest()
+    const index = manifest.projectOrder.indexOf(id)
+    if (index === -1) {
+      throw new Error(`Unknown project: ${id}`)
+    }
+    if (manifest.projectOrder.length === 1) {
+      throw new Error('Cannot delete the only project')
+    }
+
+    const remaining = manifest.projectOrder.filter((other) => other !== id)
+    // The project that followed the deleted one (same index in the survivors), clamped to the last
+    // survivor when the deleted one was last - so repeatedly deleting walks forward through the
+    // list instead of snapping back to the top.
+    const successor = remaining[Math.min(index, remaining.length - 1)]
+    const wasActive = manifest.activeProjectId === id
+
+    // Commit the delete: one atomic move out of discovery's reach. Everything that can go wrong
+    // with the filesystem goes wrong here, where the project is still whole and the throw leaves
+    // the store exactly as it was. The pre-`rm` clears a leftover from an earlier sweep that
+    // couldn't finish (a rename onto a non-empty directory fails), and is a no-op otherwise.
+    const staged = join(this.baseDir, TRASH_DIRNAME, id)
+    await mkdir(join(this.baseDir, TRASH_DIRNAME), { recursive: true })
+    await rm(staged, { recursive: true, force: true })
+    await rename(this.dirFor(id), staged)
+
+    manifest.projectOrder = remaining
+    if (wasActive) manifest.activeProjectId = successor
+    // Reload whenever the loaded record was the deleted project, and do it *before* the manifest
+    // write so no later failure can leave the store pointing at the directory that just moved -
+    // `getProjectDir()` is read synchronously by callers (`AgentSession`, every export path), so it
+    // must never hand back a directory that's gone. The `this.record` half of the test is
+    // belt-and-braces: the manifest's active id and the loaded record are always set together
+    // (switch/create/ensure), so in practice they agree.
+    if (wasActive || this.record?.id === id) {
+      this.record = await this.materializeProject(manifest.activeProjectId, 'Untitled project')
+    }
+    await this.writeManifest(manifest)
+    // Free the bytes. Retries ride out a subprocess that is still writing into the staged tree;
+    // a failure past that only strands files under `.trash/`, which no code path reads, so it must
+    // not surface as a delete that failed.
+    try {
+      await rm(staged, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+    } catch {
+      // Best-effort sweep - the project is already deleted as far as the app is concerned.
+    }
+    return this.listProjects()
   }
 
   // -- parts (WS-I, §14) --------------------------------------------------

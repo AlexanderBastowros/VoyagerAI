@@ -284,6 +284,14 @@ export interface RenameProjectRequest {
   name: string
 }
 
+/** Deletes any project by id, active or not. Destructive and irreversible - the project's whole
+ *  directory goes with it (every recorded iteration's STL/STEP, scripts, and the chat transcript),
+ *  so the renderer confirms with the user first. Rejected for the last remaining project, since the
+ *  app always has one open. */
+export interface DeleteProjectRequest {
+  id: string
+}
+
 export interface RevertToRequest {
   n: number
 }
@@ -643,6 +651,7 @@ export const IPC = {
   projectCreate: 'project:create',
   projectSwitch: 'project:switch',
   projectRename: 'project:rename',
+  projectDelete: 'project:delete',
   projectGetState: 'project:getState',
   projectListIterations: 'project:listIterations',
   projectRevertTo: 'project:revertTo',

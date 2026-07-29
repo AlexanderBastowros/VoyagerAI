@@ -12,6 +12,7 @@ import type {
   BriefUpdateRequest,
   BriefUpdateResponse,
   CreateProjectRequest,
+  DeleteProjectRequest,
   DesignBrief,
   ExportModelRequest,
   ExportModelResponse,
@@ -841,6 +842,26 @@ export function registerIpcHandlers(): void {
     IPC.projectRename,
     async (_event, request: RenameProjectRequest): Promise<ProjectSummary> =>
       projectStore.renameProject(request.id, request.name)
+  )
+
+  ipcMain.handle(
+    IPC.projectDelete,
+    async (_event, request: DeleteProjectRequest): Promise<ProjectStateSnapshot> => {
+      if (agentSession.isBusy()) {
+        throw new Error('Voyager is still working — wait for it to finish before deleting a project.')
+      }
+      await projectStore.deleteProject(request.id)
+      // Any unit-confirmation this project had waiting can never be resumed now (project ids are
+      // never reused), so drop it rather than leaking one map entry per deleted project.
+      pendingMeshImports.delete(request.id)
+      // Full snapshot rather than just the surviving summaries, matching project:switch: deleting
+      // the *active* project moves the store onto a successor, so the renderer has to re-hydrate
+      // chat/versions/model too - and answering identically for both cases keeps the caller from
+      // needing to know which it was. No session teardown is needed beyond the isBusy guard above:
+      // `AgentSession.ensureStarted()` re-reads the project dir every turn and respawns its
+      // subprocess when it changed (see `projectChanged` in agent/session.ts).
+      return buildProjectSnapshot(projectStore)
+    }
   )
 
   ipcMain.handle(

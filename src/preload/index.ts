@@ -9,6 +9,7 @@ import type {
   BriefUpdateRequest,
   BriefUpdateResponse,
   CreateProjectRequest,
+  DeleteProjectRequest,
   DesignBrief,
   ExportModelRequest,
   ExportModelResponse,
@@ -94,6 +95,8 @@ const api: VoyagerApi = {
       ipcRenderer.invoke(IPC.projectSwitch, request),
     rename: (request: RenameProjectRequest): Promise<ProjectSummary> =>
       ipcRenderer.invoke(IPC.projectRename, request),
+    delete: (request: DeleteProjectRequest): Promise<ProjectStateSnapshot> =>
+      ipcRenderer.invoke(IPC.projectDelete, request),
     getState: (): Promise<ProjectStateSnapshot> => ipcRenderer.invoke(IPC.projectGetState),
     listIterations: (): Promise<IterationInfo[]> => ipcRenderer.invoke(IPC.projectListIterations),
     revertTo: (request: RevertToRequest): Promise<ProjectStateSnapshot> =>

@@ -602,9 +602,13 @@ export function ChatPanel(): React.JSX.Element {
           ))}
         </Stack>
       )}
+      {/* Vertical composer: the text field gets a row of its own so the Inspector dock - only
+          372px wide by default, and narrower still if the user drags the seam in - isn't splitting
+          it into a narrow column between the attach and Send controls. Drag-and-drop
+          stays on this outer container - it spans the whole composer, so an image dropped on the
+          controls row or the padding still attaches. */}
       <Stack
-        direction="row"
-        spacing={1}
+        gap={0.75}
         sx={{ p: 1.25, borderTop: 1, borderColor: 'divider' }}
         onDragOver={(e) => e.preventDefault()}
         onDrop={handleDrop}
@@ -617,22 +621,13 @@ export function ChatPanel(): React.JSX.Element {
           style={{ display: 'none' }}
           onChange={handleFileInputChange}
         />
-        <Tooltip title="Attach image">
-          <span>
-            <IconButton
-              disabled={isDisabled}
-              aria-label="Attach image"
-              sx={{ alignSelf: 'flex-end' }}
-              onClick={() => fileInputRef.current?.click()}
-            >
-              <AttachFileIcon />
-            </IconButton>
-          </span>
-        </Tooltip>
+        {/* minRows 2 (was 3): full-width lines hold far more text per row, so a 3-row idle box
+            would only cost chat-log space. maxRows 6 (was 8) keeps the composer's worst-case
+            height roughly where it was now that the controls occupy their own row below. */}
         <TextField
           multiline
-          minRows={3}
-          maxRows={8}
+          minRows={2}
+          maxRows={6}
           fullWidth
           size="small"
           value={draft}
@@ -642,27 +637,48 @@ export function ChatPanel(): React.JSX.Element {
           disabled={isDisabled}
           placeholder={disabledReason ?? 'Message Voyager AI... (Enter to send)'}
         />
-        {agentBusy ? (
-          <Button
-            variant="outlined"
-            startIcon={<StopIcon />}
-            onClick={() => void stopTurn()}
-            disabled={stopping}
-            sx={{ alignSelf: 'flex-end' }}
-          >
-            {stopping ? 'Stopping…' : 'Stop'}
-          </Button>
-        ) : (
-          <Button
-            variant="contained"
-            endIcon={<SendIcon />}
-            onClick={() => void sendDraft()}
-            disabled={isDisabled || (draft.trim().length === 0 && attachments.length === 0)}
-            sx={{ alignSelf: 'flex-end' }}
-          >
-            Send
-          </Button>
-        )}
+        <Stack direction="row" alignItems="center" gap={1}>
+          {/* The <span> is what lets the Tooltip fire while the IconButton is disabled - a
+              disabled button emits no pointer events of its own. */}
+          <Tooltip title="Attach image">
+            <span>
+              <IconButton
+                size="small"
+                disabled={isDisabled}
+                aria-label="Attach image"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <AttachFileIcon fontSize="small" />
+              </IconButton>
+            </span>
+          </Tooltip>
+          {/* Doubles as the flexible spacer pushing Send to the right edge, and ellipsizes
+              instead of squeezing the buttons if the dock ever narrows. Only the Shift+Enter
+              half is spelled out - the placeholder already covers Enter-to-send, and that's
+              the shortcut `handleKeyDown` leaves to the browser's default newline. */}
+          <Typography variant="caption" color="text.disabled" noWrap sx={{ flex: 1, minWidth: 0 }}>
+            Shift+Enter for a newline
+          </Typography>
+          {agentBusy ? (
+            <Button
+              variant="outlined"
+              startIcon={<StopIcon />}
+              onClick={() => void stopTurn()}
+              disabled={stopping}
+            >
+              {stopping ? 'Stopping…' : 'Stop'}
+            </Button>
+          ) : (
+            <Button
+              variant="contained"
+              endIcon={<SendIcon />}
+              onClick={() => void sendDraft()}
+              disabled={isDisabled || (draft.trim().length === 0 && attachments.length === 0)}
+            >
+              Send
+            </Button>
+          )}
+        </Stack>
       </Stack>
     </Stack>
   )

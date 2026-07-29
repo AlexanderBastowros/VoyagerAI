@@ -468,6 +468,154 @@ describe('ProjectStore multi-project support', () => {
   })
 })
 
+describe('ProjectStore.deleteProject', () => {
+  /** Mirrors the store's (module-private) staging directory name - a delete moves the project
+   *  directory in here before removing it, so the removal can never fail half-way in place. */
+  const TRASH_DIRNAME = '.trash'
+
+  it('deletes a non-active project and leaves the active one alone', async () => {
+    const store = makeStore()
+    const { id: firstId, dir: firstDir } = await store.ensureProject()
+    const doomed = await store.createProject('Doomed')
+    await store.switchProject(firstId)
+
+    const survivors = await store.deleteProject(doomed.id)
+    expect(survivors.map((p) => p.id)).toEqual([firstId])
+    // The active record was never the target, so it must not have moved.
+    expect(store.getActiveProjectId()).toBe(firstId)
+    expect(store.getProjectDir()).toBe(firstDir)
+  })
+
+  it('removes the deleted project\'s directory and artifacts from disk', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    const doomed = await store.createProject('Doomed')
+    const doomedDir = store.getProjectDir()
+    await recordScript(store, { stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    expect((await stat(join(doomedDir, 'outputs', 'versions', 'main', 'v1.py'))).isFile()).toBe(true)
+
+    await store.deleteProject(doomed.id)
+    await expect(stat(doomedDir)).rejects.toThrow()
+    // The directory is staged under `.trash/<id>/` before it is removed; a successful delete must
+    // not leave the staged copy behind.
+    await expect(stat(join(scratch, 'projects', TRASH_DIRNAME, doomed.id))).rejects.toThrow()
+  })
+
+  it('hands the active slot to the following project and keeps working afterwards', async () => {
+    const store = makeStore()
+    const { id: firstId } = await store.ensureProject()
+    const middle = await store.createProject('Middle')
+    const last = await store.createProject('Last')
+    await store.switchProject(middle.id)
+
+    const survivors = await store.deleteProject(middle.id)
+    expect(survivors.map((p) => p.id)).toEqual([firstId, last.id])
+    // The successor is the project that *followed* the deleted one, not simply the first.
+    expect(store.getActiveProjectId()).toBe(last.id)
+    expect((await store.ensureProject()).dir).toBe(join(scratch, 'projects', last.id))
+
+    // The store is immediately usable - the loaded record points at a directory that exists.
+    const recorded = await recordScript(store, {
+      stlPath: 'outputs/a_v1.stl',
+      scriptPath: 'outputs/a_v1.py',
+      summary: 'after delete'
+    })
+    expect(recorded.n).toBe(1)
+    expect((await store.listIterations()).map((it) => it.summary)).toEqual(['after delete'])
+    expect((await store.listProjects()).map((p) => p.id)).toEqual([firstId, last.id])
+  })
+
+  it('falls back to the new last project when the deleted active project was last', async () => {
+    const store = makeStore()
+    const { id: firstId } = await store.ensureProject()
+    const middle = await store.createProject('Middle')
+    const last = await store.createProject('Last')
+    // `createProject` already made `last` the active one.
+    expect(store.getActiveProjectId()).toBe(last.id)
+
+    const survivors = await store.deleteProject(last.id)
+    expect(survivors.map((p) => p.id)).toEqual([firstId, middle.id])
+    expect(store.getActiveProjectId()).toBe(middle.id)
+  })
+
+  it('refuses to delete the only project and destroys nothing', async () => {
+    const store = makeStore()
+    const { id, dir } = await store.ensureProject()
+
+    await expect(store.deleteProject(id)).rejects.toThrow('Cannot delete the only project')
+    expect((await stat(join(dir, 'project.json'))).isFile()).toBe(true)
+    expect((await store.listProjects()).map((p) => p.id)).toEqual([id])
+    expect(store.getActiveProjectId()).toBe(id)
+  })
+
+  it('throws for an unknown project id', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    await store.createProject('Second')
+
+    await expect(store.deleteProject('does-not-exist')).rejects.toThrow(/Unknown project/)
+  })
+
+  it('does not resurrect the deleted project when the manifest is next bootstrapped', async () => {
+    const store = makeStore()
+    await store.ensureProject()
+    const doomed = await store.createProject('Doomed')
+    await store.deleteProject(doomed.id)
+
+    // `listProjects()` re-runs `bootstrapManifest()`, which re-discovers any on-disk project dir
+    // the manifest doesn't list - moving the directory out of discovery's reach *before* rewriting
+    // the manifest is what keeps that reconciliation from undoing the delete.
+    expect((await store.listProjects()).some((p) => p.id === doomed.id)).toBe(false)
+
+    // Same for a cold store reading the persisted manifest from scratch.
+    const reloaded = makeStore()
+    await reloaded.ensureProject()
+    expect((await reloaded.listProjects()).some((p) => p.id === doomed.id)).toBe(false)
+    expect(reloaded.getActiveProjectId()).not.toBe(doomed.id)
+  })
+
+  it('destroys nothing and stays consistent when the directory cannot be staged', async () => {
+    const store = makeStore()
+    const { id: firstId } = await store.ensureProject()
+    const doomed = await store.createProject('Doomed')
+    const doomedDir = store.getProjectDir()
+    await recordScript(store, { stlPath: 'outputs/a_v1.stl', scriptPath: 'outputs/a_v1.py', summary: 'v1' })
+    await store.appendMessage({ id: 'm1', role: 'user', text: 'hello', createdAt: '2024-01-01T00:00:00.000Z' })
+
+    // A plain file where the staging directory belongs is the cheapest stand-in for the real
+    // reasons the move can fail (a locked/busy tree, a permission error): the delete must give up
+    // while the project is still whole, never part-way through destroying it.
+    await writeFile(join(scratch, 'projects', TRASH_DIRNAME), 'not a directory')
+    await expect(store.deleteProject(doomed.id)).rejects.toThrow()
+
+    // Still whole on disk...
+    expect((await stat(join(doomedDir, 'project.json'))).isFile()).toBe(true)
+    expect((await stat(join(doomedDir, 'outputs', 'versions', 'main', 'v1.py'))).isFile()).toBe(true)
+    // ...still listed, still active, and still the record the store reads and writes.
+    expect((await store.listProjects()).map((p) => p.id)).toEqual([firstId, doomed.id])
+    expect(store.getActiveProjectId()).toBe(doomed.id)
+    expect(store.getProjectDir()).toBe(doomedDir)
+    expect((await store.listIterations()).map((it) => it.summary)).toEqual(['v1'])
+    expect((await store.getChatHistory()).some((m) => m.text === 'hello')).toBe(true)
+  })
+
+  it('never rediscovers a staged directory a sweep could not remove', async () => {
+    const store = makeStore()
+    const { id } = await store.ensureProject()
+
+    // The staging area is one level deeper than `discoverProjectIds()` looks, so files stranded
+    // there by a sweep that couldn't finish can never come back as a project.
+    const stranded = join(scratch, 'projects', TRASH_DIRNAME, 'stranded')
+    await mkdir(stranded, { recursive: true })
+    await writeFile(
+      join(stranded, 'project.json'),
+      JSON.stringify({ id: 'stranded', name: 'Stranded', createdAt: new Date().toISOString(), messages: [] })
+    )
+
+    expect((await store.listProjects()).map((p) => p.id)).toEqual([id])
+  })
+})
+
 describe('ProjectStore.getChatHistory', () => {
   it('merges persisted messages with synthesized model-displayed lines, sorted chronologically', async () => {
     const store = makeStore()
