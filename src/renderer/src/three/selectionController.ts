@@ -61,7 +61,7 @@ export class SelectionController {
    */
   setActive(active: boolean): void {
     this.active = active
-    this.options.getViewer()?.setOrbitEnabled(!active)
+    this.options.getViewer()?.setOrbitSuppressed('select', active)
     if (!active) this.cancelDrag()
   }
 

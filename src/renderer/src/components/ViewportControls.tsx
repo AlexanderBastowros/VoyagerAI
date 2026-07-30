@@ -10,6 +10,7 @@ import MenuItem from '@mui/material/MenuItem'
 import Paper from '@mui/material/Paper'
 import Snackbar from '@mui/material/Snackbar'
 import ToggleButton from '@mui/material/ToggleButton'
+import Tooltip from '@mui/material/Tooltip'
 import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown'
 import ExploreIcon from '@mui/icons-material/Explore'
 import FileDownloadIcon from '@mui/icons-material/FileDownload'
@@ -283,17 +284,26 @@ export function ViewportControls({ viewerRef }: ViewportControlsProps): React.JS
           <>
             <Divider orientation="vertical" flexItem />
             {/* Placement gizmo mode for the focused part (also the g/r keyboard shortcuts):
-                Move slides on the plate and lifts vertically; Rotate spins on any axis. */}
-            <ToggleButton
-              value="translate"
-              size="small"
-              selected={gizmoMode === 'translate'}
-              onChange={() => setGizmoMode('translate')}
-              disabled={!gizmoAvailable}
+                Move slides on the plate and LIFTS vertically; Rotate spins on any axis. The
+                vertical (green) handle is lift-only - parts rest on the build plate and are
+                ground-clamped, so a part already down cannot be dragged lower (see
+                `placementController`/`groundClamp`). That constraint is otherwise invisible until it
+                stops a drag, hence the tooltip: the gizmo now blocks the handle at the plate rather
+                than letting the part sink and snapping it back on release. */}
+            <Tooltip
+              title="Move: slide on the plate, or lift vertically — parts rest on the build plate and cannot sink below it"
             >
-              <OpenWithIcon fontSize="small" sx={{ mr: 0.5 }} />
-              Move
-            </ToggleButton>
+              <ToggleButton
+                value="translate"
+                size="small"
+                selected={gizmoMode === 'translate'}
+                onChange={() => setGizmoMode('translate')}
+                disabled={!gizmoAvailable}
+              >
+                <OpenWithIcon fontSize="small" sx={{ mr: 0.5 }} />
+                Move
+              </ToggleButton>
+            </Tooltip>
             <ToggleButton
               value="rotate"
               size="small"

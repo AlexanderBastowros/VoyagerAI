@@ -18,6 +18,47 @@ function expectVec3Close(actual: Vec3, expected: Vec3, precision = 4): void {
   expect(actual[2]).toBeCloseTo(expected[2], precision)
 }
 
+/**
+ * A bicone ("spindle") inscribed in the 30 mm cube - the first NON-BOX fixture in this suite, and the
+ * worked example for vertex-accurate resting height. A regular octagon of radius 15 in the plane
+ * `x = 15` centred on `(15, 15)` in y/z, closed with an apex at each end of X (triangle 0's first
+ * vertex is the low-X apex). Its AABB is exactly the 30 mm cube, and it shares the 30 mm sphere's
+ * great circle in the YZ plane, so at `[45, 0, 0]`:
+ *
+ * - resting height from the real vertices: **15.000** - the part sits flush on the plate;
+ * - resting height from the 8 rotated AABB corners (what this module used to compute):
+ *   30 * sin(45) = **21.213**, which floated the part 6.213 mm above the bed in the exported plate.
+ *
+ * MUST STAY IN LOCKSTEP with the identical fixture in `src/renderer/src/three/placement.test.ts` (and
+ * `src/shared/placementMath.test.ts`): the exported plate is defined as "what the viewport shows,
+ * baked", so all three suites pinning the same number from the same geometry is what stops the
+ * viewport and this exporter drifting apart. Duplicated rather than shared because it is a test
+ * fixture and the two suites live in different packages.
+ */
+function biconeTriangles(): StlTriangle[] {
+  const ring: Vec3[] = []
+  for (let k = 0; k < 8; k++) {
+    const theta = (k * Math.PI) / 4
+    ring.push([15, 15 + 15 * Math.cos(theta), 15 + 15 * Math.sin(theta)])
+  }
+  const apexLow: Vec3 = [0, 15, 15]
+  const apexHigh: Vec3 = [30, 15, 15]
+  const tris: StlTriangle[] = []
+  for (let k = 0; k < 8; k++) {
+    const a = ring[k]
+    const b = ring[(k + 1) % 8]
+    // Normals are irrelevant to resting height (and are only rotated, never translated) - the shape
+    // is here for its vertex set.
+    tris.push(triangle([0, 1, 0], apexLow, a, b))
+    tris.push(triangle([0, 1, 0], apexHigh, b, a))
+  }
+  return tris
+}
+
+function bakedYs(triangles: StlTriangle[]): number[] {
+  return triangles.flatMap((tri) => tri.vertices.map((v) => v[1]))
+}
+
 describe('parseBinaryStl / writeBinaryStl', () => {
   it('round-trips a single triangle', () => {
     const tris = [triangle([0, 0, 1], [0, 0, 0], [1, 0, 0], [0, 1, 0])]
@@ -90,6 +131,35 @@ describe('bakePartTriangles', () => {
 
   it('returns no triangles for an empty input', () => {
     expect(bakePartTriangles([], { position: [0, 0, 0], rotation: [0, 0, 0] })).toEqual([])
+  })
+
+  it('rests a non-box solid rotated 45° flush on the plate, not on its bounding box', () => {
+    const baked = bakePartTriangles(biconeTriangles(), { position: [0, 0, 0], rotation: [45, 0, 0] })
+    // Flush: the lowest baked vertex is exactly on the plate. Before the vertex-accurate resting
+    // height this was 6.213 (the part hovered), and it agreed with the viewport only in being wrong.
+    expect(Math.min(...bakedYs(baked))).toBeCloseTo(0, 6)
+    // The lift applied was 15.000 - the number `placement.test.ts` pins for the same geometry. The
+    // low-X apex is triangle 0's first vertex: local (0,15,15) -> world y = 15·cos45 − 15·sin45 = 0,
+    // + the 15.000 lift; world z = 15·sin45 + 15·cos45 = 21.213.
+    expectVec3Close(baked[0].vertices[0], [0, 15, 21.2132])
+  })
+
+  it('preserves a deliberate lift above the corrected resting height, and never sinks below it', () => {
+    // The plate-clamp POLICY is unchanged - only the height it clamps to is corrected.
+    const lifted = bakePartTriangles(biconeTriangles(), { position: [0, 40, 0], rotation: [45, 0, 0] })
+    expect(Math.min(...bakedYs(lifted))).toBeCloseTo(25, 6) // 40 requested - 15 resting
+    const sunk = bakePartTriangles(biconeTriangles(), { position: [0, -40, 0], rotation: [45, 0, 0] })
+    expect(Math.min(...bakedYs(sunk))).toBeCloseTo(0, 6)
+  })
+
+  it('is unaffected for rotations that ARE multiples of 90° (the preview rotation included)', () => {
+    // Corners map to corners there, so the old formula was exact - this pins that the fix did not
+    // move the axis-aligned cases, including the print-orientation preview's [-90, 0, 0].
+    const axisAligned: Vec3[] = [[0, 0, 0], [90, 0, 0], [-90, 0, 0], [180, 0, 0], [0, 90, 0]]
+    for (const rotation of axisAligned) {
+      const baked = bakePartTriangles(biconeTriangles(), { position: [0, 0, 0], rotation })
+      expect(Math.min(...bakedYs(baked))).toBeCloseTo(0, 6)
+    }
   })
 })
 

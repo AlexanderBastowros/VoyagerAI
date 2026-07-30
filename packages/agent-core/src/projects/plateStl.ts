@@ -8,7 +8,8 @@
  * Pure, dependency-free (no `electron`, no filesystem, no `three` - agent-core has no WebGL
  * dependency) so it unit-tests under plain vitest against hand-built binary STL buffers; `src/
  * main/ipc.ts`'s `model:export` `'plate'` branch reads each part's STL bytes off disk and hands
- * them here.
+ * them here. Its one import is `@shared/placementMath`, which is plain numbers with zero imports of
+ * its own and is the *shared* definition of the transform below - see that module's header.
  *
  * Every generated STL in this app is binary (build123d's `export_stl` defaults `ascii_format` to
  * `False` - see `resources/skills/printable-cad/references/build123d.md`), so only the binary STL
@@ -24,9 +25,15 @@
  * ground-clamp against the geometry actually being exported (not just trusting the persisted
  * `placement.position[1]`, which could have been computed against a since-refined part's old
  * bounds) - the same reasoning `loadPart()`'s doc comment gives for re-clamping on every load.
+ *
+ * "Mirrors bit-for-bit" is now enforced rather than asserted: the rotation matrix and the resting
+ * height both come from `@shared/placementMath`, the same module the viewport's `placement.ts` calls.
+ * They used to be a second, independent transcription here, and they were wrong in the same way -
+ * resting a part on the corners of its rotated bounding box rather than on its geometry, which
+ * floated every non-90-degree-rotated part above the plate in the viewport *and* in the export.
  */
 
-const DEG2RAD = Math.PI / 180
+import { applyMat3, restingYFromVertices, rotationMatrixXYZDeg } from '@shared/placementMath'
 
 export type Vec3 = readonly [number, number, number]
 
@@ -34,9 +41,6 @@ export interface StlTriangle {
   normal: Vec3
   vertices: readonly [Vec3, Vec3, Vec3]
 }
-
-/** Row-major 3x3 rotation matrix. */
-type Mat3 = readonly [number, number, number, number, number, number, number, number, number]
 
 const BINARY_HEADER_SIZE = 80
 const TRIANGLE_RECORD_SIZE = 50 // 12 (normal) + 3*12 (vertices) + 2 (attribute byte count)
@@ -101,31 +105,6 @@ export function writeBinaryStl(triangles: StlTriangle[], header = 'Voyager AI pl
   return buf
 }
 
-/** The rotation matrix for XYZ-order Euler degrees, bit-for-bit the same formula three.js's
- *  `Matrix4.makeRotationFromEuler()` uses for `Euler.order === 'XYZ'` (see that source for the
- *  derivation) - required so a plate export rotates each part exactly as the viewport gizmo does,
- *  without agent-core taking a dependency on `three` (which is renderer/WebGL-only). */
-function rotationMatrixXYZDeg(rotationDeg: Vec3): Mat3 {
-  const x = rotationDeg[0] * DEG2RAD
-  const y = rotationDeg[1] * DEG2RAD
-  const z = rotationDeg[2] * DEG2RAD
-  const a = Math.cos(x)
-  const b = Math.sin(x)
-  const c = Math.cos(y)
-  const d = Math.sin(y)
-  const e = Math.cos(z)
-  const f = Math.sin(z)
-  return [
-    c * e, -c * f, d,
-    a * f + b * e * d, a * e - b * f * d, -b * c,
-    b * f - a * e * d, b * e + a * f * d, a * c
-  ]
-}
-
-function applyMat3(m: Mat3, v: Vec3): Vec3 {
-  return [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]]
-}
-
 /** The minimum corner across every triangle's vertices - the translation `buildMesh()` bakes into
  *  the geometry before a placement is ever applied. */
 function boundingMin(triangles: StlTriangle[]): Vec3 {
@@ -142,37 +121,22 @@ function boundingMin(triangles: StlTriangle[]): Vec3 {
   return [minX, minY, minZ]
 }
 
-/** The maximum corner of an already origin-aligned (min corner at `[0,0,0]`) triangle set. */
-function boundingMaxFromOrigin(triangles: StlTriangle[]): Vec3 {
-  let maxX = 0
-  let maxY = 0
-  let maxZ = 0
+/** Every origin-aligned vertex as one flat `x, y, z, ...` list - the input shape
+ *  `restingYFromVertices` shares with the viewport, where it is a three.js position attribute's
+ *  `array`. One contiguous Float64Array per exported part; the export is a one-shot operation, and
+ *  this is cheaper than the boxed tuple copy `originAligned` already makes. */
+function flattenVertices(triangles: StlTriangle[]): Float64Array {
+  const flat = new Float64Array(triangles.length * 9)
+  let i = 0
   for (const tri of triangles) {
     for (const v of tri.vertices) {
-      if (v[0] > maxX) maxX = v[0]
-      if (v[1] > maxY) maxY = v[1]
-      if (v[2] > maxZ) maxZ = v[2]
+      flat[i] = v[0]
+      flat[i + 1] = v[1]
+      flat[i + 2] = v[2]
+      i += 3
     }
   }
-  return [maxX, maxY, maxZ]
-}
-
-/** The world-`y` translation that rests an origin-aligned (min corner at local `[0,0,0]`) AABB on
- *  the build plate (`y = 0`) at the given rotation - mirrors `src/renderer/src/three/placement.ts`'s
- *  `groundSnappedY()`: rotates the 8 local-box corners about the local origin and returns
- *  `-min(worldY)`, so the lowest rotated point lands exactly on the plate. */
-function restingY(localMax: Vec3, rotationDeg: Vec3): number {
-  const m = rotationMatrixXYZDeg(rotationDeg)
-  let minY = Infinity
-  for (const x of [0, localMax[0]]) {
-    for (const y of [0, localMax[1]]) {
-      for (const z of [0, localMax[2]]) {
-        const worldY = applyMat3(m, [x, y, z])[1]
-        if (worldY < minY) minY = worldY
-      }
-    }
-  }
-  return Number.isFinite(minY) ? -minY : 0
+  return flat
 }
 
 /** The subset of `Placement` this module needs - `position` in mm, `rotation` XYZ-order Euler
@@ -187,9 +151,14 @@ export interface PlacementLike {
  * Bakes one part's triangles (in their own local STL coordinates) into world space at
  * `placement`: origin-aligns to the geometry's own minimum corner (mirrors `buildMesh()`),
  * rotates by `placement.rotation` about that origin, ground-clamps `y` against *this* geometry's
- * bounds (mirrors `groundClamp()` - only ever raises `position.y`, never sinks a deliberate lift),
- * then translates. Normals are rotated (not translated) - a pure rotation needs no
+ * own vertices (mirrors `groundClamp()` - only ever raises `position.y`, never sinks a deliberate
+ * lift), then translates. Normals are rotated (not translated) - a pure rotation needs no
  * inverse-transpose to stay correct.
+ *
+ * The resting height comes from the real vertices, so a part rotated by anything other than a
+ * multiple of 90 degrees lands *on* the plate instead of on the corner of its rotated bounding box
+ * (which floated a 30 mm sphere at [45,0,0] 6.213 mm above the bed). This is also strictly cheaper
+ * than the 8-corner trick used to be, since it drops the extra bounds pass.
  */
 export function bakePartTriangles(triangles: StlTriangle[], placement: PlacementLike): StlTriangle[] {
   if (triangles.length === 0) return []
@@ -200,9 +169,8 @@ export function bakePartTriangles(triangles: StlTriangle[], placement: Placement
     vertices: tri.vertices.map((v) => [v[0] - min[0], v[1] - min[1], v[2] - min[2]] as Vec3) as [Vec3, Vec3, Vec3]
   }))
 
-  const localMax = boundingMaxFromOrigin(originAligned)
   const rot = rotationMatrixXYZDeg(placement.rotation)
-  const groundY = restingY(localMax, placement.rotation)
+  const groundY = restingYFromVertices(flattenVertices(originAligned), placement.rotation)
   const clampedY = Math.max(placement.position[1], groundY)
   const translation: Vec3 = [placement.position[0], clampedY, placement.position[2]]
 

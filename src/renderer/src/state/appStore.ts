@@ -92,6 +92,19 @@ function createMessageId(): string {
   return `msg-${Date.now()}-${messageSequence}`
 }
 
+/**
+ * When true, a fresh print-settings recommendation ARMS the print-orientation preview immediately
+ * (see `printPreviewArranged`), so the parts snap into their preview row the instant
+ * `printSettings:updated` lands - mid-turn, with no user click. That is the trigger the feature was
+ * asked for, and it is safe to honour here only because the preview is renderer-only: it writes
+ * nothing to `project.json`, sends no IPC (so the main process's mid-turn busy guard is never hit),
+ * and toggling it off restores the user's hand-built layout from `parts[].placement` verbatim.
+ *
+ * Flip this to `false` to get "armed but not applied until the user clicks the toggle" instead - a
+ * one-line change, deliberately kept as one line.
+ */
+const AUTO_ARM_PRINT_PREVIEW = true
+
 /** Key for the "full stream" display preference in the renderer's localStorage. This preference
  *  is global (not per-project) and purely a display concern, so it lives in localStorage rather
  *  than in `project.json`. */
@@ -157,6 +170,25 @@ export interface AppState {
    *  the store (not local to the toolbar) so the controller's g/r keyboard shortcuts and the
    *  toolbar toggle stay in sync. */
   gizmoMode: 'translate' | 'rotate'
+  /**
+   * True while the viewport shows the **print-orientation preview**: every part laid out as a single
+   * row along the grid's X axis and rotated so its printed bed face sits on the plate
+   * (`arrangeAlongX`). Purely presentational renderer state, in the same bucket as `showAxes` and
+   * `wireframe` - the preview never touches IPC, never writes `parts[].placement`, and never reaches
+   * `project.json`, so flipping it off restores the user's hand-built layout exactly (Viewport's
+   * parts-sync effect re-applies each `part.placement` from the store).
+   *
+   * Armed automatically when a recommendation arrives (`setPrintSettings`, gated on
+   * `AUTO_ARM_PRINT_PREVIEW`) and cleared wherever `printSettings` is cleared, so a preview left on
+   * can never arrange stale bounds after a new iteration or a project switch.
+   */
+  printPreviewArranged: boolean
+  /** Total X extent (mm) of the row the print-orientation preview last laid out, or null when the
+   *  preview is off / no part geometry was available to arrange. Measured in the viewport (only the
+   *  viewer knows each part's geometry bounds) and published here purely so
+   *  `PrintSettingsPanel` can compare it against the active printer's usable bed width. A
+   *  measurement, not a setting: nothing reads it back into the layout. */
+  printPreviewRowWidthMm: number | null
   /** When on, the chat streams a fuller view of the agent's background work: bookkeeping
    *  (`routine`) tool-activity rows, each tool's inputs, and the complete thinking stream.
    *  Global display preference persisted in localStorage (survives restarts, not per-project). */
@@ -248,6 +280,11 @@ export interface AppState {
   setShowAxes: (showAxes: boolean) => void
   setWireframe: (wireframe: boolean) => void
   setGizmoMode: (gizmoMode: 'translate' | 'rotate') => void
+  /** Turns the print-orientation preview on/off - see `printPreviewArranged`. Display-only: no IPC,
+   *  no persistence. Turning it off also drops the last measured row width. */
+  setPrintPreviewArranged: (printPreviewArranged: boolean) => void
+  /** Records the row width the viewport just laid out - see `printPreviewRowWidthMm`. */
+  setPrintPreviewRowWidthMm: (rowWidthMm: number | null) => void
   /** Toggles the "full stream" display preference and persists it to localStorage. */
   setFullStream: (fullStream: boolean) => void
   setAgentBusy: (busy: boolean) => void
@@ -295,6 +332,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   showAxes: true,
   wireframe: false,
   gizmoMode: 'translate',
+  printPreviewArranged: false,
+  printPreviewRowWidthMm: null,
   fullStream: readFullStream(),
   agentBusy: false,
   contextUsage: null,
@@ -331,7 +370,17 @@ export const useAppStore = create<AppState>((set, get) => ({
     }))
   },
 
-  setModel: (model) => set({ model, selection: null, measurement: null, printSettings: null }),
+  // `printPreviewArranged` rides along with `printSettings` everywhere it is cleared: a preview left
+  // armed across a new iteration would arrange the PREVIOUS geometry's bounds.
+  setModel: (model) =>
+    set({
+      model,
+      selection: null,
+      measurement: null,
+      printSettings: null,
+      printPreviewArranged: false,
+      printPreviewRowWidthMm: null
+    }),
   setAgentSettings: (agentSettings) => set({ agentSettings }),
   setAvailableModels: (availableModels) => set({ availableModels }),
 
@@ -355,8 +404,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       selection: null,
       measurement: null,
       // Session-only, not part of ProjectStateSnapshot - a hydrated project never carries a
-      // stale recommendation forward.
+      // stale recommendation forward, nor the print-orientation preview it armed (which would
+      // otherwise try to arrange a viewer that was just cleared).
       printSettings: null,
+      printPreviewArranged: false,
+      printPreviewRowWidthMm: null,
       agentBusy: false,
       // A project switch tears down the SDK session behind it - the last-known usage no
       // longer describes anything live.
@@ -400,7 +452,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeIteration: payload.iteration
     }))
   },
-  setPrintSettings: (printSettings) => set({ printSettings }),
+  // A recommendation landing arms the print-orientation preview in the same `set` (see
+  // `AUTO_ARM_PRINT_PREVIEW`); clearing the recommendation always disarms it. Armed here rather than
+  // in `App.tsx`'s `printSettings:updated` subscription so the trigger lives with the state it owns.
+  setPrintSettings: (printSettings) =>
+    set({
+      printSettings,
+      printPreviewArranged: AUTO_ARM_PRINT_PREVIEW && printSettings !== null,
+      // Any new/cleared recommendation invalidates the previous row measurement; the viewport
+      // republishes it on the next arrange.
+      printPreviewRowWidthMm: null
+    }),
   setSetupStatus: (setupStatus) => set({ setupStatus }),
   setSelection: (selection) => set({ selection }),
   setSelectMode: (selectMode) => set({ selectMode }),
@@ -409,6 +471,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   setShowAxes: (showAxes) => set({ showAxes }),
   setWireframe: (wireframe) => set({ wireframe }),
   setGizmoMode: (gizmoMode) => set({ gizmoMode }),
+  setPrintPreviewArranged: (printPreviewArranged) =>
+    set(printPreviewArranged ? { printPreviewArranged } : { printPreviewArranged, printPreviewRowWidthMm: null }),
+  setPrintPreviewRowWidthMm: (printPreviewRowWidthMm) => set({ printPreviewRowWidthMm }),
   setFullStream: (fullStream) => {
     writeFullStream(fullStream)
     set({ fullStream })

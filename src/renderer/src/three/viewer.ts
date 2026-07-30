@@ -4,7 +4,7 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js'
 import type { Placement } from '../../../shared/ipc'
 import { MAIN_PART_ID } from '../../../shared/ipc'
 import { colors, partColorFor, partPalette } from '../colors'
-import { applyPlacement, groundClamp } from './placement'
+import { applyPlacement, geometryRestingY, groundClamp } from './placement'
 import { easeInOutCubic, upForDirection, ViewCubeGizmo, type ViewRegion } from './viewCube'
 
 const BACKGROUND_COLOR = colors.bgApp
@@ -31,7 +31,29 @@ interface PartView {
   visible: boolean
   /** The part's material color - one distinct palette hue per part in a multi-part project. */
   color: string
+  /**
+   * Memo for `getRestingY` - the vertex-accurate height this part rests at, and the rotation it was
+   * computed for. Null until first asked.
+   *
+   * INVALIDATION, both halves of the (geometry, rotation) key:
+   * - *geometry*: the memo hangs off the `PartView`, and `loadPart` builds a brand-new `PartView`
+   *   every time it (re)loads geometry, so an agent refinement invalidates it by construction -
+   *   there is no path that swaps a mesh's geometry in place;
+   * - *rotation*: compared exactly (`===` on all three components), so any rotation change is a miss
+   *   and recomputes.
+   * One slot, not a map: a part has exactly one current rotation, and the only thing that must never
+   * pay the O(vertices) cost is a translate drag - which holds rotation constant, so one slot is
+   * enough to make it free. A map would grow one entry per frame of a rotate drag for no benefit.
+   */
+  restingY: { rotation: readonly [number, number, number]; value: number } | null
 }
+
+/**
+ * A subsystem that can veto camera orbiting while its own interaction owns the pointer. Orbit is
+ * live only while NO reason is held (see `ModelViewer.setOrbitSuppressed`), so subsystems cannot
+ * clobber each other the way a single shared `controls.enabled` boolean let them.
+ */
+export type OrbitSuppressor = 'select' | 'measure' | 'gizmo' | 'paramUpdate'
 
 /**
  * Thin wrapper around a three.js scene/camera/renderer set up for viewing one
@@ -46,6 +68,8 @@ export class ModelViewer {
   private readonly camera: THREE.PerspectiveCamera
   private readonly renderer: THREE.WebGLRenderer
   private readonly controls: OrbitControls
+  /** Every subsystem currently vetoing orbit. `controls.enabled` is derived: live iff this is empty. */
+  private readonly orbitSuppressors = new Set<OrbitSuppressor>()
   private readonly resizeObserver: ResizeObserver
 
   private readonly viewCube: ViewCubeGizmo
@@ -82,8 +106,13 @@ export class ModelViewer {
     container.appendChild(this.renderer.domElement)
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement)
-    this.controls.enableDamping = true
-    this.controls.dampingFactor = 0.08
+    // Inertia is deliberately OFF (three's own default). With damping on, `update()` applies only
+    // `dampingFactor` of each pending delta per frame and keeps the rest, and `onPointerUp` never
+    // clears the residual - so the camera coasts on for ~0.9s past where the user released, and
+    // keeps travelling while the mouse is held still. A CAD viewport must stop where the button
+    // came up. Raising `dampingFactor` is NOT an acceptable alternative: at any value below 1 the
+    // camera still overshoots the release point.
+    this.controls.enableDamping = false
     this.controls.target.set(0, 0, 0)
 
     this.scene.add(...this.createLights())
@@ -147,9 +176,11 @@ export class ModelViewer {
   }
 
   /** Advances the in-flight `setViewDirection` tween (if any) by one frame: lerps camera
-   *  position/up toward the target, re-derives the look-at, then lets OrbitControls resync its
-   *  internal spherical state from the position we just set so damping/orbit behave normally
-   *  once the tween finishes. Clears the tween once it reaches t=1. */
+   *  position/up toward the target, re-derives the look-at, then calls `controls.update()` -
+   *  which resyncs OrbitControls' internal spherical state from the position this tween just
+   *  wrote straight onto the camera (and applies its distance/angle clamps to it). It stands in
+   *  for the rAF loop's own `update()`, which this branch skips, so the ViewCube still reads a
+   *  post-update camera every frame. Damping-independent; do not remove. Clears the tween at t=1. */
   private advanceViewTween(): void {
     const tween = this.viewTween
     if (!tween) return
@@ -232,17 +263,25 @@ export class ModelViewer {
     if (existing) this.disposeMesh(existing.mesh)
 
     const mesh = this.buildMesh(buffer, resolvedColor)
-    // Ground-clamp against THIS geometry's bounds: a re-displayed (refined) part reuses its prior
+    // A fresh view record, so the resting-height memo starts empty for this geometry (see `PartView`).
+    const view: PartView = {
+      mesh,
+      placement: requested,
+      visible: resolvedVisible,
+      color: resolvedColor,
+      restingY: null
+    }
+    // Ground-clamp against THIS geometry's vertices: a re-displayed (refined) part reuses its prior
     // placement, whose height was derived for the old geometry - re-clamping here keeps the part
     // from ever sinking below the plate, while preserving any deliberate vertical lift. The clamp
     // is the invariant everywhere a placement is applied (here + setPartPlacement), so the
     // store-sync effect can't sink a part either.
-    const box = mesh.geometry.boundingBox
-    const resolvedPlacement = box ? groundClamp(requested, box.min, box.max) : requested
+    const resolvedPlacement = groundClamp(requested, this.restingYFor(view, requested.rotation))
+    view.placement = resolvedPlacement
     applyPlacement(mesh, resolvedPlacement)
     mesh.visible = resolvedVisible
     this.scene.add(mesh)
-    this.parts.set(partId, { mesh, placement: resolvedPlacement, visible: resolvedVisible, color: resolvedColor })
+    this.parts.set(partId, view)
 
     if (!this.focusedPartId || !this.parts.has(this.focusedPartId)) this.focusedPartId = partId
     if (this.parts.size === 1) this.frameCameraOn(mesh.geometry.boundingSphere)
@@ -263,15 +302,46 @@ export class ModelViewer {
 
   /** Updates a part's placement (layout only), ground-clamped so the part never sinks below the
    *  plate for its current geometry, while a deliberate vertical lift is preserved (see
-   *  `loadPart`). No-op for an unknown part. */
+   *  `loadPart`). No-op for an unknown part.
+   *
+   *  Called for every part on every store sync (`Viewport`'s parts-sync effect), so the resting
+   *  height goes through the memo - re-applying the same placement costs three float compares. */
   setPartPlacement(partId: string, placement: Placement): void {
     const view = this.parts.get(partId)
     if (!view) return
-    view.mesh.geometry.computeBoundingBox()
-    const box = view.mesh.geometry.boundingBox
-    const clamped = box ? groundClamp(placement, box.min, box.max) : placement
+    const clamped = groundClamp(placement, this.restingYFor(view, placement.rotation))
     view.placement = clamped
     applyPlacement(view.mesh, clamped)
+  }
+
+  /**
+   * The world `y` this part must sit at for its lowest rotated vertex to touch the build plate, at
+   * `rotationDeg` - memoised per part+rotation (see `PartView.restingY` for the invalidation rule).
+   * Null for an unknown part.
+   *
+   * This is the single entry point for resting height in the renderer: `loadPart`,
+   * `setPartPlacement` and both of `PlacementController`'s call sites (the live translate floor at
+   * grab time, and the ground clamp on release) all read it, so the O(vertices) pass runs once per
+   * (geometry, rotation) rather than once per placement write - and never per animation frame.
+   */
+  getRestingY(partId: string, rotationDeg: readonly [number, number, number]): number | null {
+    const view = this.parts.get(partId)
+    return view ? this.restingYFor(view, rotationDeg) : null
+  }
+
+  private restingYFor(view: PartView, rotationDeg: readonly [number, number, number]): number {
+    const memo = view.restingY
+    if (
+      memo &&
+      memo.rotation[0] === rotationDeg[0] &&
+      memo.rotation[1] === rotationDeg[1] &&
+      memo.rotation[2] === rotationDeg[2]
+    ) {
+      return memo.value
+    }
+    const value = geometryRestingY(view.mesh.geometry, rotationDeg)
+    view.restingY = { rotation: [rotationDeg[0], rotationDeg[1], rotationDeg[2]], value }
+    return value
   }
 
   /** Shows/hides a part. No-op for an unknown part. */
@@ -421,9 +491,21 @@ export class ModelViewer {
     return this.renderer.domElement
   }
 
-  /** Enables/disables OrbitControls - used while a marquee-select drag is in progress. */
-  setOrbitEnabled(enabled: boolean): void {
-    this.controls.enabled = enabled
+  /**
+   * Adds or removes `reason` from the orbit veto set; OrbitControls is enabled only while the set
+   * is empty. Several subsystems (select mode, measure mode, the placement gizmo, an in-flight
+   * param re-run) need to hold orbit off over overlapping windows, and a shared `controls.enabled`
+   * boolean made that last-writer-wins: whichever React effect or handler ran second decided, so
+   * e.g. turning Select on and Measure off in one handler left orbit live under an active marquee.
+   *
+   * `Set.add`/`Set.delete` are idempotent, so a subsystem with two release paths cannot underflow
+   * a refcount, double-releasing is harmless, and no subsystem can un-suppress a veto another one
+   * is still holding.
+   */
+  setOrbitSuppressed(reason: OrbitSuppressor, suppressed: boolean): void {
+    if (suppressed) this.orbitSuppressors.add(reason)
+    else this.orbitSuppressors.delete(reason)
+    this.controls.enabled = this.orbitSuppressors.size === 0
   }
 
   /**

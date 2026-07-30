@@ -7,11 +7,10 @@ import Tooltip from '@mui/material/Tooltip'
 import Typography from '@mui/material/Typography'
 import ChatBubbleOutlineIcon from '@mui/icons-material/ChatBubbleOutline'
 import ChevronRightIcon from '@mui/icons-material/ChevronRight'
-import MenuIcon from '@mui/icons-material/Menu'
 import UploadFileIcon from '@mui/icons-material/UploadFile'
-import ViewSidebarOutlinedIcon from '@mui/icons-material/ViewSidebarOutlined'
 import { ActivityRail } from './components/ActivityRail'
 import type { LeftView } from './components/ActivityRail'
+import { DockResizeHandle } from './components/DockResizeHandle'
 import { ImportDialog } from './components/ImportDialog'
 import { Inspector } from './components/Inspector'
 import type { InspectorTab } from './components/Inspector'
@@ -23,6 +22,15 @@ import { ViewportControls } from './components/ViewportControls'
 import { Viewport } from './components/Viewport'
 import { MAIN_PART_ID } from '../../shared/ipc'
 import { toModelInfo, useAppStore } from './state/appStore'
+import {
+  DEFAULT_INSPECTOR_WIDTH,
+  MIN_INSPECTOR_WIDTH,
+  clampInspectorWidth,
+  clampRequestedInspectorWidth,
+  maxInspectorWidth,
+  readStoredInspectorWidth,
+  writeStoredInspectorWidth
+} from './state/dockWidth'
 import { syncViewportParts } from './state/syncParts'
 import type { ModelViewer } from './three/viewer'
 
@@ -54,6 +62,19 @@ export function App(): React.JSX.Element {
   const [rightDockOpen, setRightDockOpen] = useState(true)
   const [leftView, setLeftView] = useState<LeftView>('parts')
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('chat')
+  // The Inspector width the user last *asked* for. Same posture as the dock-open flags above -
+  // presentational renderer state, persisted to localStorage (see `dockWidth.ts`) rather than to the
+  // store/IPC. Deliberately the request rather than what paints: the window-derived cap is applied
+  // when rendering instead, so a temporarily narrow window squeezes the dock without overwriting the
+  // preference. Lazy initializer so localStorage is touched once on mount, not on every render.
+  const [requestedInspectorWidth, setRequestedInspectorWidth] = useState(() => readStoredInspectorWidth())
+  // The live window width, in state so both the painted width below and the cap the handle
+  // advertises via `aria-valuemax` stay truthful as the window resizes.
+  const [windowWidth, setWindowWidth] = useState(() => window.innerWidth)
+  // What actually paints: the request narrowed to fit *this* window, so a width saved on a wider
+  // display can never squeeze the 3D viewport to nothing. Derived during render rather than stored,
+  // which is what makes the narrowing reversible.
+  const inspectorWidth = clampInspectorWidth(requestedInspectorWidth, windowWidth)
 
   const activeProject = projects.find((project) => project.id === activeProjectId)
 
@@ -62,6 +83,40 @@ export function App(): React.JSX.Element {
     setLeftDockOpen((open) => !(open && view === leftView))
     setLeftView(view)
   }
+
+  // The resize handle reports a raw requested width (pointer delta or keyboard step); clamping to
+  // the absolute band lives here so every explicit path - drag, keyboard, reset - goes through the
+  // one pure rule set. The window-derived cap is *not* applied to the request: that belongs to what
+  // paints, so a narrow window never rewrites what the user asked for.
+  function handleInspectorResize(requested: number): void {
+    setRequestedInspectorWidth(clampRequestedInspectorWidth(requested))
+  }
+
+  // Track the window width so the painted Inspector width is re-derived on resize: shrinking the
+  // window must never let a wide Inspector squeeze the 3D viewport to zero. Nothing here touches
+  // the requested width, so widening the window back restores the user's dock instead of leaving it
+  // stuck at the narrow window's cap.
+  useEffect(() => {
+    function handleResize(): void {
+      setWindowWidth(window.innerWidth)
+    }
+    window.addEventListener('resize', handleResize)
+    return () => {
+      window.removeEventListener('resize', handleResize)
+    }
+  }, [])
+
+  // Persist the *settled request*, not the painted width - a window that happens to be narrow right
+  // now must not be what gets saved. Debounced rather than written per pointermove frame: a drag
+  // otherwise fires dozens of synchronous localStorage writes and only the value the user let go on
+  // matters. Debouncing (rather than a commit callback on pointer-up) also covers keyboard nudges
+  // and the double-click reset with one mechanism.
+  useEffect(() => {
+    const timer = setTimeout(() => writeStoredInspectorWidth(requestedInspectorWidth), 300)
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [requestedInspectorWidth])
 
   // One-time hydration of whichever project was active at last quit (or the sole project on a
   // fresh install). ProjectsDrawer's create/switch handlers mirror this same
@@ -151,15 +206,8 @@ export function App(): React.JSX.Element {
         className="app-region-drag"
         sx={{ bgcolor: 'background.paper', borderBottom: 1, borderColor: 'divider' }}
       >
-        <MuiToolbar variant="dense" disableGutters sx={{ minHeight: 40, height: 40, px: 1 }}>
-          <IconButton
-            className="app-region-no-drag"
-            aria-label="Open projects"
-            onClick={() => setProjectsOpen(true)}
-          >
-            <MenuIcon fontSize="small" />
-          </IconButton>
-          <Typography variant="body2" fontWeight={600} sx={{ ml: 1 }}>
+        <MuiToolbar variant="dense" disableGutters sx={{ minHeight: 40, height: 40, px: 1.5 }}>
+          <Typography variant="body2" fontWeight={600}>
             Voyager AI
           </Typography>
           {activeProject && (
@@ -175,16 +223,6 @@ export function App(): React.JSX.Element {
               onClick={() => setImportDialogOpen(true)}
             >
               <UploadFileIcon fontSize="small" />
-            </IconButton>
-          </Tooltip>
-          <Tooltip title={leftDockOpen ? 'Hide left panel' : 'Show left panel'}>
-            <IconButton
-              className="app-region-no-drag"
-              aria-label={leftDockOpen ? 'Hide left panel' : 'Show left panel'}
-              color={leftDockOpen ? 'primary' : 'default'}
-              onClick={() => setLeftDockOpen((open) => !open)}
-            >
-              <ViewSidebarOutlinedIcon fontSize="small" />
             </IconButton>
           </Tooltip>
           <Tooltip title={rightDockOpen ? 'Hide inspector' : 'Show inspector'}>
@@ -215,10 +253,24 @@ export function App(): React.JSX.Element {
         </Box>
 
         {/* Right dock: a single tabbed Inspector - Chat and the four project-detail panels
-            (Brief / Params / Verify / Print) are peer tabs, one visible at a time. */}
+            (Brief / Params / Verify / Print) are peer tabs, one visible at a time. Its width is
+            user-resizable by dragging the handle on its left seam (defaulting to the old fixed
+            372px), which is why the dock is measured from state rather than hard-coded. The dock
+            itself stays mounted when collapsed - `display: none`, not unmounted, so the Inspector
+            keeps its per-panel state across a hide/show - but the handle must not linger over a
+            hidden dock, so only the handle is conditionally rendered. */}
+        {rightDockOpen && (
+          <DockResizeHandle
+            width={inspectorWidth}
+            min={MIN_INSPECTOR_WIDTH}
+            max={maxInspectorWidth(windowWidth)}
+            onChange={handleInspectorResize}
+            onReset={() => handleInspectorResize(DEFAULT_INSPECTOR_WIDTH)}
+          />
+        )}
         <Box
           sx={{
-            width: 372,
+            width: inspectorWidth,
             flexShrink: 0,
             borderLeft: 1,
             borderColor: 'divider',

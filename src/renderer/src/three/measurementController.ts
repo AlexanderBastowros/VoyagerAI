@@ -46,7 +46,7 @@ export class MeasurementController {
    */
   setActive(active: boolean): void {
     this.active = active
-    this.options.getViewer()?.setOrbitEnabled(!active)
+    this.options.getViewer()?.setOrbitSuppressed('measure', active)
     if (!active) this.reset()
   }
 

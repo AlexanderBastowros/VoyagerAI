@@ -9,11 +9,51 @@ import { SelectionController } from '../three/selectionController'
 import { MeasurementOverlay } from '../three/measurement'
 import { MeasurementController } from '../three/measurementController'
 import { PlacementController } from '../three/placementController'
+import { MODEL_UP_TO_WORLD_UP_DEG, arrangeAlongX, type ArrangeItem } from '../three/arrangeAlongX'
 import { useAppStore } from '../state/appStore'
 import { partColorFor } from '../colors'
+import type { PartRecord, Placement } from '../../../shared/ipc'
 
 interface ViewportProps {
   viewerRef: MutableRefObject<ModelViewer | null>
+}
+
+/**
+ * The print-orientation preview's row, as `partId -> Placement`, plus the row's total X extent - or
+ * null when there is nothing to preview yet (no geometry loaded, everything hidden).
+ *
+ * NON-DESTRUCTIVE BY CONSTRUCTION, and this is the load-bearing property of the whole feature:
+ * - it reads `mesh.geometry.boundingBox` (local, min-corner-origined bounds) and the store's `parts`
+ *   list, and returns a value. It touches no `Placement` in the store, calls no IPC, and its only
+ *   consumer applies the result through `viewer.setPartPlacement`, which writes to the three.js mesh
+ *   and the viewer's own view record - never to `parts[].placement` or `project.json`;
+ * - the row is a pure function of GEOMETRY bounds, never of the parts' current placements, so it
+ *   cannot compound across repeated toggles;
+ * - therefore turning the preview off simply lets the parts-sync effect below re-apply
+ *   `part.placement` from the store, restoring the user's hand-built layout exactly.
+ */
+function buildPreviewRow(
+  viewer: ModelViewer,
+  parts: PartRecord[]
+): { placements: Map<string, Placement>; rowWidthMm: number } | null {
+  const items: ArrangeItem[] = []
+  for (const part of parts) {
+    if (!part.visible) continue
+    // `buildMesh` always computes a bounding box, so this only skips parts whose geometry has not
+    // arrived yet - `lazyLoadTick` re-runs the effect when it does, folding them into the row.
+    const box = viewer.getPartMesh(part.id)?.geometry.boundingBox
+    if (!box) continue
+    items.push({ partId: part.id, localMin: box.min, localMax: box.max })
+  }
+  if (items.length === 0) return null
+  // The row math needs no 2+ gate (a single part just gets no gap): the display rotation is
+  // meaningful for one part too - it is the only way to see which face sits on the bed. Bed-fit is
+  // reported by `PrintSettingsPanel`, which knows the active printer profile, so no verdict here.
+  const { placements, rowWidthMm } = arrangeAlongX(items, {
+    rotationDeg: MODEL_UP_TO_WORLD_UP_DEG,
+    usableXMm: null
+  })
+  return { placements: new Map(placements.map((p) => [p.partId, p.placement])), rowWidthMm }
 }
 
 /** Hosts the three.js canvas and the marquee-select/measurement overlays and controllers.
@@ -39,6 +79,7 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   const selectedPartId = useAppStore((state) => state.selectedPartId)
   const agentBusy = useAppStore((state) => state.agentBusy)
   const gizmoMode = useAppStore((state) => state.gizmoMode)
+  const printPreviewArranged = useAppStore((state) => state.printPreviewArranged)
   const setParts = useAppStore((state) => state.setParts)
   const setSelectedPartId = useAppStore((state) => state.setSelectedPartId)
   /** Part ids with a `part.getModel` fetch in flight (the lazy-load effect below), so a re-run
@@ -48,6 +89,10 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
    *  part becomes selected BEFORE its mesh exists, making their first pass a no-op - without
    *  this, the copy would show as active in the panel but never receive focus or the gizmo. */
   const [lazyLoadTick, setLazyLoadTick] = useState(0)
+  /** Which set of parts the print-orientation preview last framed the camera on (`null` while the
+   *  preview is off). Keyed by part id so arming frames once, and a part whose geometry arrives late
+   *  re-frames to include it - but a mere color/placement re-sync does not keep yanking the camera. */
+  const previewFrameKeyRef = useRef<string | null>(null)
 
   useEffect(() => {
     const container = containerRef.current
@@ -94,7 +139,14 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
             setParts(parts)
             setSelectedPartId(activePartId)
           })
-          .catch(() => {
+          .catch((err: unknown) => {
+            // Say why the part snapped back. Without this the rollback below is a silent, unexplained
+            // jump on any axis; the main process already returns human-readable text (e.g. "Voyager
+            // is still working — wait for it to finish before rearranging parts.").
+            useAppStore.getState().addMessage({
+              role: 'system-status',
+              text: err instanceof Error ? `⚠ ${err.message}` : '⚠ Could not save the new part position.'
+            })
             if (!prev) return
             const cur = useAppStore.getState()
             cur.setParts(cur.parts.map((p) => (p.id === partId ? { ...p, placement: prev } : p)))
@@ -167,8 +219,13 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   // Freeze orbit while a param-panel re-run is in flight - the overlay below also blocks pointer
   // events outright, but this covers scroll-wheel zoom too and matches the semantic "frozen"
   // state even if the overlay's positioning ever changes.
+  //
+  // Held as a named veto rather than by assigning `controls.enabled`: as a plain boolean this was
+  // last-writer-wins, so a re-run RESOLVING while select or measure mode was active silently handed
+  // orbit back under an active marquee. Note the inverted polarity vs. the old enable-flag setter -
+  // `paramUpdatePending` is now passed straight through as "suppressed", not negated.
   useEffect(() => {
-    viewerRef.current?.setOrbitEnabled(!paramUpdatePending)
+    viewerRef.current?.setOrbitSuppressed('paramUpdate', paramUpdatePending)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [paramUpdatePending])
 
@@ -184,14 +241,29 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   // palette color), and lazily fetch geometry for parts the viewer doesn't have yet - a duplicate
   // just created, or a part recorded from another window. Idempotent - re-applying a placement
   // the gizmo just set (or a color the mesh already wears) is a no-op.
+  //
+  // This is also where the print-orientation preview is applied and un-applied: while
+  // `printPreviewArranged` is on, the arranged row REPLACES each part's stored placement on the
+  // meshes; while it is off this effect behaves exactly as it always did, re-applying
+  // `part.placement`. That single substitution is the whole preview - which is why it is reversible
+  // for free and why nothing needs a snapshot or an undo stack (the app has neither).
   useEffect(() => {
     const viewer = viewerRef.current
     if (!viewer) return
     const loaded = new Set(viewer.getPartIds())
+    const preview = printPreviewArranged ? buildPreviewRow(viewer, parts) : null
+
+    // Publish the measured row width for `PrintSettingsPanel`'s bed-fit caption (a measurement only -
+    // nothing reads it back into the layout), and frame the camera once per previewed part set.
+    const store = useAppStore.getState()
+    if (store.printPreviewRowWidthMm !== (preview?.rowWidthMm ?? null)) {
+      store.setPrintPreviewRowWidthMm(preview?.rowWidthMm ?? null)
+    }
+
     parts.forEach((part, index) => {
       if (loaded.has(part.id)) {
         viewer.setPartVisible(part.id, part.visible)
-        viewer.setPartPlacement(part.id, part.placement)
+        viewer.setPartPlacement(part.id, preview?.placements.get(part.id) ?? part.placement)
         viewer.setPartColor(part.id, partColorFor(index))
         return
       }
@@ -210,8 +282,18 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
         })
         .finally(() => loadingPartIdsRef.current.delete(part.id))
     })
+
+    // Frame the row once when it is (re)composed, so the arrangement is actually in view; re-syncs
+    // that don't change which parts are in the row leave the camera alone.
+    const frameKey = preview ? [...preview.placements.keys()].join('|') : null
+    if (frameKey !== previewFrameKeyRef.current) {
+      previewFrameKeyRef.current = frameKey
+      if (frameKey !== null) viewer.frameAll()
+    }
+    // `lazyLoadTick` is a dep because geometry arrives asynchronously: without it a part still
+    // loading when the preview arms would be silently left out of the row for good.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [parts])
+  }, [parts, printPreviewArranged, lazyLoadTick])
 
   // Keep the placement gizmo's mode in step with the store (the toolbar toggle writes it; the
   // controller's keyboard shortcuts write it back via onModeChange above).
@@ -222,17 +304,20 @@ export function Viewport({ viewerRef }: ViewportProps): React.JSX.Element {
   // WS-I: the placement gizmo is available only for a multi-part project, on the focused part, when
   // neither select nor measure mode is active (they share the canvas), and not while the agent is
   // busy - the `part:setPlacement` handler rejects mid-turn, so dragging then would move the mesh
-  // but silently fail to persist. Otherwise detach it.
+  // but silently fail to persist. It is also detached while the print-orientation preview is on: the
+  // meshes are then showing arranged slots rather than their stored placements, so a drag would
+  // persist a preview-derived placement (and the parts-sync effect above would immediately snap the
+  // part back to its slot anyway). Otherwise detach it.
   useEffect(() => {
     const placement = placementControllerRef.current
     if (!placement) return
-    if (parts.length > 1 && selectedPartId && !selectMode && !measureMode && !agentBusy) {
+    if (parts.length > 1 && selectedPartId && !selectMode && !measureMode && !agentBusy && !printPreviewArranged) {
       placement.attach(selectedPartId)
     } else {
       placement.detach()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPartId, parts, selectMode, measureMode, agentBusy, lazyLoadTick])
+  }, [selectedPartId, parts, selectMode, measureMode, agentBusy, printPreviewArranged, lazyLoadTick])
 
   return (
     <Box
